@@ -4,11 +4,18 @@ name: Publish to npm
 #   1. 推一个与 package.json 版本一致的 tag（如 v0.1.0）—— 正式发布
 #   2. 在 Actions 页面手动触发 —— 可勾干跑，或临时填入 OTP
 #
-# 关于 NPM_TOKEN 的类型（踩过的坑）：
-#   * 推荐 **Automation** 类型：npmjs.com → Access Tokens → Generate New Token
-#     → Classic Token → Automation。这类 token 发布时不需要 OTP，可无人值守。
-#   * 若用的是 Publish 类型（受 2FA 保护），CI 里会报 `EOTP`，
-#     此时可手动触发本 workflow，在 otp 输入框填入 30 秒内的一次性验证码。
+# 关于 NPM_TOKEN 的类型（踩过的两个坑）：
+#   * **Publish 类型**（受 2FA 保护）：CI 里会报 `EOTP`。手动触发本 workflow、
+#     在 otp 输入框填入 30 秒内的一次性验证码可以绕过，但不能无人值守。
+#   * **Granular 类型且把 Packages 限制在某个 scope**（例如只勾了 @alaahong）：
+#     认证能过（`npm whoami` 正常），但发非 scoped 包会被拒：
+#       npm error 403 403 Forbidden - PUT https://registry.npmjs.org/<pkg>
+#       npm error 403 You may not perform that action with these credentials.
+#     scope 是 @alaahong、包名却是 llm-session-proxy，对不上。
+#   * ✅ 正确做法：**Classic Token → Automation**。账号级、不限定 scope，
+#     且 bypass_2fa，可无人值守发布。
+#     判断依据：npm token 列表里该 token 的 `scopes` 为 `[{"name":null,...}]`
+#     且 `bypass_2fa: true`。
 on:
   push:
     tags:
@@ -71,21 +78,39 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: 发布到 npm
-        run: |
-          set -euo pipefail
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "::notice::干跑模式，不会真正发布"
-            npm publish --dry-run
-            exit 0
-          fi
-          args=(--access public)
-          if [ -n "${{ inputs.otp }}" ]; then
-            echo "::notice::使用手动输入的 OTP"
-            args+=("--otp=${{ inputs.otp }}")
-          fi
-          npm publish "${args[@]}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          INPUT_OTP: ${{ inputs.otp }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -uo pipefail
+
+          args=(--access public)
+          if [ -n "${INPUT_OTP}" ]; then
+            echo "::notice::使用手动输入的 OTP"
+            args+=("--otp=${INPUT_OTP}")
+          fi
+          if [ "${INPUT_DRY_RUN}" = "true" ]; then
+            echo "::notice::干跑模式，不会真正发布"
+            args+=(--dry-run)
+          fi
+
+          set +e
+          npm publish "${args[@]}" 2>&1 | tee publish.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "${status}" -ne 0 ]; then
+            echo "::group::发布失败诊断"
+            if grep -q 'EOTP' publish.log; then
+              echo "::error::EOTP —— NPM_TOKEN 是受 2FA 保护的 Publish 类型。改用 Classic Token → Automation，或手动触发本工作流并填写 otp。"
+            fi
+            if grep -q 'E403' publish.log; then
+              echo "::error::E403 —— 凭据权限不足。最常见原因：token 被限制在某个 scope（例如 @alaahong）下，发不了非 scoped 的包。改用 Classic Token → Automation（账号级、无 scope 限制）。"
+            fi
+            echo "::endgroup::"
+            exit "${status}"
+          fi
 
       - name: 输出结果
         if: ${{ inputs.dry_run != 'true' }}
