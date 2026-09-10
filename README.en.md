@@ -401,6 +401,22 @@ You can also take just the parts you need: `createProxyServer` (own the lifecycl
 
 ---
 
+## Stability
+
+- **A single malformed request cannot take the process down.** Synchronous throws along the
+  request path are intercepted: an invalid `Host` header, a malformed request line, or an upstream
+  status line / header containing illegal characters all become ordinary 4xx / 5xx responses, and
+  the proxy keeps serving.
+- **Uncaught errors land in the log file.** A last-resort handler writes the full stack of
+  `uncaughtException` and `unhandledRejection` into the file given by `--log-file` (and to stderr).
+  Node's default is to print to stderr and terminate immediately — leaving nothing at all in the
+  log file, which looks exactly like "the logs are fine, the process just vanished".
+  **Always pass `--log-file`**, otherwise process-level clues disappear with the terminal window.
+- 20 uncaught errors within 60 seconds are treated as a persistent fault and the process exits on
+  purpose, rather than spinning in a broken state.
+
+---
+
 ## FAQ
 
 **The client cannot connect, and the proxy logs nothing**

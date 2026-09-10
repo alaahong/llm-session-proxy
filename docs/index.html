@@ -383,6 +383,14 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       这类请求不进会话表，避免把表撑爆。
     </p>
 
+    <h3>稳定性</h3>
+    <p>
+      <b>单个畸形请求不会让进程退出。</b>非法 <code>Host</code> 头、畸形请求行、上游返回含非法字符的状态行或响应头，都会被转成对应的 4xx / 5xx，进程继续服务。
+    </p>
+    <p>
+      <b>未捕获异常会写进日志文件。</b>兜底处理器把 <code>uncaughtException</code> 与 <code>unhandledRejection</code> 的完整栈写入 <code>--log-file</code>。Node 默认只打 stderr 就终止进程，日志文件里一片空白——现场看起来就是「日志正常、进程凭空消失」。<b>建议始终带上 <code>--log-file</code>。</b>
+    </p>
+
     <h3 data-page-node-id="PPyCYsxNA0lmkb1ht8AMl8">限制与注意</h3>
     <p data-page-node-id="l2OoLWE91jF3MRhSbpUZYo">
       <b data-page-node-id="tPp7Ih9fLfGbm478UnsVcd">只监听本机。</b>代理会带上你的 API Key 转发请求，不要把监听地址改成 <code data-page-node-id="FG2MIJPQEr7QFhA2w94IKm">0.0.0.0</code>。

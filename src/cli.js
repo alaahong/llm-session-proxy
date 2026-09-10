@@ -346,6 +346,46 @@ export function printBanner(logger, config, proxy, url) {
 }
 
 /**
+ * 安装进程级兜底。
+ *
+ * 默认行为下，一个未捕获异常或未处理的 Promise 拒绝会直接终止进程，
+ * 而栈信息只打到 stderr —— 日志文件里一个字都不会有，
+ * 表现出来就是「日志一切正常，进程却凭空消失」，极难排查。
+ * 这里改成：写进日志文件 + stderr，然后**继续运行**。
+ * 只有短时间内反复出错（判定为持续故障，再跑下去也没意义）才主动退出。
+ */
+export function installProcessGuards(logger) {
+  const recent = [];
+  const WINDOW_MS = 60_000;
+  const LIMIT = 20;
+
+  const record = (kind, error) => {
+    const now = Date.now();
+    while (recent.length && now - recent[0] > WINDOW_MS) recent.shift();
+    recent.push(now);
+
+    const detail = error?.stack || error?.message || String(error);
+    logger.error(`[${kind}] 未捕获的错误（进程继续运行）: ${detail}`);
+    try {
+      // logger 的文件写入可能因磁盘/权限静默降级，stderr 是最后一道线索
+      process.stderr.write(`${kind}: ${detail}\n`);
+    } catch {
+      /* 连 stderr 都写不进去就只能放弃 */
+    }
+
+    if (recent.length > LIMIT) {
+      logger.error(`[${kind}] ${WINDOW_MS / 1000} 秒内已发生 ${recent.length} 次，判定为持续故障，主动退出`);
+      process.exit(1);
+    }
+  };
+
+  process.on('uncaughtException', (error) => record('uncaughtException', error));
+  process.on('unhandledRejection', (reason) =>
+    record('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason))),
+  );
+}
+
+/**
  * CLI 主入口。返回时服务器已在后台运行（进程不会退出）。
  * 错误通过 process.exitCode 表达，避免在测试中强杀进程。
  */
@@ -396,6 +436,7 @@ export async function runCli(argv = process.argv.slice(2)) {
   }
 
   const logger = new Logger({ ...config.log, console: config.log.level !== 'silent' });
+  installProcessGuards(logger);
   const proxy = createProxyServer({ config, logger });
 
   let address;

@@ -395,6 +395,20 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       cannot grow without bound.
     </p>
 
+    <h3>Stability</h3>
+    <p>
+      <b>A single malformed request cannot take the process down.</b> An invalid <code>Host</code>
+      header, a malformed request line, or an upstream status line / header with illegal characters
+      all become ordinary 4xx / 5xx responses, and the proxy keeps serving.
+    </p>
+    <p>
+      <b>Uncaught errors land in the log file.</b> A last-resort handler writes the full stack of
+      <code>uncaughtException</code> and <code>unhandledRejection</code> into the file given by
+      <code>--log-file</code>. Node's default prints to stderr and terminates immediately, leaving
+      the log file empty — which looks exactly like "logs are fine, the process just vanished".
+      <b>Always pass <code>--log-file</code>.</b>
+    </p>
+
     <h3>Limitations</h3>
     <p>
       <b>Loopback only.</b> The proxy forwards your API key, so do not bind the listen address to

@@ -89,7 +89,13 @@ export class Logger {
     if (this.toConsole) {
       const color = COLORS[level] || 0;
       const out = process.stderr.isTTY ? `\u001b[${color}m${line}\u001b[0m` : line;
-      process.stderr.write(`${out}\n`);
+      try {
+        // stderr 被关掉（管道断开）时 write 会抛 EPIPE；
+        // 日志器绝不能因为写日志而把代理搞挂
+        process.stderr.write(`${out}\n`);
+      } catch {
+        /* 放弃控制台输出，文件通道继续 */
+      }
     }
     this.#writeFile(line);
   }
