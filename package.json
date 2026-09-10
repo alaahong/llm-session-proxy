@@ -1,7 +1,7 @@
 {
   "name": "llm-session-proxy",
   "version": "0.1.1",
-  "description": "可自定义的 LLM 本地反向代理：自动生成并透传会话 ID、注入任意请求头、重写模型别名与请求路径。零依赖，用于让不支持会话头（如 x-opencode-session）的客户端接上要求该头的上游。",
+  "description": "A configurable local reverse proxy for LLM APIs: generates or forwards session IDs, injects arbitrary headers, and rewrites model aliases and request paths. Zero dependencies. Built so clients that cannot send a required session header (such as x-opencode-session) can still talk to upstreams that demand it.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "alaahong",
@@ -26,7 +26,9 @@
     "src/",
     "examples/",
     "README.md",
-    "README.en.md",
+    "README.zh-CN.md",
+    "ROADMAP.md",
+    "ROADMAP.zh-CN.md",
     "LICENSE"
   ],
   "engines": {

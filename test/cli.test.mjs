@@ -7,6 +7,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { parseArgv } from '../src/cli.js';
+import { setLang } from '../src/messages.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bin = path.join(root, 'bin', 'llm-session-proxy.js');
@@ -114,15 +115,33 @@ test('parseArgv 空参数返回全默认的空片段', () => {
   assert.equal(parsed.initRequested, false);
 });
 
-test('parseArgv 对非法输入给出可读错误', () => {
-  assert.throws(() => parseArgv(['--nope']), /无法识别的参数/);
-  assert.throws(() => parseArgv(['stray']), /无法识别的参数/);
-  assert.throws(() => parseArgv(['--port']), /缺少取值/);
-  assert.throws(() => parseArgv(['--port', '--host']), /缺少取值/);
+test('parseArgv 对非法输入给出可读错误（默认英文）', () => {
+  assert.throws(() => parseArgv(['--nope']), /Unrecognized argument/);
+  assert.throws(() => parseArgv(['stray']), /Unrecognized argument/);
+  assert.throws(() => parseArgv(['--port']), /requires a value/);
+  assert.throws(() => parseArgv(['--port', '--host']), /requires a value/);
   assert.throws(() => parseArgv(['--inject', 'no-equals']), /name=value/);
   assert.throws(() => parseArgv(['--body-inject', 'no-equals']), /key=value/);
   assert.throws(() => parseArgv(['--model-map', 'only-alias']), /alias=real/);
-  assert.throws(() => parseArgv(['--path-rewrite', 'no-arrow']), /正则=>替换/);
+  assert.throws(() => parseArgv(['--path-rewrite', 'no-arrow']), /regex=>replacement/);
+});
+
+test('parseArgv 识别 --lang 并归一化语言写法', () => {
+  assert.equal(parseArgv(['--lang', 'zh']).flags.lang, 'zh');
+  assert.equal(parseArgv(['--lang=zh-CN']).flags.lang, 'zh');
+  assert.equal(parseArgv(['-l', 'en']).flags.lang, 'en');
+  // 识别不了的写法先原样留下，由配置校验给出明确报错
+  assert.equal(parseArgv(['--lang', 'fr']).flags.lang, 'fr');
+});
+
+test('parseArgv 的错误信息跟随 --lang 切换语言', () => {
+  setLang('en');
+  try {
+    assert.throws(() => parseArgv(['--lang', 'zh', '--port']), /缺少取值/);
+    assert.throws(() => parseArgv(['--lang=en', '--nope']), /Unrecognized argument/);
+  } finally {
+    setLang('en');
+  }
 });
 
 test('CLI --version 输出语义化版本号', () => {
@@ -131,9 +150,18 @@ test('CLI --version 输出语义化版本号', () => {
 
 test('CLI --help 打印用法并覆盖关键选项', () => {
   const output = runCli(['--help']);
-  for (const flag of ['--inject', '--model-prefix', '--path-rewrite', '--print-config', '--init']) {
+  for (const flag of ['--inject', '--model-prefix', '--path-rewrite', '--print-config', '--init', '--lang']) {
     assert.ok(output.includes(flag), `帮助里应当提到 ${flag}`);
   }
+});
+
+test('CLI --help 默认英文，--lang zh 时给中文', () => {
+  const english = runCli(['--help']);
+  assert.ok(english.includes('A configurable local reverse proxy'), '默认帮助应当是英文');
+  assert.ok(!/\p{Script=Han}/u.test(english), '默认帮助不应含中文');
+
+  const chinese = runCli(['--lang', 'zh', '--help']);
+  assert.ok(chinese.includes('本地反向代理'), '--lang zh 时帮助应当是中文');
 });
 
 test('CLI --print-config 输出可解析的 JSON，且命令行覆盖生效', () => {
@@ -149,12 +177,24 @@ test('CLI --init 生成的配置能被自己解析并用于启动', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-cli-'));
   const target = path.join(dir, 'config.json');
 
-  assert.match(runCli(['--init', target]), /已生成示例配置/);
+  assert.match(runCli(['--init', target]), /Sample config written/);
   assert.ok(fs.existsSync(target));
 
   const config = JSON.parse(runCli(['--print-config', '-c', target]));
   assert.equal(config.session.enabled, true);
   assert.equal(config.model.stripPrefixes.includes('proxy-'), true);
+});
+
+test('CLI --init --lang zh 生成中文注释的示例配置，且同样能解析', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-cli-zh-'));
+  const target = path.join(dir, 'config.json');
+
+  assert.match(runCli(['--init', target, '--lang', 'zh']), /已生成示例配置/);
+  const text = fs.readFileSync(target, 'utf8');
+  assert.ok(/\p{Script=Han}/u.test(text), '中文示例配置里应当有中文注释');
+
+  const config = JSON.parse(runCli(['--print-config', '-c', target, '--lang', 'zh']));
+  assert.equal(config.lang, 'zh', '配置文件里的 lang 应当被识别');
 });
 
 test('CLI --init 不覆盖已存在的文件，并以非零码退出', () => {

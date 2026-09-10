@@ -13,6 +13,7 @@ import {
 } from './config.js';
 import { applyBodyInject, buildInjectHeaders, rewriteModel, rewritePath } from './inject.js';
 import { Logger } from './logger.js';
+import { getLang, normalizeLang, setLang, t as translate } from './messages.js';
 import { createProxyServer } from './proxy.js';
 import {
   SessionStore,
@@ -43,7 +44,9 @@ export {
   deepMerge,
   findExplicitSession,
   generateId,
+  getLang,
   loadConfigFile,
+  normalizeLang,
   normalizeSessionId,
   parseJsonLoose,
   parseUpstream,
@@ -55,6 +58,8 @@ export {
   resolveUpstream,
   rewriteModel,
   rewritePath,
+  setLang,
+  translate,
 };
 
 /**
@@ -76,6 +81,9 @@ export async function startProxy(options = {}) {
   const config = providedConfig
     ? deepMerge(DEFAULT_CONFIG, providedConfig)
     : buildConfig({ file: configFile, env, flags });
+
+  // 让内嵌使用时的日志/报错语言也跟随配置（默认英文）
+  if (typeof config.lang === 'string') setLang(config.lang);
 
   const logger = providedLogger || new Logger({ ...config.log, console: !silent && config.log.level !== 'silent' });
   const proxy = createProxyServer({ config, logger });

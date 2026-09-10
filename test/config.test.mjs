@@ -64,7 +64,7 @@ test('loadConfigFile 读取文件，根节点不是对象时报错', () => {
   assert.equal(loaded.path, ok);
 
   const bad = writeTempConfig('[1,2,3]');
-  assert.throws(() => loadConfigFile(bad), /根节点必须是对象/);
+  assert.throws(() => loadConfigFile(bad), /root must be an object/);
 });
 
 test('四级优先级：默认值 < 配置文件 < 环境变量 < 命令行', () => {
@@ -138,7 +138,7 @@ test('pathRewrite 支持 from/to 别名，非法正则启动即报错', () => {
         env: {},
         flags: { request: { pathRewrite: [{ pattern: '([', replacement: '' }] } },
       }),
-    /正则不合法/,
+    /Invalid regular expression in pathRewrite/,
   );
 });
 
@@ -172,7 +172,7 @@ test('configFromEnv 按字段类型做强制转换', () => {
 
 test('configFromEnv 忽略空值，数字字段收到非数字时报错', () => {
   assert.deepEqual(configFromEnv({ PROXY_PORT: '', UPSTREAM_HOST: undefined }), {});
-  assert.throws(() => configFromEnv({ PROXY_PORT: 'abc' }), /需要是数字/);
+  assert.throws(() => configFromEnv({ PROXY_PORT: 'abc' }), /must be a number/);
 });
 
 test('resolveUpstream 补全默认端口并组装 Host 头', () => {

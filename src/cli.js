@@ -4,57 +4,36 @@ import path from 'node:path';
 import { DEFAULT_CONFIG, buildConfig, parseUpstream } from './config.js';
 import { NAME, VERSION } from './index.js';
 import { Logger } from './logger.js';
+import { MESSAGES, getLang, normalizeLang, setLang, t } from './messages.js';
 import { createProxyServer } from './proxy.js';
 
-export const HELP = `
-${NAME} v${VERSION}
-可自定义参数的 LLM 本地反向代理：自动生成/透传会话 ID、注入任意请求头、重写模型别名与请求路径。
+/** 帮助文本用到的默认值快照。 */
+const HELP_DEFAULTS = {
+  port: DEFAULT_CONFIG.listen.port,
+  host: DEFAULT_CONFIG.listen.host,
+  timeoutMs: DEFAULT_CONFIG.request.timeoutMs,
+  maxBodyBytes: DEFAULT_CONFIG.request.maxBodyBytes,
+};
 
-用法
-  ${NAME} [选项]
+/** 生成帮助文本；默认语言为英文，`--lang zh` 时给中文。 */
+export function helpText(lang = getLang()) {
+  const previous = getLang();
+  setLang(lang);
+  const text = t('cli.help', { name: NAME, version: VERSION, defaults: HELP_DEFAULTS });
+  setLang(previous);
+  return text;
+}
 
-常用选项
-  -c, --config <file>          读取 JSON 配置文件（支持 // 与 /* */ 注释、尾随逗号）
-  -p, --port <number>          监听端口（默认 ${DEFAULT_CONFIG.listen.port}）
-      --host <addr>            监听地址（默认 ${DEFAULT_CONFIG.listen.host}）
-  -u, --upstream <url>         上游地址，如 https://opencode.ai 或 host:port
-      --base-path <path>       转发路径统一前缀，如 /zen/go/v1
-      --path-rewrite <a=>b>    路径重写（正则 => 替换），可重复
-      --inject <name=value>    追加/覆盖注入的请求头，可重复。值支持模板，如 {{session.id}}
-      --body-inject <k=v>      往请求体注入字段（支持点路径与模板），可重复
-      --model-prefix <prefix>  需要剥离的模型名前缀，可重复（默认 proxy-）
-      --model-map <a=b>        模型名精确映射，可重复（优先于前缀剥离）
-      --session-header <name>  追加"从哪个请求头读客户端会话"，可重复
-      --session-field <path>   追加"从哪个请求体字段读客户端会话"，可重复
-      --session-id-format <f>  会话 ID 格式：hex26 | hex | uuid | base36 | short
-      --request-id-format <t>  请求号模板，如 "msg_{{session.count}}"
-      --no-session             完全关闭会话 ID 注入
-      --no-stream              关闭流式透传（整体缓冲后返回）
-      --timeout <ms>           上游请求超时（默认 ${DEFAULT_CONFIG.request.timeoutMs}）
-      --max-body <bytes>       请求体上限（默认 ${DEFAULT_CONFIG.request.maxBodyBytes}）
-      --log-level <level>      日志级别：silent | error | warn | info | debug
-      --log-file <file>        额外写入日志文件（自动按大小轮转）
+/** 向后兼容的英文帮助常量（历史导出名）。 */
+export const HELP = helpText('en');
 
-本地工具
-      --print-config           打印合并后的最终配置并退出
-      --init [file]            生成一份带注释的示例配置（默认 ./${NAME}.config.json）
-  -h, --help                   显示帮助
-  -v, --version                显示版本
+/** 示例配置模板；默认语言为英文，`--init --lang zh` 时给中文。 */
+export function sampleConfig(lang = getLang()) {
+  return MESSAGES[normalizeLang(lang) || 'en']?.['cli.sampleConfig']() ?? MESSAGES.en['cli.sampleConfig']();
+}
 
-示例
-  # OpenCode Go：客户端 Base URL 填 http://127.0.0.1:9355/zen/go/v1
-  ${NAME}
-
-  # 把客户端的 /v1/... 映射到上游的 /zen/go/v1/...
-  ${NAME} -u https://opencode.ai --path-rewrite "^/v1/=>/zen/go/v1/"
-
-  # 任意自建上游：换地址 + 换注入头
-  ${NAME} -u https://api.example.com --inject "x-api-version=2026-01-01" \\
-          --inject "x-session-id={{session.id}}" --model-prefix ""
-
-  # 生成配置文件后按需修改
-  ${NAME} --init
-`;
+/** 向后兼容的英文示例配置常量（历史导出名）。 */
+export const SAMPLE_CONFIG = sampleConfig('en');
 
 const VALUE_FLAGS = new Set([
   '-c',
@@ -76,9 +55,31 @@ const VALUE_FLAGS = new Set([
   '--request-id-format',
   '--timeout',
   '--max-body',
+  '-l',
+  '--lang',
   '--log-level',
   '--log-file',
 ]);
+
+/**
+ * 预扫描命令行里的 --lang / -l（以及 PROXY_LANG 环境变量）。
+ *
+ * 存在的理由：parseArgv 自身可能抛错（比如拼错的参数名），而那时还没走到
+ * 「合并配置」那一步。先扫一遍拿到语言，报错才会用用户想要的语言。
+ */
+function scanLang(argv, env = {}) {
+  let found = null;
+  for (let i = 0; i < argv.length; i += 1) {
+    const raw = argv[i];
+    if (raw === '-l' || raw === '--lang') {
+      if (argv[i + 1] !== undefined) found = argv[i + 1];
+    } else if (raw.startsWith('--lang=') || raw.startsWith('-l=')) {
+      found = raw.slice(raw.indexOf('=') + 1);
+    }
+  }
+  if (found === null) found = env.PROXY_LANG ?? null;
+  return normalizeLang(found);
+}
 
 function setByPath(target, keyPath, value) {
   let cursor = target;
@@ -101,6 +102,10 @@ function splitOnce(text, separator) {
  * 纯函数，不触碰进程状态，便于单元测试。
  */
 export function parseArgv(argv) {
+  // argv 里明确写了 --lang 时，连本函数自己的报错也用该语言
+  const detected = scanLang(argv);
+  if (detected) setLang(detected);
+
   const flags = {};
   const push = (keyPath, value) => {
     const current = keyPath.reduce((acc, key) => acc?.[key], flags);
@@ -116,13 +121,13 @@ export function parseArgv(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const raw = argv[i];
     if (!raw.startsWith('-')) {
-      throw new Error(`无法识别的参数: ${raw}`);
+      throw new Error(t('cli.err.unknownArg', { raw }));
     }
     const [flag, inlineValue] = splitOnce(raw, '=');
     const takeValue = () => {
       if (inlineValue !== undefined) return inlineValue;
       const next = argv[i + 1];
-      if (next === undefined || next.startsWith('-')) throw new Error(`参数 ${flag} 缺少取值`);
+      if (next === undefined || next.startsWith('-')) throw new Error(t('cli.err.missingValue', { flag }));
       i += 1;
       return next;
     };
@@ -165,21 +170,28 @@ export function parseArgv(argv) {
       case '--base-path':
         setByPath(flags, ['upstream', 'basePath'], takeValue());
         break;
+      case '-l':
+      case '--lang': {
+        const value = takeValue();
+        // 归一化已知写法（zh-CN → zh）；识别不了的先原样留下，由配置校验统一报错
+        setByPath(flags, ['lang'], normalizeLang(value) || value);
+        break;
+      }
       case '--path-rewrite': {
         const [pattern, replacement] = splitOnce(takeValue(), '=>');
-        if (replacement === undefined) throw new Error('--path-rewrite 需要 "正则=>替换" 形式');
+        if (replacement === undefined) throw new Error(t('cli.err.pathRewriteFormat'));
         push(['request', 'pathRewrite'], { pattern, replacement });
         break;
       }
       case '--inject': {
         const [name, value] = splitOnce(takeValue(), '=');
-        if (value === undefined) throw new Error('--inject 需要 name=value 形式');
+        if (value === undefined) throw new Error(t('cli.err.injectFormat'));
         setByPath(flags, ['inject', 'headers', name], value);
         break;
       }
       case '--body-inject': {
         const [key, value] = splitOnce(takeValue(), '=');
-        if (value === undefined) throw new Error('--body-inject 需要 key=value 形式');
+        if (value === undefined) throw new Error(t('cli.err.bodyInjectFormat'));
         setByPath(flags, ['inject', 'body', key], value);
         break;
       }
@@ -188,7 +200,7 @@ export function parseArgv(argv) {
         break;
       case '--model-map': {
         const [alias, real] = splitOnce(takeValue(), '=');
-        if (real === undefined) throw new Error('--model-map 需要 alias=real 形式');
+        if (real === undefined) throw new Error(t('cli.err.modelMapFormat'));
         setByPath(flags, ['model', 'map', alias], real);
         break;
       }
@@ -223,126 +235,60 @@ export function parseArgv(argv) {
         setByPath(flags, ['log', 'file'], takeValue());
         break;
       default:
-        if (VALUE_FLAGS.has(flag)) throw new Error(`参数 ${flag} 尚未实现`);
-        throw new Error(`无法识别的参数: ${flag}（用 --help 查看用法）`);
+        if (VALUE_FLAGS.has(flag)) throw new Error(t('cli.err.notImplemented', { flag }));
+        throw new Error(t('cli.err.unknownFlag', { flag }));
     }
   }
 
   return { flags, configFile, printConfig, initRequested, initFile };
 }
 
-export const SAMPLE_CONFIG = `{
-  // 说明：本文件支持 // 与 /* */ 注释以及尾随逗号。
-  // 所有字段都可以省略，省略即采用默认值。
-
-  "listen": { "host": "127.0.0.1", "port": 9355 },
-
-  // 上游。host 也可以直接写完整 URL，例如 "https://opencode.ai"
-  "upstream": {
-    "protocol": "https",
-    "host": "opencode.ai",
-    "port": null,
-    "basePath": ""            // 转发时统一加的前缀，如 "/zen/go/v1"
-  },
-
-  "request": {
-    "bufferBody": true,        // 需要改写请求体时必须为 true
-    "maxBodyBytes": 67108864,
-    "timeoutMs": 600000,
-    // 把客户端请求的 /v1/... 映射到上游的 /zen/go/v1/...
-    "pathRewrite": [
-      // { "pattern": "^/v1/", "replacement": "/zen/go/v1/" }
-    ],
-    "dropHeaders": [],
-    "forwardClientSessionHeaders": true
-  },
-
-  "session": {
-    "enabled": true,
-    // 从哪里读取客户端自带的会话标识（优先级从高到低）
-    "headerNames": ["x-opencode-session", "x-session-id", "x-conversation-id", "x-thread-id"],
-    "bodyFields": ["session_id", "sessionId", "conversation_id", "conversationId"],
-    // 客户端没带会话标识时，用 system + 首条 user 消息的内容指纹兜底
-    "contentHash": {
-      "enabled": true,
-      "fields": ["system", "system_instruction", "instructions"],
-      "includeFirstUserMessage": true
-    },
-    "idPrefix": "ses_",
-    "idFormat": "hex26",                     // hex26 | hex | uuid | base36 | short
-    "requestIdFormat": "msg_{{session.count}}",
-    "maxSessions": 512,
-    "ttlSeconds": 0                          // 0 表示不过期
-  },
-
-  "inject": {
-    // 值支持模板：{{session.id}} {{session.requestId}} {{session.count}}
-    //             {{uuid}} {{random}} {{randomHex:16}} {{timestamp}} {{env.HOME}}
-    "headers": {
-      "x-opencode-session": "{{session.id}}",
-      "x-opencode-request": "{{session.requestId}}",
-      "x-opencode-client": "cli",
-      "x-opencode-project": "global"
-    },
-    "body": {},                  // 追加到请求体的字段，如 { "temperature": 0.2 }
-    "removeBodyFields": [],
-    "overwrite": true            // false 表示不覆盖客户端已有的同名头
-  },
-
-  "model": {
-    "enabled": true,
-    "field": "model",
-    "stripPrefixes": ["proxy-"],  // 客户端为避开内置通道而加的前缀，这里剥掉
-    "map": {},                    // 精确映射，优先于前缀剥离：{ "my-glm": "glm-5.3-flash" }
-    "default": null
-  },
-
-  "userAgent": "opencode/1.18.29 cli",
-  "userAgentMode": "replace-generic",  // keep | replace | replace-generic
-
-  "response": { "stream": true, "timeoutMs": 600000 },
-
-  "log": { "level": "info", "file": null, "maxBytes": 5242880, "backups": 2 }
-}
-`;
 
 export function printBanner(logger, config, proxy, url) {
   const injected = Object.keys(config.inject.headers || {});
-  logger.info(`${NAME} v${VERSION} 已启动`);
-  logger.info(`  监听地址    ${url}`);
-  logger.info(`  上游        ${proxy.upstream.protocol}://${proxy.upstream.hostHeader}${proxy.upstream.basePath}`);
-  logger.info(`  注入请求头  ${injected.length ? injected.join(', ') : '(无)'}`);
+  logger.info(t('cli.banner.started', { name: NAME, version: VERSION }));
+  logger.info(t('cli.banner.listen', { url }));
+  logger.info(t('cli.banner.upstream', { url: `${proxy.upstream.protocol}://${proxy.upstream.hostHeader}${proxy.upstream.basePath}` }));
+  logger.info(t('cli.banner.injectHeaders', { list: injected.length ? injected.join(', ') : t('cli.banner.none') }));
   logger.info(
-    `  模型别名    ${
-      config.model.stripPrefixes.length ? `剥离前缀 ${config.model.stripPrefixes.join(', ')}` : '未启用前缀剥离'
-    }${Object.keys(config.model.map || {}).length ? ` | 映射 ${JSON.stringify(config.model.map)}` : ''}`,
+    t('cli.banner.modelAliases', {
+      prefix: config.model.stripPrefixes.length
+        ? t('cli.banner.stripPrefixes', { list: config.model.stripPrefixes.join(', ') })
+        : t('cli.banner.stripDisabled'),
+      map: Object.keys(config.model.map || {}).length
+        ? t('cli.banner.mapSuffix', { json: JSON.stringify(config.model.map) })
+        : '',
+    }),
   );
   logger.info(
-    `  会话 ID     ${
-      config.session.enabled
-        ? `${config.session.idFormat}，请求号 ${config.session.requestIdFormat}`
-        : '已关闭'
-    }`,
+    t('cli.banner.session', {
+      value: config.session.enabled
+        ? t('cli.banner.sessionValue', {
+            format: config.session.idFormat,
+            requestIdFormat: config.session.requestIdFormat,
+          })
+        : t('cli.banner.sessionOff'),
+    }),
   );
   logger.info(
-    `  路径重写    ${
-      config.request.pathRewrite.length
+    t('cli.banner.pathRewrite', {
+      value: config.request.pathRewrite.length
         ? config.request.pathRewrite.map((rule) => `${rule.pattern} => ${rule.replacement}`).join(' | ')
-        : '(无，原样透传)'
-    }`,
+        : t('cli.banner.pathRewritePassthrough'),
+    }),
   );
-  logger.info('  ── 客户端 Base URL 怎么填 ──');
+  logger.info(t('cli.banner.baseUrlHeading'));
   if (config.upstream.basePath) {
-    logger.info(`      ${url}     （自动补上 ${config.upstream.basePath}）`);
-    logger.info(`      其他路径   ${url}/原路径`);
+    logger.info(t('cli.banner.baseUrlPrefixed', { url, basePath: config.upstream.basePath }));
+    logger.info(t('cli.banner.baseUrlOtherPath', { url }));
   } else if (config.request.pathRewrite.length) {
-    logger.info(`      ${url}/v1   （按上面的重写规则转到上游）`);
+    logger.info(t('cli.banner.baseUrlRewritten', { url }));
   } else {
-    logger.info(`      ${url}/zen/go/v1   或按上游路径原样拼接`);
+    logger.info(t('cli.banner.baseUrlRaw', { url }));
   }
-  logger.info(`  状态端点    ${url}/__llm_session_proxy__/status`);
-  if (config.__configPath) logger.info(`  配置文件    ${config.__configPath}`);
-  if (config.log.file) logger.info(`  日志文件    ${path.resolve(config.log.file)}`);
+  logger.info(t('cli.banner.statusEndpoint', { url }));
+  if (config.__configPath) logger.info(t('cli.banner.configFile', { path: config.__configPath }));
+  if (config.log.file) logger.info(t('cli.banner.logFile', { path: path.resolve(config.log.file) }));
 }
 
 /**
@@ -365,7 +311,7 @@ export function installProcessGuards(logger) {
     recent.push(now);
 
     const detail = error?.stack || error?.message || String(error);
-    logger.error(`[${kind}] 未捕获的错误（进程继续运行）: ${detail}`);
+    logger.error(t('cli.guard.uncaught', { kind, detail }));
     try {
       // logger 的文件写入可能因磁盘/权限静默降级，stderr 是最后一道线索
       process.stderr.write(`${kind}: ${detail}\n`);
@@ -374,7 +320,7 @@ export function installProcessGuards(logger) {
     }
 
     if (recent.length > LIMIT) {
-      logger.error(`[${kind}] ${WINDOW_MS / 1000} 秒内已发生 ${recent.length} 次，判定为持续故障，主动退出`);
+      logger.error(t('cli.guard.tooMany', { kind, seconds: WINDOW_MS / 1000, count: recent.length }));
       process.exit(1);
     }
   };
@@ -390,6 +336,10 @@ export function installProcessGuards(logger) {
  * 错误通过 process.exitCode 表达，避免在测试中强杀进程。
  */
 export async function runCli(argv = process.argv.slice(2)) {
+  // 先按命令行/环境变量定下语言，这样连 parseArgv 的报错也是用户想要的语言
+  const detected = scanLang(argv, process.env);
+  if (detected) setLang(detected);
+
   let parsed;
   try {
     parsed = parseArgv(argv);
@@ -400,7 +350,7 @@ export async function runCli(argv = process.argv.slice(2)) {
   }
 
   if (parsed.help) {
-    process.stdout.write(`${HELP.trim()}\n`);
+    process.stdout.write(`${helpText().trim()}\n`);
     return;
   }
   if (parsed.version) {
@@ -410,17 +360,18 @@ export async function runCli(argv = process.argv.slice(2)) {
   if (parsed.initRequested) {
     const target = path.resolve(parsed.initFile || `${NAME}.config.json`);
     if (fs.existsSync(target)) {
-      process.stderr.write(`文件已存在，未覆盖: ${target}\n`);
+      process.stderr.write(`${t('cli.init.exists', { target })}\n`);
       process.exitCode = 1;
       return;
     }
-    fs.writeFileSync(target, SAMPLE_CONFIG, 'utf8');
-    process.stdout.write(`已生成示例配置: ${target}\n按需修改后用 ${NAME} --config "${target}" 启动。\n`);
+    fs.writeFileSync(target, sampleConfig(), 'utf8');
+    process.stdout.write(t('cli.init.created', { target, name: NAME }));
     return;
   }
 
   let config;
   try {
+    // buildConfig 内部会按合并后的 lang 再调一次 setLang，配置文件里的语言同样生效
     config = buildConfig({ file: parsed.configFile, flags: parsed.flags });
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
@@ -443,9 +394,11 @@ export async function runCli(argv = process.argv.slice(2)) {
   try {
     address = await proxy.listen();
   } catch (error) {
-    logger.error(`启动失败: ${error.message}`);
+    logger.error(t('cli.startFailed', { message: error.message }));
     if (error.code === 'EADDRINUSE') {
-      logger.error(`端口 ${config.listen.port} 已被占用，换一个：${NAME} --port ${config.listen.port + 1}`);
+      logger.error(
+        t('cli.portInUse', { port: config.listen.port, name: NAME, nextPort: config.listen.port + 1 }),
+      );
     }
     process.exitCode = 1;
     return;
@@ -455,9 +408,9 @@ export async function runCli(argv = process.argv.slice(2)) {
   printBanner(logger, config, proxy, `http://${host}:${address.port}`);
 
   const shutdown = async (signal) => {
-    logger.info(`收到 ${signal}，正在关闭…`);
+    logger.info(t('cli.shutdown.signal', { signal }));
     await proxy.close();
-    logger.info('已停止');
+    logger.info(t('cli.shutdown.done'));
     logger.close();
     process.exit(0);
   };

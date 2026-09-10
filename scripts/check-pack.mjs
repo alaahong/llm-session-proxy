@@ -10,7 +10,9 @@ const errors = [];
 const REQUIRED_FILES = [
   'package.json',
   'README.md',
-  'README.en.md',
+  'README.zh-CN.md',
+  'ROADMAP.md',
+  'ROADMAP.zh-CN.md',
   'LICENSE',
   'bin/llm-session-proxy.js',
   'src/index.js',
@@ -20,6 +22,7 @@ const REQUIRED_FILES = [
   'src/template.js',
   'src/inject.js',
   'src/logger.js',
+  'src/messages.js',
   'src/cli.js',
   'examples/opencode-go.json',
   'examples/generic-openai.json',
@@ -53,7 +56,7 @@ for (const [name, target] of Object.entries(pkg.bin || {})) {
 // 确认 files 白名单覆盖了 bin 与 src，否则发布出去的包会缺文件
 const covered = (relative) =>
   (pkg.files || []).some((entry) => relative === entry || relative.startsWith(entry.replace(/\/$/, '') + '/'));
-for (const relative of ['bin/llm-session-proxy.js', 'src/index.js', 'README.md', 'README.en.md', 'LICENSE']) {
+for (const relative of ['bin/llm-session-proxy.js', 'src/index.js', 'README.md', 'README.zh-CN.md', 'LICENSE']) {
   if (fs.existsSync(path.join(root, relative)) && !covered(relative)) {
     errors.push(`files 白名单没有覆盖: ${relative}`);
   }

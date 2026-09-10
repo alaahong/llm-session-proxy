@@ -4,6 +4,7 @@ import { resolveUpstream, shouldReplaceUserAgent } from './config.js';
 import { applyBodyInject, buildInjectHeaders, rewriteModel, rewritePath } from './inject.js';
 import { resolveSession, SessionStore } from './session.js';
 import { createContext } from './template.js';
+import { t } from './messages.js';
 
 /** 逐跳头不能转发给上游，也不能回给客户端。 */
 const HOP_BY_HOP = new Set([
@@ -74,7 +75,7 @@ function readBody(req, maxBytes) {
       if (settled) return;
       size += chunk.length;
       if (size > maxBytes) {
-        const error = new Error(`请求体超过上限 ${maxBytes} 字节`);
+        const error = new Error(t('proxy.err.bodyTooLarge', { maxBytes }));
         error.code = 'E_TOO_LARGE';
         fail(error);
         req.destroy();
@@ -88,7 +89,7 @@ function readBody(req, maxBytes) {
       resolve(Buffer.concat(chunks));
     });
     req.on('error', fail);
-    req.on('aborted', () => fail(Object.assign(new Error('客户端在请求体读完前断开'), { code: 'E_ABORTED' })));
+    req.on('aborted', () => fail(Object.assign(new Error(t('proxy.err.clientAbortedBody')), { code: 'E_ABORTED' })));
   });
 }
 
@@ -143,7 +144,7 @@ export function createProxyServer({ config, logger }) {
       });
       res.end(body);
     } catch (error) {
-      log.debug(`[client] 回写响应失败（客户端可能已断开）: ${error.message}`);
+      log.debug(t('proxy.log.respondFailed', { message: error.message }));
       try {
         res.destroy();
       } catch {
@@ -156,7 +157,7 @@ export function createProxyServer({ config, logger }) {
   function writeResponseHead(res, status, statusMessage, headers) {
     const safeMessage = sanitizeStatusMessage(statusMessage);
     if (safeMessage === null && statusMessage) {
-      log.debug(`[res] 上游 reason phrase 含非法字符，已改用默认短语: ${JSON.stringify(statusMessage)}`);
+      log.debug(t('proxy.log.badReasonPhrase', { value: JSON.stringify(statusMessage) }));
     }
     try {
       if (safeMessage) res.writeHead(status, safeMessage, headers);
@@ -164,8 +165,8 @@ export function createProxyServer({ config, logger }) {
       return true;
     } catch (error) {
       stats.errors += 1;
-      log.warn(`[res] 写响应头失败，丢弃可疑头后重试: ${error.message}`);
-      const fallback = sanitizeResponseHeaders(headers, (key) => log.warn(`[res] 丢弃非法响应头: ${key}`));
+      log.warn(t('proxy.log.writeHeadRetry', { message: error.message }));
+      const fallback = sanitizeResponseHeaders(headers, (key) => log.warn(t('proxy.log.dropIllegalHeader', { key })));
       try {
         if (res.headersSent) {
           res.end();
@@ -177,7 +178,7 @@ export function createProxyServer({ config, logger }) {
         return true;
       } catch (retryError) {
         stats.errors += 1;
-        log.error(`[res] 响应头仍无法写出，放弃本次响应: ${retryError.message}`);
+        log.error(t('proxy.log.writeHeadGaveUp', { message: retryError.message }));
         try {
           res.destroy();
         } catch {
@@ -229,13 +230,16 @@ export function createProxyServer({ config, logger }) {
       stats.errors += 1;
       stats.handledErrors += 1;
       log.error(
-        `[request-failed] ${req.method} ${req.url} 处理请求时抛错（已拦截，进程继续）: ` +
-          `${error?.stack || error?.message || error}`,
+        t('proxy.log.requestFailed', {
+          method: req.method,
+          url: req.url,
+          detail: error?.stack || error?.message || error,
+        }),
       );
       respondJson(res, 500, {
         error: {
           type: 'proxy_internal_error',
-          message: `代理处理请求时出错: ${error?.message || error}`,
+          message: t('proxy.err.internal', { message: error?.message || error }),
         },
       });
     }
@@ -245,8 +249,8 @@ export function createProxyServer({ config, logger }) {
     const startedAt = Date.now();
 
     // 先挂错误监听：客户端可能在任何时刻断开，晚挂一步就是一个未捕获的 error 事件
-    res.on('error', (error) => log.debug('[client] 响应流出错（客户端可能已断开）:', error.message));
-    req.on('error', (error) => log.debug('[client] 请求流出错:', error.message));
+    res.on('error', (error) => log.debug(t('proxy.log.resStreamError', { message: error.message })));
+    req.on('error', (error) => log.debug(t('proxy.log.reqStreamError', { message: error.message })));
 
     let url = null;
     try {
@@ -255,11 +259,11 @@ export function createProxyServer({ config, logger }) {
       // Host 头非法时 new URL 会抛 ERR_INVALID_URL，而它抛在 http 服务器的回调里
       stats.errors += 1;
       stats.handledErrors += 1;
-      log.warn(`[req] 无法解析请求目标 ${JSON.stringify(req.url)}（Host=${JSON.stringify(req.headers.host)}）`);
+      log.warn(t('proxy.log.badRequestTarget', { url: JSON.stringify(req.url), host: JSON.stringify(req.headers.host) }));
       respondJson(res, 400, {
         error: {
           type: 'bad_request_target',
-          message: `无法解析请求目标: ${req.url}（Host 头为 ${JSON.stringify(req.headers.host)}）`,
+          message: t('proxy.err.badRequestTarget', { url: req.url, host: JSON.stringify(req.headers.host) }),
         },
       });
       return;
@@ -267,7 +271,7 @@ export function createProxyServer({ config, logger }) {
 
     if (url.pathname.startsWith(LOCAL_PREFIX)) {
       if (handleLocal(req, res, url)) return;
-      respondJson(res, 404, { error: { message: `未知的本地端点: ${url.pathname}` } });
+      respondJson(res, 404, { error: { message: t('proxy.err.unknownEndpoint', { pathname: url.pathname }) } });
       return;
     }
 
@@ -288,7 +292,7 @@ export function createProxyServer({ config, logger }) {
         if (error) {
           stats.errors += 1;
           const tooLarge = error.code === 'E_TOO_LARGE';
-          log.warn(`[req] ${req.method} ${req.url} 读取请求体失败: ${error.message}`);
+          log.warn(t('proxy.log.readBodyFailed', { method: req.method, url: req.url, message: error.message }));
           respondJson(res, tooLarge ? 413 : 400, {
             error: {
               type: tooLarge ? 'request_too_large' : 'request_body_incomplete',
@@ -405,11 +409,11 @@ export function createProxyServer({ config, logger }) {
         } catch (error) {
           // 请求头含非法字符、目标路径未转义等情况会让 transport.request 同步抛错
           stats.errors += 1;
-          log.error(`[proxy-error] 组装上游请求失败 ${req.method} ${req.url} -> ${targetPath}: ${error.message}`);
+          log.error(t('proxy.log.buildUpstreamFailed', { method: req.method, url: req.url, targetPath, message: error.message }));
           respondJson(res, 502, {
             error: {
               type: 'proxy_request_build_error',
-              message: `无法构造上游请求: ${error.message}`,
+              message: t('proxy.err.buildUpstream', { message: error.message }),
               upstream: `${upstream.protocol}://${upstream.hostHeader}${targetPath}`,
             },
           });
@@ -419,17 +423,25 @@ export function createProxyServer({ config, logger }) {
         stats.bytesIn += outBuffer ? outBuffer.length : 0;
 
         proxyReq.setTimeout(config.request.timeoutMs, () => {
-          proxyReq.destroy(new Error(`上游 ${config.request.timeoutMs}ms 未响应，已超时`));
+          proxyReq.destroy(new Error(t('proxy.err.upstreamTimeout', { timeoutMs: config.request.timeoutMs })));
         });
 
         proxyReq.on('error', (proxyError) => {
           stats.errors += 1;
-          log.error(`[proxy-error] ${req.method} ${req.url} -> ${targetPath}: ${proxyError.message}`);
+          log.error(t('proxy.log.upstreamFailed', {
+            method: req.method,
+            url: req.url,
+            targetPath,
+            message: proxyError.message,
+          }));
           if (!res.headersSent) {
             respondJson(res, 502, {
               error: {
                 type: 'proxy_upstream_error',
-                message: `无法连接上游 ${upstream.protocol}://${upstream.hostHeader}: ${proxyError.message}`,
+                message: t('proxy.err.upstreamUnreachable', {
+                origin: `${upstream.protocol}://${upstream.hostHeader}`,
+                message: proxyError.message,
+              }),
                 upstream: `${upstream.protocol}://${upstream.hostHeader}${targetPath}`,
               },
             });
@@ -442,14 +454,14 @@ export function createProxyServer({ config, logger }) {
           }
         });
 
-        req.on('aborted', () => proxyReq.destroy(new Error('客户端中断了请求')));
+        req.on('aborted', () => proxyReq.destroy(new Error(t('proxy.err.clientAborted'))));
 
         try {
           if (outBuffer && outBuffer.length) proxyReq.write(outBuffer);
           proxyReq.end();
         } catch (error) {
           stats.errors += 1;
-          log.error(`[proxy-error] 写入上游请求失败: ${error.message}`);
+          log.error(t('proxy.log.writeUpstreamFailed', { message: error.message }));
           proxyReq.destroy(error);
         }
       })
@@ -457,9 +469,15 @@ export function createProxyServer({ config, logger }) {
         // 兜住回调里任何没被内层 try 覆盖的抛出，避免变成 unhandledRejection
         stats.errors += 1;
         stats.handledErrors += 1;
-        log.error(`[request-failed] ${req.method} ${req.url} 处理请求时抛错（已拦截，进程继续）: ${error?.stack || error}`);
+        log.error(
+          t('proxy.log.requestFailed', {
+            method: req.method,
+            url: req.url,
+            detail: error?.stack || error,
+          }),
+        );
         respondJson(res, 500, {
-          error: { type: 'proxy_internal_error', message: `代理处理请求时出错: ${error?.message || error}` },
+          error: { type: 'proxy_internal_error', message: t('proxy.err.internal', { message: error?.message || error }) },
         });
       });
   }
@@ -477,7 +495,7 @@ export function createProxyServer({ config, logger }) {
     if (session.requestId) rawHeaders['x-llm-session-proxy-request'] = session.requestId;
 
     const resHeaders = sanitizeResponseHeaders(rawHeaders, (key) =>
-      log.warn(`[res] 上游响应头含非法字符，已丢弃: ${key}`),
+      log.warn(t('proxy.log.upstreamHeaderDropped', { key })),
     );
 
     let captured = Buffer.alloc(0);
@@ -491,7 +509,7 @@ export function createProxyServer({ config, logger }) {
     };
 
     proxyRes.on('error', (streamError) => {
-      log.warn(`[res] 上游响应流出错: ${streamError.message}`);
+      log.warn(t('proxy.log.upstreamStreamError', { message: streamError.message }));
       try {
         if (res.writableEnded) return;
         if (!res.headersSent) {
@@ -514,7 +532,7 @@ export function createProxyServer({ config, logger }) {
       try {
         proxyRes.pipe(res);
       } catch (error) {
-        log.warn(`[res] 管道连接失败: ${error.message}`);
+        log.warn(t('proxy.log.pipeFailed', { message: error.message }));
         proxyRes.destroy();
         res.destroy();
       }
@@ -536,7 +554,7 @@ export function createProxyServer({ config, logger }) {
           res.end(payload);
         } catch (error) {
           stats.errors += 1;
-          log.error(`[res] 回写缓冲响应失败: ${error.message}`);
+          log.error(t('proxy.log.bufferWriteFailed', { message: error.message }));
           try {
             res.destroy();
           } catch {
@@ -572,7 +590,7 @@ export function createProxyServer({ config, logger }) {
   // 客户端发了畸形请求（非法请求行/头）时 Node 会发 clientError。
   // 没有监听者时它会用自己的默认处理，这里显式接管并保证 socket 一定被关掉。
   server.on('clientError', (error, socket) => {
-    log.debug(`[client] 解析请求失败: ${error?.code || error?.message}`);
+    log.debug(t('proxy.log.clientParseFailed', { code: error?.code || error?.message }));
     // 复刻 Node 默认处理的语义：头太大回 431，其余畸形请求回 400
     const overflow = error?.code === 'HPE_HEADER_OVERFLOW';
     const status = overflow
@@ -610,7 +628,7 @@ export function createProxyServer({ config, logger }) {
           // 若无人接管，一样会直接终止进程
           server.on('error', (error) => {
             stats.errors += 1;
-            log.error(`[server] 服务器错误（进程继续）: ${error?.stack || error?.message || error}`);
+            log.error(t('proxy.log.serverError', { detail: error?.stack || error?.message || error }));
           });
           resolve(server.address());
         });

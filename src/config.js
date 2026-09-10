@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { SUPPORTED_LANGS, normalizeLang, setLang, t } from './messages.js';
+
 /**
  * 默认配置。
  *
@@ -80,6 +82,8 @@ export const DEFAULT_CONFIG = {
   // keep：完全保留客户端 UA；replace：始终用上面的 UA；
   // replace-generic：仅当客户端 UA 缺失或像个通用 HTTP 库时才替换（默认）
   userAgentMode: 'replace-generic',
+  // 控制台与日志文案语言。默认英文，需要中文显式切换（--lang zh / PROXY_LANG=zh）。
+  lang: 'en',
   response: {
     stream: true,
     timeoutMs: 600000,
@@ -105,6 +109,8 @@ const ENV_MAP = {
   OPENCODE_UA: ['userAgent'],
   USER_AGENT: ['userAgent'],
   USER_AGENT_MODE: ['userAgentMode'],
+  // 刻意不读 POSIX 的 LANG：那是系统区域设置，不代表本工具的文案语言偏好。
+  PROXY_LANG: ['lang'],
   LOG_FILE: ['log', 'file'],
   LOG_LEVEL: ['log', 'level'],
   SESSION_ID_PREFIX: ['session', 'idPrefix'],
@@ -145,7 +151,7 @@ export function parseJsonLoose(text, source = '<inline>') {
   try {
     return JSON.parse(stripped);
   } catch (error) {
-    throw new Error(`配置文件解析失败（${source}）: ${error.message}`);
+    throw new Error(t('config.parseFailed', { source, message: error.message }));
   }
 }
 
@@ -153,7 +159,7 @@ export function loadConfigFile(filePath) {
   const resolved = path.resolve(filePath);
   const text = fs.readFileSync(resolved, 'utf8');
   const raw = parseJsonLoose(text, resolved);
-  if (!isPlainObject(raw)) throw new Error(`配置文件根节点必须是对象（${resolved}）`);
+  if (!isPlainObject(raw)) throw new Error(t('config.rootNotObject', { path: resolved }));
   return { config: raw, path: resolved };
 }
 
@@ -186,7 +192,7 @@ function coerce(keyPath, raw) {
   const key = keyPath.join('.');
   if (/^(listen\.port|upstream\.port|request\.timeoutMs|request\.maxBodyBytes|session\.maxSessions|session\.ttlSeconds|response\.timeoutMs|log\.maxBytes|log\.backups)$/.test(key)) {
     const num = Number(raw);
-    if (!Number.isFinite(num)) throw new Error(`环境变量 ${key} 需要是数字，收到 "${raw}"`);
+    if (!Number.isFinite(num)) throw new Error(t('config.envNotNumber', { key, raw }));
     return num;
   }
   if (/^(inject\.headers|request\.pathRewrite)$/.test(key)) {
@@ -217,6 +223,10 @@ function normalize(config) {
     next.upstream = deepMerge(next.upstream, parseUpstream(next.upstream.host));
   }
   next.listen.port = Number(next.listen.port);
+  // zh-CN / zh-Hans / en-US 之类的写法先归一化；识别不了的原样保留，由 validate 统一报错
+  if (next.lang !== undefined && next.lang !== null) {
+    next.lang = normalizeLang(next.lang) || next.lang;
+  }
   if (next.upstream.port !== null && next.upstream.port !== undefined) {
     next.upstream.port = Number(next.upstream.port);
   }
@@ -235,7 +245,7 @@ function normalize(config) {
           // eslint-disable-next-line no-new
           new RegExp(pattern);
         } catch (error) {
-          throw new Error(`pathRewrite 里的正则不合法 "${pattern}": ${error.message}`);
+          throw new Error(t('config.badRegex', { pattern, message: error.message }));
         }
         return { pattern, replacement, flags: rule.flags || undefined };
       })
@@ -247,19 +257,22 @@ function normalize(config) {
 function validate(config) {
   const errors = [];
   if (!Number.isInteger(config.listen.port) || config.listen.port < 0 || config.listen.port > 65535) {
-    errors.push(`listen.port 不合法: ${config.listen.port}`);
+    errors.push(t('config.badPort', { port: config.listen.port }));
   }
-  if (!config.upstream?.host) errors.push('upstream.host 不能为空');
+  if (!config.upstream?.host) errors.push(t('config.emptyHost'));
   if (!['http', 'https'].includes(config.upstream?.protocol)) {
-    errors.push(`upstream.protocol 只支持 http / https，收到 ${config.upstream?.protocol}`);
+    errors.push(t('config.badProtocol', { protocol: config.upstream?.protocol }));
   }
   if (config.session?.enabled && !['hex26', 'hex', 'uuid', 'base36', 'short'].includes(config.session.idFormat)) {
-    errors.push(`session.idFormat 不支持: ${config.session.idFormat}`);
+    errors.push(t('config.badIdFormat', { format: config.session.idFormat }));
   }
   if (config.inject?.headers && !isPlainObject(config.inject.headers)) {
-    errors.push('inject.headers 必须是对象（值为模板字符串）');
+    errors.push(t('config.injectNotObject'));
   }
-  if (errors.length) throw new Error(`配置校验失败:\n  - ${errors.join('\n  - ')}`);
+  if (!SUPPORTED_LANGS.includes(config.lang)) {
+    errors.push(t('config.badLang', { lang: config.lang }));
+  }
+  if (errors.length) throw new Error(t('config.validationFailed', { list: errors.join('\n  - ') }));
   return config;
 }
 
@@ -281,6 +294,9 @@ export function buildConfig({ file = null, env = process.env, flags = {} } = {})
   delete fromEnv.__configFile;
   merged = deepMerge(merged, fromEnv);
   merged = deepMerge(merged, flags);
+
+  // 语言在四层合并全部完成、校验之前生效，这样后续的校验报错也是同一个语言。
+  if (typeof merged.lang === 'string') setLang(merged.lang);
 
   const normalized = normalize(merged);
   validate(normalized);
