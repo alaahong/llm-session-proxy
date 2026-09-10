@@ -1,0 +1,12 @@
+# 统一用 LF，避免跨平台换行符把 diff 搅乱
+* text=auto eol=lf
+
+# 可执行脚本必须保留执行位
+bin/* text eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.tgz binary

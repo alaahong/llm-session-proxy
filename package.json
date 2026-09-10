@@ -1,0 +1,59 @@
+{
+  "name": "llm-session-proxy",
+  "version": "0.1.0",
+  "description": "可自定义的 LLM 本地反向代理：自动生成并透传会话 ID、注入任意请求头、重写模型别名与请求路径。零依赖，用于让不支持会话头（如 x-opencode-session）的客户端接上要求该头的上游。",
+  "type": "module",
+  "license": "MIT",
+  "author": "alaahong",
+  "homepage": "https://github.com/alaahong/llm-session-proxy#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/alaahong/llm-session-proxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alaahong/llm-session-proxy/issues"
+  },
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "llm-session-proxy": "./bin/llm-session-proxy.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "examples/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node ./bin/llm-session-proxy.js",
+    "test": "node --test",
+    "prepack": "node ./scripts/check-pack.mjs"
+  },
+  "keywords": [
+    "proxy",
+    "llm",
+    "reverse-proxy",
+    "session-id",
+    "header-injection",
+    "opencode",
+    "opencode-go",
+    "trae",
+    "anthropic",
+    "openai",
+    "codex",
+    "claude-code",
+    "x-opencode-session",
+    "local-proxy",
+    "sse"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

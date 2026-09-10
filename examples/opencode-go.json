@@ -1,0 +1,69 @@
+{
+  // OpenCode Go / OpenCode Zen 的推荐配置。
+  // 客户端（Trae / Codex / 任意 OpenAI 兼容客户端）Base URL 填：
+  //     http://127.0.0.1:9355/zen/go/v1
+  // 模型 ID 填 "proxy-" + 真实模型名，例如 proxy-glm-5.3-flash。
+  //
+  // 为什么要加 proxy- 前缀：Trae 按模型 ID 决定走不走自定义通道，
+  // 与内置预设重名（如 glm-5.3-flash）时流量会被它自己的云通道接走，
+  // 本代理会被绕过。加前缀即可强制走代理，代理会剥掉前缀再发给上游。
+
+  "listen": { "host": "127.0.0.1", "port": 9355 },
+
+  "upstream": {
+    "protocol": "https",
+    "host": "opencode.ai",
+    "port": null,
+    "basePath": ""
+  },
+
+  "request": {
+    "bufferBody": true,
+    "maxBodyBytes": 67108864,
+    "timeoutMs": 600000,
+    // 若客户端只能填 http://127.0.0.1:9355/v1，就打开下面这条：
+    "pathRewrite": [
+      // { "pattern": "^/v1/", "replacement": "/zen/go/v1/" }
+    ],
+    "forwardClientSessionHeaders": true
+  },
+
+  "session": {
+    "enabled": true,
+    "headerNames": ["x-opencode-session", "x-session-id", "x-conversation-id", "x-thread-id"],
+    "bodyFields": ["session_id", "sessionId", "conversation_id", "conversationId"],
+    "contentHash": {
+      "enabled": true,
+      "fields": ["system", "system_instruction", "instructions"],
+      "includeFirstUserMessage": true
+    },
+    "idPrefix": "ses_",
+    "idFormat": "hex26",
+    "requestIdFormat": "msg_{{session.count}}",
+    "maxSessions": 512
+  },
+
+  "inject": {
+    "headers": {
+      "x-opencode-session": "{{session.id}}",
+      "x-opencode-request": "{{session.requestId}}",
+      "x-opencode-client": "cli",
+      "x-opencode-project": "global"
+    },
+    "overwrite": true
+  },
+
+  "model": {
+    "enabled": true,
+    "field": "model",
+    "stripPrefixes": ["proxy-"],
+    "map": {}
+  },
+
+  "userAgent": "opencode/1.18.29 cli",
+  "userAgentMode": "replace-generic",
+
+  "response": { "stream": true },
+
+  "log": { "level": "info", "file": null }
+}

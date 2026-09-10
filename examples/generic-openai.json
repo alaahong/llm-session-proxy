@@ -1,0 +1,76 @@
+{
+  // 通用示例：把任意 OpenAI 兼容上游接进来，注入自定义请求头，
+  // 并把客户端用的短别名映射成真实模型名。
+  //
+  // 客户端 Base URL 填：http://127.0.0.1:8788/v1
+  // （上游本身就是 /v1/... 路径，所以不需要 pathRewrite）
+
+  "listen": { "host": "127.0.0.1", "port": 8788 },
+
+  "upstream": {
+    // 也可以直接写 "https://api.deepseek.com"，下面三项会被自动解析
+    "protocol": "https",
+    "host": "api.deepseek.com",
+    "port": null,
+    "basePath": ""
+  },
+
+  "request": {
+    "bufferBody": true,
+    "timeoutMs": 600000,
+    "pathRewrite": [],
+    // 这些头没必要带给上游
+    "dropHeaders": ["x-stainless-arch", "x-stainless-os", "x-stainless-runtime"],
+    "forwardClientSessionHeaders": true
+  },
+
+  "session": {
+    "enabled": true,
+    // 这个上游没有会话要求，我们自己造一个稳定的会话 ID 给它，便于排障和计费归因
+    "headerNames": ["x-session-id", "x-conversation-id", "x-thread-id"],
+    "bodyFields": ["session_id", "conversation_id"],
+    "contentHash": {
+      "enabled": true,
+      "fields": ["system"],
+      "includeFirstUserMessage": true
+    },
+    "idPrefix": "",
+    "idFormat": "uuid",
+    "requestIdFormat": "{{session.id}}:{{session.count}}",
+    "maxSessions": 1024,
+    "ttlSeconds": 3600
+  },
+
+  "inject": {
+    "headers": {
+      "x-session-id": "{{session.id}}",
+      "x-request-id": "{{session.requestId}}",
+      "x-trace-id": "{{uuid}}",
+      "x-client-version": "2026-01-01",
+      "x-origin-app": "llm-session-proxy"
+    },
+    // 往请求体里补参数，客户端不支持的字段也能在这里统一加上
+    "body": {},
+    // 在上游不接受某些字段时可以删掉，例如关闭客户端自带的流式统计
+    "removeBodyFields": [],
+    "overwrite": true
+  },
+
+  "model": {
+    "enabled": true,
+    "field": "model",
+    "stripPrefixes": [],
+    // 让客户端可以填 "fast" / "smart"，由代理翻译成真实模型名
+    "map": {
+      "fast": "deepseek-chat",
+      "smart": "deepseek-reasoner"
+    }
+  },
+
+  // 保留客户端自己的 UA，不做伪装
+  "userAgentMode": "keep",
+
+  "response": { "stream": true },
+
+  "log": { "level": "info", "file": "./logs/proxy.log" }
+}
