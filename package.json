@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "author": "alaahong",
-  "homepage": "https://github.com/alaahong/llm-session-proxy#readme",
+  "homepage": "https://alaahong.github.io/llm-session-proxy/",
   "repository": {
     "type": "git",
     "url": "git+ssh://git@github.com/alaahong/llm-session-proxy.git"
@@ -19,13 +19,14 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "llm-session-proxy": "./bin/llm-session-proxy.js"
+    "llm-session-proxy": "bin/llm-session-proxy.js"
   },
   "files": [
     "bin/",
     "src/",
     "examples/",
     "README.md",
+    "README.en.md",
     "LICENSE"
   ],
   "engines": {

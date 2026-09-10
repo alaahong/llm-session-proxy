@@ -13,8 +13,8 @@ data/
 # 运行时生成的配置（示例配置在 examples/ 里，受版本管理）
 /llm-session-proxy.config.json
 
-# 本地诊断脚本与临时备份（保留目录本身，内容不入库）
-.workbuddy/tmp/
+# WorkBuddy 工作区数据（工作日志、诊断脚本、临时文件）——整个目录都不纳入版本管理
+.workbuddy/
 
 # 编辑器与系统
 .DS_Store

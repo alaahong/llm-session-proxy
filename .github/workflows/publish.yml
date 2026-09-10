@@ -1,8 +1,14 @@
 name: Publish to npm
 
-# 两种触发方式：
-#   1. 推一个与 package.json 版本一致的 tag（如 v0.1.0）——正式发布
-#   2. 在 Actions 页面手动触发——可选择只做干跑，用来验证流程
+# 触发方式：
+#   1. 推一个与 package.json 版本一致的 tag（如 v0.1.0）—— 正式发布
+#   2. 在 Actions 页面手动触发 —— 可勾干跑，或临时填入 OTP
+#
+# 关于 NPM_TOKEN 的类型（踩过的坑）：
+#   * 推荐 **Automation** 类型：npmjs.com → Access Tokens → Generate New Token
+#     → Classic Token → Automation。这类 token 发布时不需要 OTP，可无人值守。
+#   * 若用的是 Publish 类型（受 2FA 保护），CI 里会报 `EOTP`，
+#     此时可手动触发本 workflow，在 otp 输入框填入 30 秒内的一次性验证码。
 on:
   push:
     tags:
@@ -13,6 +19,11 @@ on:
         description: '只做干跑（npm publish --dry-run），不真正发布'
         type: boolean
         default: false
+      otp:
+        description: '一次性验证码。仅当 NPM_TOKEN 不是 Automation 类型时填写，30 秒内有效'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -30,6 +41,9 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: 规范化 package.json
+        run: npm pkg fix
 
       - name: 运行单元测试
         run: npm test
@@ -58,12 +72,18 @@ jobs:
 
       - name: 发布到 npm
         run: |
+          set -euo pipefail
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             echo "::notice::干跑模式，不会真正发布"
             npm publish --dry-run
-          else
-            npm publish --access public
+            exit 0
           fi
+          args=(--access public)
+          if [ -n "${{ inputs.otp }}" ]; then
+            echo "::notice::使用手动输入的 OTP"
+            args+=("--otp=${{ inputs.otp }}")
+          fi
+          npm publish "${args[@]}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
