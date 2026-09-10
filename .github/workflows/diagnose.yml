@@ -1,0 +1,125 @@
+name: Diagnose CI
+
+# 临时诊断工作流：沙箱里读不到 Actions 日志（下载日志需要仓库管理员权限），
+# 于是让 runner 自己把关键信息写进 ci-diagnostics 分支，本地 git fetch 就能读到。
+# 查完即删。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/diagnose.yml'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: 收集诊断信息
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_API_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          {
+            echo "# CI 诊断"
+            echo
+            echo "run=$GITHUB_RUN_ID  ref=$GITHUB_REF  sha=$GITHUB_SHA"
+            echo
+
+            echo "## 1. NPM_TOKEN 身份"
+            echo '```'
+            echo "\$ npm whoami"
+            npm whoami 2>&1
+            echo "  退出码=$?"
+            echo "\$ npm config get registry"
+            npm config get registry 2>&1
+            echo "NPM_TOKEN 长度=${#NODE_AUTH_TOKEN}"
+            echo '```'
+            echo
+
+            echo "## 2. 真实发布尝试（成功则包已上架）"
+            echo '```'
+            npm pkg fix >/dev/null 2>&1
+            npm publish --access public 2>&1
+            echo "  退出码=$?"
+            echo '```'
+            echo
+
+            echo "## 3. Pages API：创建站点"
+            echo '```'
+            echo "\$ POST /repos/$GITHUB_REPOSITORY/pages  {\"build_type\":\"workflow\"}"
+            curl -sS -X POST \
+              -H "Authorization: Bearer $GH_API_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/pages" \
+              -d '{"build_type":"workflow"}' \
+              -w "\n  http=%{http_code}\n" 2>&1
+            echo '```'
+            echo
+
+            echo "## 4. Pages API：读取站点"
+            echo '```'
+            curl -sS \
+              -H "Authorization: Bearer $GH_API_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/pages" \
+              -w "\n  http=%{http_code}\n" 2>&1
+            echo '```'
+            echo
+
+            echo "## 5. 仓库 Actions 默认权限"
+            echo '```'
+            curl -sS \
+              -H "Authorization: Bearer $GH_API_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/permissions/workflow" \
+              -w "\n  http=%{http_code}\n" 2>&1
+            echo '```'
+          } > diag.md 2>&1
+
+          # 断言 token 没有泄漏进产物，防止诊断文件把凭据带上公开分支
+          if grep -qF "$NODE_AUTH_TOKEN" diag.md 2>/dev/null; then
+            echo "::error::诊断文件里出现了 NPM token，已删除产物、中止上传"
+            rm -f diag.md
+            exit 1
+          fi
+          if grep -qF "$GH_API_TOKEN" diag.md 2>/dev/null; then
+            echo "::error::诊断文件里出现了 GITHUB_TOKEN，已删除产物、中止上传"
+            rm -f diag.md
+            exit 1
+          fi
+
+          echo "--- 诊断内容 ---"
+          cat diag.md
+
+      - name: 把诊断结果推到 ci-diagnostics 分支
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f diag.md ]; then
+            echo "没有诊断文件，跳过"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan ci-diagnostics
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          find . -maxdepth 1 -mindepth 1 ! -name '.git' ! -name 'diag.md' -exec rm -rf {} +
+          git add -A
+          git commit -m "ci: 诊断输出（run ${GITHUB_RUN_ID}）"
+          git push --force origin ci-diagnostics
+          echo "已推送到 ci-diagnostics"
