@@ -19,8 +19,10 @@ const REQUIRED_FILES = [
   'src/template.js',
   'src/inject.js',
   'src/logger.js',
+  'src/cli.js',
   'examples/opencode-go.json',
   'examples/generic-openai.json',
+  'examples/opencode-go-models.json',
 ];
 
 for (const relative of REQUIRED_FILES) {
@@ -33,7 +35,7 @@ for (const field of ['name', 'version', 'description', 'license', 'repository', 
   if (!pkg[field]) errors.push(`package.json 缺少字段: ${field}`);
 }
 if (!/^\d+\.\d+\.\d+/.test(pkg.version || '')) errors.push(`version 不是合法语义化版本: ${pkg.version}`);
-if (pkg.license !== 'MIT') errors.push(`license 期望 MIT，实际 ${pkg.license}`);
+if (!/^[A-Za-z0-9.+-]+$/.test(pkg.license || '')) errors.push(`license 不是合法 SPDX 标识: ${pkg.license}`);
 if (!Array.isArray(pkg.files) || pkg.files.length === 0) errors.push('files 白名单不能为空');
 
 for (const [name, target] of Object.entries(pkg.bin || {})) {

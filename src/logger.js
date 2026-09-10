@@ -17,6 +17,9 @@ function stringify(value) {
 /**
  * 极简日志器：同时写控制台（TTY 带色）与可选文件（按大小轮转）。
  * 不依赖任何第三方库。
+ *
+ * 文件写入刻意采用同步 API：日志量小（每请求两三行），换来的是
+ * "进程退出/轮转时不会丢最后几行"这一确定性——排错时最需要的正是尾部日志。
  */
 export class Logger {
   constructor(options = {}) {
@@ -33,69 +36,49 @@ export class Logger {
     this.maxBytes = maxBytes;
     this.backups = Math.max(0, backups);
     this.file = file ? path.resolve(file) : null;
-    this.stream = null;
     this.written = 0;
 
-    if (this.file) this.#openStream();
+    if (this.file) {
+      try {
+        fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      } catch {
+        /* 目录创建失败时退化为仅控制台输出 */
+      }
+      try {
+        this.written = fs.statSync(this.file).size;
+      } catch {
+        this.written = 0;
+      }
+    }
   }
 
   get filePath() {
     return this.file;
   }
 
-  #openStream() {
-    try {
-      fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    } catch {
-      /* 目录创建失败时退化为仅控制台输出 */
-    }
-    try {
-      this.written = fs.statSync(this.file).size;
-    } catch {
-      this.written = 0;
-    }
-    try {
-      this.stream = fs.createWriteStream(this.file, { flags: 'a' });
-      this.stream.on('error', () => {
-        this.stream = null;
-      });
-    } catch {
-      this.stream = null;
-    }
-  }
-
   #rotate() {
-    if (this.stream) {
-      try {
-        this.stream.end();
-      } catch {
-        /* ignore */
-      }
-      this.stream = null;
-    }
     try {
       for (let i = this.backups - 1; i >= 1; i -= 1) {
         const src = `${this.file}.${i}`;
-        const dst = `${this.file}.${i + 1}`;
-        if (fs.existsSync(src)) fs.renameSync(src, dst);
+        if (fs.existsSync(src)) fs.renameSync(src, `${this.file}.${i + 1}`);
       }
       if (fs.existsSync(this.file)) fs.renameSync(this.file, `${this.file}.1`);
     } catch {
       /* 轮转失败不影响主流程 */
     }
     this.written = 0;
-    this.#openStream();
   }
 
   #writeFile(line) {
-    if (!this.stream) return;
+    if (!this.file) return;
     const buf = Buffer.from(`${line}\n`, 'utf8');
-    if (this.maxBytes > 0 && this.written + buf.length > this.maxBytes) {
-      this.#rotate();
-      if (!this.stream) return;
+    if (this.maxBytes > 0 && this.written + buf.length > this.maxBytes) this.#rotate();
+    try {
+      fs.appendFileSync(this.file, buf);
+      this.written += buf.length;
+    } catch {
+      /* 写盘失败（磁盘满、权限）时静默降级，不能因为日志挂掉代理 */
     }
-    this.stream.write(buf);
-    this.written += buf.length;
   }
 
   #emit(level, args) {
@@ -136,15 +119,9 @@ export class Logger {
     };
   }
 
+  /** 保留接口：同步写入无需 flush，调用它只是为了语义清晰。 */
   close() {
-    if (this.stream) {
-      try {
-        this.stream.end();
-      } catch {
-        /* ignore */
-      }
-      this.stream = null;
-    }
+    /* 无缓冲需要排空 */
   }
 }
 

@@ -45,9 +45,13 @@ export function rewriteModel(body, modelConfig, { logger } = {}) {
   const original = body[field];
   if (typeof original !== 'string' || !original) return { changed: false };
 
+  const map = modelConfig.map || {};
+  const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+
   let next = original;
-  if (modelConfig.map && Object.prototype.hasOwnProperty.call(modelConfig.map, original)) {
-    next = modelConfig.map[original];
+  if (hasOwn(map, original)) {
+    // 1. 原始名直接命中映射，优先级最高
+    next = map[original];
   } else {
     for (const prefix of modelConfig.stripPrefixes || []) {
       if (prefix && next.startsWith(prefix)) {
@@ -55,6 +59,8 @@ export function rewriteModel(body, modelConfig, { logger } = {}) {
         break;
       }
     }
+    // 2. 剥掉前缀后再查一次 map，让客户端可以"加 proxy- 前缀 + 用短别名"同时成立
+    if (next !== original && hasOwn(map, next)) next = map[next];
   }
   if ((!next || next === original) && modelConfig.default) next = modelConfig.default;
   if (!next || next === original) return { changed: false, from: original, to: original };
@@ -65,12 +71,34 @@ export function rewriteModel(body, modelConfig, { logger } = {}) {
 }
 
 /** 按配置往请求体里补字段 / 删字段。 */
+/**
+ * 允许用 "metadata.trace" 这样的点路径书写注入字段，展开成嵌套对象再合并，
+ * 与 removeBodyFields 的写法保持一致。
+ */
+function expandDottedKeys(source) {
+  const out = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (!key.includes('.')) {
+      out[key] = value;
+      continue;
+    }
+    const segments = key.split('.');
+    let cursor = out;
+    for (let i = 0; i < segments.length - 1; i += 1) {
+      if (!isPlainObject(cursor[segments[i]])) cursor[segments[i]] = {};
+      cursor = cursor[segments[i]];
+    }
+    cursor[segments[segments.length - 1]] = value;
+  }
+  return out;
+}
+
 export function applyBodyInject(body, injectConfig, ctx) {
   if (!isPlainObject(body) || !injectConfig) return { changed: false };
   const changes = [];
 
   if (injectConfig.body && Object.keys(injectConfig.body).length) {
-    const rendered = renderDeep(injectConfig.body, ctx);
+    const rendered = renderDeep(expandDottedKeys(injectConfig.body), ctx);
     const before = JSON.stringify(body);
     if (injectConfig.overwrite === false) {
       const patch = {};
@@ -81,7 +109,7 @@ export function applyBodyInject(body, injectConfig, ctx) {
     } else {
       mergeInto(body, rendered);
     }
-    if (JSON.stringify(body) !== before) changes.push(`body:${Object.keys(rendered).join(',')}`);
+    if (JSON.stringify(body) !== before) changes.push(`body:${Object.keys(injectConfig.body).join(',')}`);
   }
 
   for (const keyPath of injectConfig.removeBodyFields || []) {

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "可自定义的 LLM 本地反向代理：自动生成并透传会话 ID、注入任意请求头、重写模型别名与请求路径。零依赖，用于让不支持会话头（如 x-opencode-session）的客户端接上要求该头的上游。",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "alaahong",
   "homepage": "https://github.com/alaahong/llm-session-proxy#readme",
   "repository": {

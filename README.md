@@ -100,6 +100,62 @@ npx llm-session-proxy
 npx llm-session-proxy --path-rewrite "^/v1/=>/zen/go/v1/"
 ```
 
+### OpenCode Go 常见模型速查表
+
+完整可直接用的配置见 [`examples/opencode-go-models.json`](examples/opencode-go-models.json)——
+它预置了下面所有别名的 `model.map`，启动即可用。
+
+上游把模型分在三类端点上，**能不能用取决于你的客户端发什么协议**，这点比模型名更关键：
+
+**① `/zen/go/v1/chat/completions`——OpenAI 兼容，绝大多数客户端走这条**
+
+| 模型 | 客户端模型 ID | 上游真实 ID |
+| --- | --- | --- |
+| GLM-5.3 | `proxy-glm` / `proxy-glm-5.3` | `glm-5.3` |
+| GLM-5.3-Flash | `proxy-glm-flash` | `glm-5.3-flash` |
+| GLM-5.2 | `proxy-glm-5.2` | `glm-5.2` |
+| GLM-5.1 | `proxy-glm-5.1` | `glm-5.1` |
+| Kimi K3 | `proxy-kimi` | `kimi-k3` |
+| Kimi K2.7 Code | `proxy-kimi-code` | `kimi-k2.7-code` |
+| Kimi K2.6 | `proxy-kimi-k2.6` | `kimi-k2.6` |
+| DeepSeek V4.1 Flash | `proxy-deepseek` | `deepseek-flash` |
+| DeepSeek V4 Pro | `proxy-deepseek-pro` | `deepseek-v4-pro` |
+| DeepSeek V4 Flash | `proxy-deepseek-v4-flash` | `deepseek-v4-flash` |
+| DeepSeek V4 Flash Vision Exp | `proxy-deepseek-vision` | `deepseek-v4-flash-vision-exp` |
+| LongCat-2.0 | `proxy-longcat` | `longcat-2.0` |
+| MiMo-V2.5 | `proxy-mimo` | `mimo-v2.5` |
+| MiMo-V2.5-Pro | `proxy-mimo-pro` | `mimo-v2.5-pro` |
+| Hy3 | `proxy-hy3` | `hy3` |
+| Hy4 preview | `proxy-hy4` | `hy4-preview` |
+
+**② `/zen/go/v1/responses`——OpenAI Responses API，客户端必须支持该协议**
+
+| 模型 | 客户端模型 ID | 上游真实 ID |
+| --- | --- | --- |
+| Grok 4.6 | `proxy-grok` | `grok-4.6` |
+| GPT 5.6 Luna | `proxy-gpt-luna` | `gpt-5.6-luna` |
+| Muse Spark 1.3 Contributor | `proxy-muse-1.3` | `muse-spark-1.3-contributor` |
+| Muse Spark 1.2 Contributor | `proxy-muse-1.2` | `muse-spark-1.2-contributor` |
+
+**③ `/zen/go/v1/messages`——Anthropic Messages API，客户端必须能发 Anthropic 格式**
+
+| 模型 | 客户端模型 ID | 上游真实 ID |
+| --- | --- | --- |
+| MiniMax M3 | `proxy-minimax` | `minimax-m3` |
+| MiniMax M2.7 | `proxy-minimax-2.7` | `minimax-m2.7` |
+| MiniMax M2.5 | `proxy-minimax-2.5` | `minimax-m2.5` |
+| Qwen3.8 Max | `proxy-qwen-max` | `qwen3.8-max` |
+| Qwen3.8 Flash | `proxy-qwen-flash` | `qwen3.8-flash` |
+| Qwen3.7 Max | `proxy-qwen3.7-max` | `qwen3.7-max` |
+| Qwen3.7 Plus | `proxy-qwen3.7-plus` | `qwen3.7-plus` |
+| Qwen3.6 Plus | `proxy-qwen-plus` | `qwen3.6-plus` |
+
+> 本代理**不做协议转换**。客户端发 OpenAI 格式的请求体时，②③ 两类模型用不了——
+> 它只负责补头、改名、换路径，不会把 Chat Completions 的 body 翻译成 Messages 的 body。
+>
+> 直接写上游真实 ID（不加别名、不加前缀）也能用，代理会原样放行。
+> 模型清单随时可能变，以[上游文档](https://opencode.ai/docs/go/)和 `https://opencode.ai/zen/go/v1/models` 为准。
+
 ### 场景二：接任意 OpenAI 兼容上游
 
 ```bash
@@ -209,7 +265,7 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 | `enabled` | `true` | 是否启用模型名重写 |
 | `field` | `model` | 模型名所在的请求体字段 |
 | `stripPrefixes` | `["proxy-"]` | 需要剥离的前缀列表，按顺序匹配，命中一个即停 |
-| `map` | `{}` | 精确映射，**优先于**前缀剥离 |
+| `map` | `{}` | 精确映射。先按客户端原始名查（优先），未命中则剥掉前缀后再查一次，所以 `proxy-glm` 与 `glm` 都能命中同一条 |
 | `default` | `null` | 兜底模型名 |
 
 ### 其他
@@ -391,4 +447,4 @@ as the model name. See the Chinese sections above for the full configuration ref
 
 ## License
 
-[MIT](LICENSE)
+[Apache License 2.0](LICENSE) © 2026 alaahong
