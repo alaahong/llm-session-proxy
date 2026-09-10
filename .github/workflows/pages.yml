@@ -1,10 +1,14 @@
 name: Deploy docs to GitHub Pages
 
 # 为什么用官方三件套（configure-pages / upload-pages-artifact / deploy-pages）：
-#   1. configure-pages 开了 enablement，能在 Pages 还没启用时**自动开启**
-#      （只推一个 gh-pages 分支是不会自动开启的，必须在设置里点一次）；
-#   2. 产物由 Actions 直接部署，不需要再维护一个 gh-pages 分支，
-#      也不会出现「分支内容更新了但站点没更新」这种错觉。
+#   产物由 Actions 直接部署，不需要再维护一个 gh-pages 分支，
+#   也不会出现「分支内容更新了但站点没更新」这种错觉。
+#
+# 注意：这里**不要**加 enablement: true。
+# 仓库的 Pages 已经启用（源 = GitHub Actions，自定义域名 www.ianzhang.cn），
+# 而 GITHUB_TOKEN 调 POST /pages（创建站点）会返回
+#   403 Resource not accessible by integration
+# 直接把整个 job 拖挂。站点已存在时本就不需要创建，去掉更稳。
 on:
   push:
     branches: [main]
@@ -30,10 +34,8 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 准备 Pages（未启用则尝试自动开启）
+      - name: 准备 Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - name: 上传 docs/ 作为 Pages 产物
         uses: actions/upload-pages-artifact@v3
