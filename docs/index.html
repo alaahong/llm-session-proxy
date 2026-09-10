@@ -1,13 +1,13 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="zh-CN" data-page-node-id="vt1SiasCaRLA5XZmAH47Xa">
+<head data-page-node-id="aD6eE4nfB1Dwf0UtKPZ5jR">
+<meta charset="UTF-8" data-page-node-id="gZEOGDHwRfV6W7lDp5EQgE">
+<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="2y58A7pmldEl3ukcUiNWzW">
 <title>llm-session-proxy — 可自定义参数的 LLM 本地反向代理</title>
-<meta name="description" content="零依赖的 LLM 本地反向代理：自动生成并注入会话 ID、注入任意自定义请求头与请求体参数、重写模型别名与请求路径，SSE 流式零缓冲透传。">
-<meta property="og:title" content="llm-session-proxy">
-<meta property="og:description" content="可自定义参数的 LLM 本地反向代理，零依赖，npx 即可运行。">
-<meta property="og:type" content="website">
+<meta name="description" content="零依赖的 LLM 本地反向代理：自动生成并注入会话 ID、注入任意自定义请求头与请求体参数、重写模型别名与请求路径，SSE 流式零缓冲透传。" data-page-node-id="4xUoGBolDM5Nj5mSikueWi">
+<meta property="og:title" content="llm-session-proxy" data-page-node-id="29Es9MS5m9mGrZJdIK2sma">
+<meta property="og:description" content="可自定义参数的 LLM 本地反向代理，零依赖，npx 即可运行。" data-page-node-id="If4vEnRDth9OX4fvfgJuWZ">
+<meta property="og:type" content="website" data-page-node-id="JI9vhYt1HhDBRy6AKN5fYi">
 <style>
   :root {
     --bg: #ffffff;
@@ -199,120 +199,120 @@
   footer a { color: var(--text-mid); }
 </style>
 </head>
-<body>
+<body data-page-node-id="ICN029VoiZw6ReGRk2jFum">
 
-<header class="nav">
-  <div class="nav-inner">
-    <div class="brand">llm-session-<span>proxy</span></div>
-    <nav class="nav-links">
-      <a href="#problem">解决什么</a>
-      <a href="#start">快速开始</a>
-      <a href="#models">模型速查</a>
-      <a href="#config">配置</a>
-      <a href="#cli">命令</a>
-      <a href="#how">原理</a>
+<header class="nav" data-page-node-id="rkItPhutFLkiEv6tKH4NCI">
+  <div class="nav-inner" data-page-node-id="DfkOLaSVuoOeHRMj50BlHj">
+    <div class="brand" data-page-node-id="HSPFczx8Y5eqlLfRKPuGSr">llm-session-<span data-page-node-id="FO3ViP75BLT6W40HmCj6pE">proxy</span></div>
+    <nav class="nav-links" data-page-node-id="6C8mH127M39ueCJ5AwHv6f">
+      <a href="#problem" data-page-node-id="SlrEGORgsHvQM98rhmgNoW">解决什么</a>
+      <a href="#start" data-page-node-id="lFwQ2HiV8OBuDdeXnyBB1D">快速开始</a>
+      <a href="#models" data-page-node-id="J7CyotzfGhoCOGKjZezmEb">模型速查</a>
+      <a href="#config" data-page-node-id="Qv2QJ46nUcDdLzfperta5x">配置</a>
+      <a href="#cli" data-page-node-id="zhPWdB6FQZmoCh8gEGarkc">命令</a>
+      <a href="#how" data-page-node-id="x2NI1s0R8JS2ADXZAlffd4">原理</a>
     </nav>
-    <a class="nav-gh" href="https://github.com/alaahong/llm-session-proxy">GitHub</a>
+    <a class="nav-gh" href="https://github.com/alaahong/llm-session-proxy" data-page-node-id="c7YEJJK1bDkBJOEn439pfm">GitHub</a>
   </div>
 </header>
 
-<main>
+<main data-page-node-id="qDkG4o1q5STws2yWQod2hx">
 
-  <section class="hero">
-    <div class="badge">零依赖 · Node ≥ 18 · Apache-2.0</div>
-    <h1>llm-session-proxy</h1>
-    <p class="lead">
+  <section class="hero" data-page-node-id="eInsoRCBDMijUnS9iECsDv">
+    <div class="badge" data-page-node-id="ArBcFsh8ErEPYQYr7MDcmo">零依赖 · Node ≥ 18 · Apache-2.0</div>
+    <h1 data-page-node-id="wecyQCcCt6HRCag9AzDARX">llm-session-proxy</h1>
+    <p class="lead" data-page-node-id="yLZ6XzTqmVMnaLjYPqQzl8">
       可自定义参数的 LLM 本地反向代理。自动补上客户端不会发的会话头，注入任意自定义参数，
       重写模型名与请求路径，然后把请求（含 SSE 流式响应）原样转发出去。
     </p>
-    <div class="install">
-      <code id="install-cmd">npx llm-session-proxy</code>
-      <button class="copy" data-copy="npx llm-session-proxy">复制</button>
+    <div class="install" data-page-node-id="LsSV45ZuFMhUX3qRwneI2t">
+      <code id="install-cmd" data-page-node-id="oFtAWWIwhd8AtHN5yuvtca">npx llm-session-proxy</code>
+      <button class="copy" data-copy="npx llm-session-proxy" data-page-node-id="VwFBRVRXuxbfOHZZNjp6vU">复制</button>
     </div>
-    <div class="cta">
-      <a class="btn primary" href="#start">快速开始</a>
-      <a class="btn" href="https://github.com/alaahong/llm-session-proxy">查看源码</a>
+    <div class="cta" data-page-node-id="h7woxEtOExMSisHekgxC91">
+      <a class="btn primary" href="#start" data-page-node-id="Y7IqaZNYRLqSysuksLgSeI">快速开始</a>
+      <a class="btn" href="https://github.com/alaahong/llm-session-proxy" data-page-node-id="zjQLaEzJlYIUJ7tPhF1ECz">查看源码</a>
     </div>
   </section>
 
-  <section id="problem">
-    <h2>解决什么问题</h2>
-    <p class="sub">OpenCode Go 要求每个请求带会话标识，而多数客户端没法自定义请求头。</p>
-    <p>上游要求这样一行头：</p>
-    <pre><code>x-opencode-session : 会话 ID，同一对话内保持稳定（用于提示词缓存与路由优化）</code></pre>
-    <p>客户端不发，上游就直接拒绝：</p>
-    <pre><code>400 Request is missing x-opencode-session and cannot be routed efficiently</code></pre>
-    <p>
+  <section id="problem" data-page-node-id="RCtTdXMuIZYEfqnUeSLh6h">
+    <h2 data-page-node-id="EhzEUJNkkWtwnkTdIsOVm8">解决什么问题</h2>
+    <p class="sub" data-page-node-id="cNpVHv9SpbjUpNR4HNyEwU">OpenCode Go 要求每个请求带会话标识，而多数客户端没法自定义请求头。</p>
+    <p data-page-node-id="RVT0RmFSgp13401Rw47ziA">上游要求这样一行头：</p>
+    <pre data-page-node-id="QEKZx16TqRSv00X4sfTwpm"><code data-page-node-id="labGNHBhbuZOEQE7AJIMVS">x-opencode-session : 会话 ID，同一对话内保持稳定（用于提示词缓存与路由优化）</code></pre>
+    <p data-page-node-id="e1YODiKMTCbeZs5bFvLk9j">客户端不发，上游就直接拒绝：</p>
+    <pre data-page-node-id="rkuu9N1BDsEWB0bXo6l1Xd"><code data-page-node-id="ybxwHrGaFLUq9W0FA6s7QG">400 Request is missing x-opencode-session and cannot be routed efficiently</code></pre>
+    <p data-page-node-id="FTcqfGEbUbka3cB7T9StMu">
       本工具把这件事挪到本机完成：客户端只管把 Base URL 指向本地代理，剩下的事代理来办。
-      它不绑定任何一家上游——换掉 <code>upstream</code> 和 <code>inject.headers</code>
+      它不绑定任何一家上游——换掉 <code data-page-node-id="lot79pB4hvrGk6BB24drO3">upstream</code> 和 <code data-page-node-id="Rw5biGEdsD3Kn8YHcgTuCu">inject.headers</code>
       就能服务任意 OpenAI / Anthropic 兼容接口。
     </p>
   </section>
 
-  <section id="features">
-    <h2>核心能力</h2>
-    <p class="sub">每一项都可通过配置文件、环境变量或命令行参数调整。</p>
-    <div class="grid c3">
-      <div class="card">
-        <div class="tag">session</div>
-        <h4>自动生成会话 ID</h4>
-        <p>三级策略：客户端显式标识 → 内容指纹（system + 首条用户消息）→ 一次性随机。同一对话稳定复用，提示词缓存才有效。</p>
+  <section id="features" data-page-node-id="oT6JRg57hSxqt0JFWB60Pd">
+    <h2 data-page-node-id="vTdGABB0LOcZ5wO8D1bNGc">核心能力</h2>
+    <p class="sub" data-page-node-id="cpyPZAXLjsrPEsYT6dbjW6">每一项都可通过配置文件、环境变量或命令行参数调整。</p>
+    <div class="grid c3" data-page-node-id="izMBHxxBn5PwbOzylG5sYh">
+      <div class="card" data-page-node-id="IdsQ9EtHb8re6iFLYS2X4A">
+        <div class="tag" data-page-node-id="nkxDtHBEAKUMKeolaYzqI3">session</div>
+        <h4 data-page-node-id="oVqJfz0kyUwosvSNfN09U7">自动生成会话 ID</h4>
+        <p data-page-node-id="EIehS9asCBvUEv8kdmXpjh">三级策略：客户端显式标识 → 内容指纹（system + 首条用户消息）→ 一次性随机。同一对话稳定复用，提示词缓存才有效。</p>
       </div>
-      <div class="card">
-        <div class="tag">inject</div>
-        <h4>任意参数注入</h4>
-        <p>请求头与请求体字段均可注入，值支持 <code>{{session.id}}</code>、<code>{{uuid}}</code>、<code>{{env.HOME}}</code> 等模板变量。</p>
+      <div class="card" data-page-node-id="EpAidThMEEDLN389NWh2B0">
+        <div class="tag" data-page-node-id="g6ViTV2qpFjpL7BlJKGjAA">inject</div>
+        <h4 data-page-node-id="Yk56aGQ5EXHGa9oD8Se1sO">任意参数注入</h4>
+        <p data-page-node-id="BNtDKT21pfv2ZxZ1GFUMXg">请求头与请求体字段均可注入，值支持 <code data-page-node-id="UABDP4UGsKJoZ4YceH0zD9">{{session.id}}</code>、<code data-page-node-id="qToAz9vMGjZWVCYyXnkweX">{{uuid}}</code>、<code data-page-node-id="6KtI1Ukyjxfv2NKbuQzmEX">{{env.HOME}}</code> 等模板变量。</p>
       </div>
-      <div class="card">
-        <div class="tag">model</div>
-        <h4>模型别名重写</h4>
-        <p>前缀剥离（<code>proxy-glm</code> → <code>glm-5.3</code>）与精确映射双管齐下，两种写法可以叠加。</p>
+      <div class="card" data-page-node-id="mI8Jk356dFU2VR0GX2HZwT">
+        <div class="tag" data-page-node-id="0BoLrsGFeD5jbRTQSWoLgV">model</div>
+        <h4 data-page-node-id="TpTZMjHo2q1mNzpTKbPdJI">模型别名重写</h4>
+        <p data-page-node-id="oNMCxGjrvW45OgMehFyuIP">前缀剥离（<code data-page-node-id="9XOlLdIYMMl1rSR4MO6SoC">proxy-glm</code> → <code data-page-node-id="1YHeD3Q0V906OIpxsYHbH1">glm-5.3</code>）与精确映射双管齐下，两种写法可以叠加。</p>
       </div>
-      <div class="card">
-        <div class="tag">path</div>
-        <h4>请求路径重写</h4>
-        <p>客户端只会填 <code>/v1</code> 时，一条正则把它转到上游真正要的路径。</p>
+      <div class="card" data-page-node-id="qlWWlPRDaHFS8cvxI8HrFo">
+        <div class="tag" data-page-node-id="edPSHwkDF4zby93dXuOuOW">path</div>
+        <h4 data-page-node-id="NlOpAQkyPA9ip6aq0J3V9p">请求路径重写</h4>
+        <p data-page-node-id="5jsnmcddjkjZf4Rm37yHIq">客户端只会填 <code data-page-node-id="zcAZYHUyKQPnJZ1EYZcQjU">/v1</code> 时，一条正则把它转到上游真正要的路径。</p>
       </div>
-      <div class="card">
-        <div class="tag">stream</div>
-        <h4>SSE 零缓冲透传</h4>
-        <p>逐块转发而不是攒完再发，流式输出体验不受影响；上游 4xx 错误体原样回传。</p>
+      <div class="card" data-page-node-id="edk1HXbA7YJsvLWeJKxvLQ">
+        <div class="tag" data-page-node-id="oKrcqmcJtWM7zgUeH3A3hy">stream</div>
+        <h4 data-page-node-id="dl4PwpcEZd0l5oxjskF4cf">SSE 零缓冲透传</h4>
+        <p data-page-node-id="zGhuXxR8MYisO2WCD0UT66">逐块转发而不是攒完再发，流式输出体验不受影响；上游 4xx 错误体原样回传。</p>
       </div>
-      <div class="card">
-        <div class="tag">deps</div>
-        <h4>零依赖</h4>
-        <p>只用 Node 内置模块，不引入任何第三方包，<code>npx</code> 启动无安装负担。</p>
+      <div class="card" data-page-node-id="DPGfK7p6HMKugLtkESdCNz">
+        <div class="tag" data-page-node-id="0ix1KO8od8EBNMMV7BXGiw">deps</div>
+        <h4 data-page-node-id="t6gCz2GgDIfuh5CmkH4POQ">零依赖</h4>
+        <p data-page-node-id="n4QAAiO1JeBZHtIbZ2uIcN">只用 Node 内置模块，不引入任何第三方包，<code data-page-node-id="A5SCPulWXlPTkFrzUhPpjv">npx</code> 启动无安装负担。</p>
       </div>
     </div>
   </section>
 
-  <section id="start">
-    <h2>快速开始</h2>
-    <p class="sub">要求 Node.js ≥ 18。</p>
+  <section id="start" data-page-node-id="AAV7IP57641e5MYuKDX5qq">
+    <h2 data-page-node-id="4CRsJ3XSt8CR102WQdqCN5">快速开始</h2>
+    <p class="sub" data-page-node-id="z0fjbNpJT1XJzClFhkFFh6">要求 Node.js ≥ 18。</p>
 
-    <div class="tabs" role="tablist">
-      <button class="tab" role="tab" aria-selected="true" data-tab="t1">OpenCode Go</button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="t2">通用上游</button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="t3">配置文件</button>
+    <div class="tabs" role="tablist" data-page-node-id="u6Nrsx5BnyN4ZTFlbQjtpE">
+      <button class="tab" role="tab" aria-selected="true" data-tab="t1" data-page-node-id="QBqOJOCRRPNesFLH3XuLCM">OpenCode Go</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="t2" data-page-node-id="PNtpBerEi7XyR0OdgwVncE">通用上游</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="t3" data-page-node-id="NA701XePiUvHfMGjeAdoqF">配置文件</button>
     </div>
 
-    <div class="panel" data-panel="t1" data-active="true">
-      <pre><code><span class="cmt"># 默认配置就是 OpenCode Go，直接启动</span>
+    <div class="panel" data-panel="t1" data-active="true" data-page-node-id="9GFBNvjNTNonvErc46I3ym">
+      <pre data-page-node-id="0loZfYmCpIECZBaeVz2o38"><code data-page-node-id="vzHmfCQVBAFLTHeUHq9UUV"><span class="cmt" data-page-node-id="CYp46BuJCKAllt6FQDM5ZC"># 默认配置就是 OpenCode Go，直接启动</span>
 npx llm-session-proxy
 
-<span class="cmt"># 客户端 Base URL 填：http://127.0.0.1:9355/zen/go/v1</span>
-<span class="cmt"># 模型 ID 填：proxy- + 真实模型名，例如 proxy-glm-5.3-flash</span>
-<span class="cmt"># API Key 填：你的 OpenCode API Key</span></code></pre>
-      <div class="note">
-        <b><code>proxy-</code> 前缀不是可选项。</b>
-        Trae 这类客户端按模型 ID 决定走不走自定义通道。填成内置预设名（如 <code>glm-5.3-flash</code>），
-        流量会被它自己的云通道接走，<b>完全绕过本代理</b>，然后照样报 400。
+<span class="cmt" data-page-node-id="hvTEwJNgTJdajzi9H8aJHh"># 客户端 Base URL 填：http://127.0.0.1:9355/zen/go/v1</span>
+<span class="cmt" data-page-node-id="ZsKFgZqLCAkkKRRhBTCxw4"># 模型 ID 填：proxy- + 真实模型名，例如 proxy-glm-5.3-flash</span>
+<span class="cmt" data-page-node-id="2VJxkHVU5NQQ1wyd3zPz2E"># API Key 填：你的 OpenCode API Key</span></code></pre>
+      <div class="note" data-page-node-id="xDGg6IYPBB8CbsWtdxS8fC">
+        <b data-page-node-id="uraM5uOaaEASCagjzLEjLl"><code data-page-node-id="rT3weXmaiQ5dPoV1L5FOa0">proxy-</code> 前缀不是可选项。</b>
+        Trae 这类客户端按模型 ID 决定走不走自定义通道。填成内置预设名（如 <code data-page-node-id="HXzNhfLDCOAlQ17qlvBkar">glm-5.3-flash</code>），
+        流量会被它自己的云通道接走，<b data-page-node-id="kx5lSyCDUcLA0J4sCaelgv">完全绕过本代理</b>，然后照样报 400。
         加前缀强制走代理后，代理会自动把前缀剥掉再发给上游。
       </div>
     </div>
 
-    <div class="panel" data-panel="t2">
-      <pre><code>npx llm-session-proxy \
+    <div class="panel" data-panel="t2" data-page-node-id="YRXCeD9VWTgZHVxprAhlsX">
+      <pre data-page-node-id="441WOTrzJMX4sEO7UQ8KQF"><code data-page-node-id="jUmgD7uXXORsqxS7eRhTRV">npx llm-session-proxy \
   --upstream https://api.deepseek.com \
   --port 8788 \
   --inject "x-session-id={{session.id}}" \
@@ -321,18 +321,18 @@ npx llm-session-proxy
   --model-map smart=deepseek-reasoner \
   --model-prefix ""
 
-<span class="cmt"># 客户端 Base URL 填 http://127.0.0.1:8788/v1</span>
-<span class="cmt"># 模型名可以用 fast / smart 这类短别名</span></code></pre>
+<span class="cmt" data-page-node-id="VSeCUiJQkigdQP1xjH4s73"># 客户端 Base URL 填 http://127.0.0.1:8788/v1</span>
+<span class="cmt" data-page-node-id="0S9QDQMNs87vF1tQLHPDEu"># 模型名可以用 fast / smart 这类短别名</span></code></pre>
     </div>
 
-    <div class="panel" data-panel="t3">
-      <pre><code><span class="cmt"># 生成带注释的示例配置</span>
+    <div class="panel" data-panel="t3" data-page-node-id="k4pdcCtMvi2YBXEqmX1Fna">
+      <pre data-page-node-id="7ULWAoFGJHfa1ockgfNC4z"><code data-page-node-id="YmGq5X5p9lyBPvx3dDKfOr"><span class="cmt" data-page-node-id="g4rzRoOgSew77wBridWZXx"># 生成带注释的示例配置</span>
 npx llm-session-proxy --init
 
-<span class="cmt"># 按需修改后启动</span>
+<span class="cmt" data-page-node-id="aSD8yDXtiVBwhCrjrEGEJ1"># 按需修改后启动</span>
 npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
-      <pre><code>{
-  <span class="cmt">// 支持 // 与 /* */ 注释、尾随逗号</span>
+      <pre data-page-node-id="1ggWxvkmR5EQ7ybsPozke2"><code data-page-node-id="lq1YEP9YzmC0TdkkBgchKc">{
+  <span class="cmt" data-page-node-id="h7lsCr8M1W4VF7BTMZS2Do">// 支持 // 与 /* */ 注释、尾随逗号</span>
   "listen": { "host": "127.0.0.1", "port": 9355 },
   "upstream": { "host": "opencode.ai" },
   "inject": {
@@ -345,247 +345,247 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
 }</code></pre>
     </div>
 
-    <h3>客户端 Base URL 怎么填</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>客户端只能填</th><th>启动参数</th></tr></thead>
-        <tbody>
-          <tr><td><code>http://127.0.0.1:9355/zen/go/v1</code></td><td>不需要额外参数（原样透传）</td></tr>
-          <tr><td><code>http://127.0.0.1:9355/v1</code></td><td><code>--path-rewrite "^/v1/=&gt;/zen/go/v1/"</code></td></tr>
-          <tr><td><code>http://127.0.0.1:9355</code>（不带路径）</td><td><code>--base-path /zen/go/v1</code></td></tr>
+    <h3 data-page-node-id="AUnYsxDppeeyfjG9eruAPz">客户端 Base URL 怎么填</h3>
+    <div class="table-wrap" data-page-node-id="MSK9LoAz91Opl4ynVqV0R4">
+      <table data-page-node-id="g2vDgPeTu0M4hnpzihNfEI">
+        <thead data-page-node-id="tHTYqk9S1QkiOPCt19vQCC"><tr data-page-node-id="yWr6pqcw0wEuyE8P7BBxvZ"><th data-page-node-id="jW0bcNQbzMbpzGqXPxRsrz">客户端只能填</th><th data-page-node-id="psyAeQz0FRqqEwhgbljGrF">启动参数</th></tr></thead>
+        <tbody data-page-node-id="XGdImwVydNFYK3HxjNCjGg">
+          <tr data-page-node-id="7glZG8Tq9vcRsH4PT7k1Wa"><td data-page-node-id="XdFBhaXtL8ZEPyquVKBaAj"><code data-page-node-id="bXyWg4yedrokrMFnH8ZaGP">http://127.0.0.1:9355/zen/go/v1</code></td><td data-page-node-id="xJYoDNn3F7P3CCMTal0KCr">不需要额外参数（原样透传）</td></tr>
+          <tr data-page-node-id="NSrTiSn5WTgp3pqgeZKMSr"><td data-page-node-id="W4yLIZRRvSRQVtW0fsAtMo"><code data-page-node-id="G0TTGjJle5GaiI277suMWB">http://127.0.0.1:9355/v1</code></td><td data-page-node-id="7vJizGFLEO5oyr57IZWAea"><code data-page-node-id="eF6d520ud00Wjm7dX16fFC">--path-rewrite "^/v1/=&gt;/zen/go/v1/"</code></td></tr>
+          <tr data-page-node-id="LiG2Or4LRBmZ5BG6A9iGKH"><td data-page-node-id="ogPEIUkAChGJixJttblf2H"><code data-page-node-id="RzDAH4R4BEIw3dhZjkRwZH">http://127.0.0.1:9355</code>（不带路径）</td><td data-page-node-id="6FxhRULeN6j2Jlf6KwWmPk"><code data-page-node-id="vJTaXdOCGeAQf3DAAU32jB">--base-path /zen/go/v1</code></td></tr>
         </tbody>
       </table>
     </div>
   </section>
 
-  <section id="models">
-    <h2>OpenCode Go 常见模型速查表</h2>
-    <p class="sub">
+  <section id="models" data-page-node-id="Gi7ME8J6AMOxZ6sbB18DJa">
+    <h2 data-page-node-id="T6AJ2O3DkfLiqtjjAfY4V3">OpenCode Go 常见模型速查表</h2>
+    <p class="sub" data-page-node-id="szDlpz6tH2tvpAYAvC9yfM">
       上游把模型分在三类端点上——能不能用取决于客户端发什么协议，这比模型名更关键。
-      完整配置见 <a href="https://github.com/alaahong/llm-session-proxy/blob/main/examples/opencode-go-models.json">examples/opencode-go-models.json</a>。
+      完整配置见 <a href="https://github.com/alaahong/llm-session-proxy/blob/main/examples/opencode-go-models.json" data-page-node-id="KClXEbaQuKtpdND6nASL5B">examples/opencode-go-models.json</a>。
     </p>
 
-    <h3>① /zen/go/v1/chat/completions · OpenAI 兼容，绝大多数客户端走这条</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>模型</th><th>客户端模型 ID</th><th>上游真实 ID</th></tr></thead>
-        <tbody>
-          <tr><td>GLM-5.3</td><td><code>proxy-glm</code></td><td><code>glm-5.3</code></td></tr>
-          <tr><td>GLM-5.3-Flash</td><td><code>proxy-glm-flash</code></td><td><code>glm-5.3-flash</code></td></tr>
-          <tr><td>GLM-5.2 / 5.1</td><td><code>proxy-glm-5.2</code></td><td><code>glm-5.2</code></td></tr>
-          <tr><td>Kimi K3</td><td><code>proxy-kimi</code></td><td><code>kimi-k3</code></td></tr>
-          <tr><td>Kimi K2.7 Code</td><td><code>proxy-kimi-code</code></td><td><code>kimi-k2.7-code</code></td></tr>
-          <tr><td>Kimi K2.6</td><td><code>proxy-kimi-k2.6</code></td><td><code>kimi-k2.6</code></td></tr>
-          <tr><td>DeepSeek V4.1 Flash</td><td><code>proxy-deepseek</code></td><td><code>deepseek-flash</code></td></tr>
-          <tr><td>DeepSeek V4 Pro</td><td><code>proxy-deepseek-pro</code></td><td><code>deepseek-v4-pro</code></td></tr>
-          <tr><td>DeepSeek V4 Flash</td><td><code>proxy-deepseek-v4-flash</code></td><td><code>deepseek-v4-flash</code></td></tr>
-          <tr><td>DeepSeek V4 Flash Vision</td><td><code>proxy-deepseek-vision</code></td><td><code>deepseek-v4-flash-vision-exp</code></td></tr>
-          <tr><td>LongCat-2.0</td><td><code>proxy-longcat</code></td><td><code>longcat-2.0</code></td></tr>
-          <tr><td>MiMo-V2.5 / Pro</td><td><code>proxy-mimo</code></td><td><code>mimo-v2.5</code></td></tr>
-          <tr><td>Hy3 / Hy4 preview</td><td><code>proxy-hy3</code></td><td><code>hy3</code></td></tr>
+    <h3 data-page-node-id="XCRxJMkvpY3yyfq3SEgk8E">① /zen/go/v1/chat/completions · OpenAI 兼容，绝大多数客户端走这条</h3>
+    <div class="table-wrap" data-page-node-id="oS1jxEfq7eDempj24kNi98">
+      <table data-page-node-id="dfvRX34D3MLmRtpPkU7RAC">
+        <thead data-page-node-id="Wy6z9WBs0iCO8YmoBaQCk8"><tr data-page-node-id="oiUjFoAKusAMDh5ZDvXUaX"><th data-page-node-id="CyHRm8kiIFLV37UAJczHlU">模型</th><th data-page-node-id="9ke9KsOhHqbpn6k5PLPjux">客户端模型 ID</th><th data-page-node-id="YzWVDAgyN9A42caytDsDkq">上游真实 ID</th></tr></thead>
+        <tbody data-page-node-id="2VwMULx9n0Ux62rOkSrUH2">
+          <tr data-page-node-id="J6DnxQxs2vgdVLSFCTyn18"><td data-page-node-id="DlPJ9RYpM34bwD601uccAb">GLM-5.3</td><td data-page-node-id="7Fy9UOkK5ObtWZuUEEpBVT"><code data-page-node-id="nwaIel1dZMrSNirN4Q5nQj">proxy-glm</code></td><td data-page-node-id="it0BBY8g74M2NaXeIU3l60"><code data-page-node-id="h5QuuYTKk2m8I1AGllDu2l">glm-5.3</code></td></tr>
+          <tr data-page-node-id="yjY5ZqT6Czwof9MTh9m3c9"><td data-page-node-id="8fjehzY3hyjxAw9AUeXEYv">GLM-5.3-Flash</td><td data-page-node-id="kGbaIjnkB5HUJNxAMv5aR8"><code data-page-node-id="iCE22lJtDF3kdyp7mDrTfv">proxy-glm-flash</code></td><td data-page-node-id="vq1TopQUqJ2c2oJJtDSIoi"><code data-page-node-id="WCAQ5lxCLR9EvWy2oVPaxP">glm-5.3-flash</code></td></tr>
+          <tr data-page-node-id="bIbnZ4bS42kI41BIeJFG5H"><td data-page-node-id="3lKHDCNWNVUdJTl2ry0zVG">GLM-5.2 / 5.1</td><td data-page-node-id="0cSbvyryBvifTkoEb1gYO4"><code data-page-node-id="NwFdbfqaSRz2hFErADtcAg">proxy-glm-5.2</code></td><td data-page-node-id="WSTQZATScQiOywjqSH59wS"><code data-page-node-id="U97mf6BA7OTAJmB0IEdpHI">glm-5.2</code></td></tr>
+          <tr data-page-node-id="oflLNWc6rB7meDt7xmVn6T"><td data-page-node-id="2sA2FvTTLTMKaQGcHVVeAg">Kimi K3</td><td data-page-node-id="8VBzFUgA9kVBOKcB45UyXk"><code data-page-node-id="ywdWfzXzvdzFKbpQ5ZgimY">proxy-kimi</code></td><td data-page-node-id="ZRDdX8dHSNNMNcvMcZ7UCs"><code data-page-node-id="h4HkfrdxlQ0eTY8yDMyKns">kimi-k3</code></td></tr>
+          <tr data-page-node-id="l2jdmLlYEDSEwGEuJgMlVt"><td data-page-node-id="JG6ZmBbxD2fAB4gLQfGwpb">Kimi K2.7 Code</td><td data-page-node-id="ZXlSGNgcsW3mZiwSizdyBA"><code data-page-node-id="xSwalm5vZ8mNxnxYSiNOKs">proxy-kimi-code</code></td><td data-page-node-id="6yunkNElQRU5ZWUJ3Ts4cA"><code data-page-node-id="lsqtYjIwGBxAX7UEM7ZLKw">kimi-k2.7-code</code></td></tr>
+          <tr data-page-node-id="QWuGQ381vdpky1iSSglW2b"><td data-page-node-id="sYWHzqFSP4pk8Ccp05aCRL">Kimi K2.6</td><td data-page-node-id="hxSdY9VSxmOQbhzXTJaK8F"><code data-page-node-id="zqZf6wdsl0sg05SBJADUMN">proxy-kimi-k2.6</code></td><td data-page-node-id="KeOzLgNdllfmZwLxN1ih6j"><code data-page-node-id="vC4uHU4FP0lGrTf3wJxeME">kimi-k2.6</code></td></tr>
+          <tr data-page-node-id="UHNBU3n4SBsvLUjzpTfIZe"><td data-page-node-id="YAV38zE3GeXJEFG7lpRcvp">DeepSeek V4.1 Flash</td><td data-page-node-id="sMrSxG78KGThvVYp1ZCgmy"><code data-page-node-id="cHtisAo9uGHrRrhHrU3egZ">proxy-deepseek</code></td><td data-page-node-id="eUNst23lTMJND5lsdLSvlu"><code data-page-node-id="djhqWUhkhO8SweMTRdhcxc">deepseek-flash</code></td></tr>
+          <tr data-page-node-id="d1eZARgYzFb2ypjAEEV5Ui"><td data-page-node-id="AfpboZTT80kW90JdhGu9Jm">DeepSeek V4 Pro</td><td data-page-node-id="RW1tTAPeOmVbABbtj4GA33"><code data-page-node-id="BdPGaoPpR8JiFiLoqNeMzQ">proxy-deepseek-pro</code></td><td data-page-node-id="Dqrf3GXUTZEE6hIe4eG45q"><code data-page-node-id="GQrRMLXr7ychyP1c2uHVA3">deepseek-v4-pro</code></td></tr>
+          <tr data-page-node-id="FvZ1vQL6za3gd3iSYnyp8T"><td data-page-node-id="EKCMbHhPPsXoeBpALyH8oH">DeepSeek V4 Flash</td><td data-page-node-id="tdaSWtsrVJCOnCG6EdGWyg"><code data-page-node-id="5XhSMpF6FJypHlPDN6uiXz">proxy-deepseek-v4-flash</code></td><td data-page-node-id="kA53NKoaB20lppmsIjaRnV"><code data-page-node-id="GhAqkIHXGRFNcL0Qt4YTRs">deepseek-v4-flash</code></td></tr>
+          <tr data-page-node-id="3xfU36cBb8CkdcZ6rw0OhD"><td data-page-node-id="Qw5vDmQBtPFq2cBEV5MHBa">DeepSeek V4 Flash Vision</td><td data-page-node-id="1ULsCI6tVlUZHbyfGAXgiN"><code data-page-node-id="t0vHuc06EPwWaKJmIXCqas">proxy-deepseek-vision</code></td><td data-page-node-id="9yHccs48hPoIqdA2rFmDUP"><code data-page-node-id="O2DViAsazKCEFog53Uv571">deepseek-v4-flash-vision-exp</code></td></tr>
+          <tr data-page-node-id="PNtEFRSm7wRlwaxEAJAFSn"><td data-page-node-id="WS8bkTbYCpiqKiBmSbBtZg">LongCat-2.0</td><td data-page-node-id="iEnT6vnx1MQ3cBDQdtXzqf"><code data-page-node-id="NPCMRQwBDeSjBEAkFCr8hx">proxy-longcat</code></td><td data-page-node-id="0v48hWJyVNJnSYRbEo1EtO"><code data-page-node-id="BBpxnUZL8Dmk3aHud6Hfpp">longcat-2.0</code></td></tr>
+          <tr data-page-node-id="Hx0VHV42auApGK29HhbZA4"><td data-page-node-id="upXebe1Dh4FmRJpV01O5dk">MiMo-V2.5 / Pro</td><td data-page-node-id="ErpFoR5VH2kFdVCT9gd6pp"><code data-page-node-id="bXMLLT9HBk3R7qS6nCDiEB">proxy-mimo</code></td><td data-page-node-id="KzxleFShTd16nLGnnHw8AH"><code data-page-node-id="Xw1XxdOs03YUAKEALZ14X8">mimo-v2.5</code></td></tr>
+          <tr data-page-node-id="b6AiD48cXXyGXTydp9gdAA"><td data-page-node-id="fXKgHSNkIzVRA1zpt73zsq">Hy3 / Hy4 preview</td><td data-page-node-id="MkK04JY7ud0bJhab09REin"><code data-page-node-id="mEhvzDlvyNzJ57ZBH4oCtJ">proxy-hy3</code></td><td data-page-node-id="1BnjRFchyuDXUrflvZvpIT"><code data-page-node-id="TgvlYkxnVPZA9OpPmRxQJE">hy3</code></td></tr>
         </tbody>
       </table>
     </div>
 
-    <h3>② /zen/go/v1/responses · OpenAI Responses API，客户端需支持该协议</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>模型</th><th>客户端模型 ID</th><th>上游真实 ID</th></tr></thead>
-        <tbody>
-          <tr><td>Grok 4.6</td><td><code>proxy-grok</code></td><td><code>grok-4.6</code></td></tr>
-          <tr><td>GPT 5.6 Luna</td><td><code>proxy-gpt-luna</code></td><td><code>gpt-5.6-luna</code></td></tr>
-          <tr><td>Muse Spark 1.3 Contributor</td><td><code>proxy-muse-1.3</code></td><td><code>muse-spark-1.3-contributor</code></td></tr>
+    <h3 data-page-node-id="QE15lwy17xdB2DSfSImQp4">② /zen/go/v1/responses · OpenAI Responses API，客户端需支持该协议</h3>
+    <div class="table-wrap" data-page-node-id="8EAXiR6TRFX8pBtWbhHnEs">
+      <table data-page-node-id="cAbDezdLygWeqDk9vNlpCU">
+        <thead data-page-node-id="B0OJCxGnvM89YUcVNlAgJC"><tr data-page-node-id="IrM2fQl1PjvBdgolWDxzEu"><th data-page-node-id="1w7aEnEiRJ8u9JsqosA4OC">模型</th><th data-page-node-id="UyXEtevtsZYhrFsCHPGUYC">客户端模型 ID</th><th data-page-node-id="BQVBd5iUpB5Ntj3ZierPG9">上游真实 ID</th></tr></thead>
+        <tbody data-page-node-id="qNDClydu0UwucFQXBEY2ir">
+          <tr data-page-node-id="qCgukqKTNZArsoZt57BTt8"><td data-page-node-id="Hx3KVDgSccVdnmrg2oTZbn">Grok 4.6</td><td data-page-node-id="JkwFSk8780MhGrwDNIL6z2"><code data-page-node-id="6p3xnQe4V2ZVADZY9pEqZH">proxy-grok</code></td><td data-page-node-id="Xwt8ebh3wERUyTTNEK4xmA"><code data-page-node-id="vXNwp6bukKtJczCIiGnyrG">grok-4.6</code></td></tr>
+          <tr data-page-node-id="v7k8ZAEWUzREFXEZXmzT3N"><td data-page-node-id="I7YTSw5tGisjt8JBHWvwnd">GPT 5.6 Luna</td><td data-page-node-id="sOoJ5xwBKcamEVNnuTlsGu"><code data-page-node-id="O7mArTXEH5ieZGgIfubfS3">proxy-gpt-luna</code></td><td data-page-node-id="Q5Tbb8ZbzBQhW1GSHmSNx9"><code data-page-node-id="y7RXj49dQ5BaaoIanoTIWp">gpt-5.6-luna</code></td></tr>
+          <tr data-page-node-id="u788H2XZVdV3RSloybkbFM"><td data-page-node-id="gCdx7fvgFEQtN3goIFTPRN">Muse Spark 1.3 Contributor</td><td data-page-node-id="dDNCNCPwoCtuZwwSuu7ccF"><code data-page-node-id="lyL52yYLx9HqCN5LkCZXyp">proxy-muse-1.3</code></td><td data-page-node-id="L6Ha1pnqF6xE1irrzHt84D"><code data-page-node-id="E2X3GbJ2UB4VJbDIk3GVVA">muse-spark-1.3-contributor</code></td></tr>
         </tbody>
       </table>
     </div>
 
-    <h3>③ /zen/go/v1/messages · Anthropic 协议，客户端需能发 Anthropic 格式</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>模型</th><th>客户端模型 ID</th><th>上游真实 ID</th></tr></thead>
-        <tbody>
-          <tr><td>MiniMax M3 / M2.7 / M2.5</td><td><code>proxy-minimax</code></td><td><code>minimax-m3</code></td></tr>
-          <tr><td>Qwen3.8 Max</td><td><code>proxy-qwen-max</code></td><td><code>qwen3.8-max</code></td></tr>
-          <tr><td>Qwen3.8 Flash</td><td><code>proxy-qwen-flash</code></td><td><code>qwen3.8-flash</code></td></tr>
-          <tr><td>Qwen3.7 / 3.6 Plus</td><td><code>proxy-qwen-plus</code></td><td><code>qwen3.6-plus</code></td></tr>
+    <h3 data-page-node-id="iVGa8ELI8iI04N1n4AJkbN">③ /zen/go/v1/messages · Anthropic 协议，客户端需能发 Anthropic 格式</h3>
+    <div class="table-wrap" data-page-node-id="MFdvq3RN7bGZUr3nFwQD6y">
+      <table data-page-node-id="GJiugCLINHfyYH4msqDaUl">
+        <thead data-page-node-id="dvOgTTBATKTc1uX6KTBgYC"><tr data-page-node-id="exKDkmuC3nO0XwCgcChcQC"><th data-page-node-id="PuNAMKq1FG0TsTT5eVw5BL">模型</th><th data-page-node-id="yYwdloIeVPCvg5yOtIb1kz">客户端模型 ID</th><th data-page-node-id="sXwyzvagtQEz7JhKe3vqkf">上游真实 ID</th></tr></thead>
+        <tbody data-page-node-id="12gqViwlO378XJKCyEYDA8">
+          <tr data-page-node-id="HWDIRNtgWWDsgHPig3SGHw"><td data-page-node-id="ZXVVem3rp6qgXoGXItzGJW">MiniMax M3 / M2.7 / M2.5</td><td data-page-node-id="9Bw5qRTusmkmBE7Hltrb49"><code data-page-node-id="hqo81cneSuHNBcTKlXAWRL">proxy-minimax</code></td><td data-page-node-id="gZNAHkbVnLUZ98nUv8vNSy"><code data-page-node-id="cg4XOFwYmfRhZ3vEQPh6a7">minimax-m3</code></td></tr>
+          <tr data-page-node-id="nvnaIcuHPtUCN66djzUUGF"><td data-page-node-id="DSNgSqQKZ5vbIkgv6hUDpK">Qwen3.8 Max</td><td data-page-node-id="YnHvIhaIQKwm4j2WO53vd2"><code data-page-node-id="Nqe5vhCC1j9ge3Tk2VGf8Z">proxy-qwen-max</code></td><td data-page-node-id="v4Nm9ccWzwocRboZhtmkHG"><code data-page-node-id="QMy97zpNlHI91RLPsyJI5k">qwen3.8-max</code></td></tr>
+          <tr data-page-node-id="A5Gb3vUTBDESBDVJAKFfON"><td data-page-node-id="28foBiEucp9EEucCdV1dFP">Qwen3.8 Flash</td><td data-page-node-id="M2HkwOce3cOdd7JFwojpvN"><code data-page-node-id="GlaZX5O2uqCq2xCfD0wXkL">proxy-qwen-flash</code></td><td data-page-node-id="UIOW5eXMQfNpRHwMVlR1QC"><code data-page-node-id="QyjWjsUyTw3tVFGYrMcjfp">qwen3.8-flash</code></td></tr>
+          <tr data-page-node-id="p4kVwYUncwwO7QDcR5YcIU"><td data-page-node-id="KfpuPqMYKqhdj5HB5rYIAc">Qwen3.7 / 3.6 Plus</td><td data-page-node-id="mt4CO7hoaCIIddzFM6eUrI"><code data-page-node-id="VDAKp4uHWdcyw3zQLTOv7c">proxy-qwen-plus</code></td><td data-page-node-id="tKEoitUKY26uE02cNwiYxc"><code data-page-node-id="ppPp80nyFiETsndxCq5eis">qwen3.6-plus</code></td></tr>
         </tbody>
       </table>
     </div>
 
-    <div class="note">
-      <b>本代理不做协议转换。</b>
+    <div class="note" data-page-node-id="khHHlRohGjY1HzibxDVLB7">
+      <b data-page-node-id="ACrXJx4rcKibv0hZMuKo2z">本代理不做协议转换。</b>
       客户端发 OpenAI 格式的请求体时，②③ 两类模型用不了——它只负责补头、改名、换路径，
       不会把 Chat Completions 的 body 翻译成 Messages 的 body。
       直接写上游真实 ID（不加别名、不加前缀）也能用，代理会原样放行。
-      模型清单随时可能变，以<a href="https://opencode.ai/docs/go/">上游文档</a>为准。
+      模型清单随时可能变，以<a href="https://opencode.ai/docs/go/" data-page-node-id="x2vKsMzq89hVSup7Lmta1u">上游文档</a>为准。
     </div>
   </section>
 
-  <section id="config">
-    <h2>配置参考</h2>
-    <p class="sub">优先级：默认值 &lt; 配置文件 &lt; 环境变量 &lt; 命令行参数。</p>
+  <section id="config" data-page-node-id="LDFaOtryNdoVfLp3ekv5ol">
+    <h2 data-page-node-id="xIZpMC9H5SRVVTD4hr5MWA">配置参考</h2>
+    <p class="sub" data-page-node-id="ORWAcZwOCyui0Cgg3EB05t">优先级：默认值 &lt; 配置文件 &lt; 环境变量 &lt; 命令行参数。</p>
 
-    <h3>upstream —— 转发目标</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>protocol</code></td><td><code>https</code></td><td><code>https</code> 或 <code>http</code></td></tr>
-          <tr><td><code>host</code></td><td><code>opencode.ai</code></td><td>上游主机名，也可以直接写完整 URL</td></tr>
-          <tr><td><code>port</code></td><td><code>null</code></td><td><code>null</code> 表示按协议取默认端口</td></tr>
-          <tr><td><code>basePath</code></td><td><code>""</code></td><td>转发时统一加的前缀，如 <code>/zen/go/v1</code></td></tr>
-          <tr><td><code>rewriteHost</code></td><td><code>true</code></td><td>是否把 Host 头改写成上游主机</td></tr>
+    <h3 data-page-node-id="RWzmYIuMNPOYAXH9aHREGz">upstream —— 转发目标</h3>
+    <div class="table-wrap" data-page-node-id="HxL4szGvnq6QyJUHN3vqX5">
+      <table data-page-node-id="rywsBNteTerZm1wiiSqvlI">
+        <thead data-page-node-id="wrUAt724VCcm8n9aNqFf2N"><tr data-page-node-id="YKnAlHNyHvymZsKkVxFy7c"><th data-page-node-id="oyoXZPbLUF5x9Q6BCwblun">字段</th><th data-page-node-id="nP0AJtP8oqPQf9lBZLg3q6">默认值</th><th data-page-node-id="ZLEd7VifJPMxhqksb1Pfpf">说明</th></tr></thead>
+        <tbody data-page-node-id="kt4XvIcnQ6TbAgtxWHMplI">
+          <tr data-page-node-id="LSz8mmd5XXKnXBpIfgj3NN"><td data-page-node-id="NwgwVdG2mveKdeydziErTo"><code data-page-node-id="IM5zjZliQ6cBkN6j8bJslx">protocol</code></td><td data-page-node-id="QQq2iiCTfSdtXHOBCRch58"><code data-page-node-id="syESAS5XJCgxLOTBwS7aEX">https</code></td><td data-page-node-id="eXIR02Vs0PeCP1LZnHByzf"><code data-page-node-id="RoSqDMZien0Zy0g3qKRquk">https</code> 或 <code data-page-node-id="eOsQosMTleMmKI28QIap2G">http</code></td></tr>
+          <tr data-page-node-id="LQKANFwxPbDCCSecVqd2oG"><td data-page-node-id="geO1xoBfA5C12SyHCT0N2H"><code data-page-node-id="LqkO1siA1RObWK8VrqfPBN">host</code></td><td data-page-node-id="eCjN6FFlZAOgHrf21GO9kq"><code data-page-node-id="gfPkyGusq0hJENpopLgPDm">opencode.ai</code></td><td data-page-node-id="MacU25FQk3jQ5LyXCK4Wp5">上游主机名，也可以直接写完整 URL</td></tr>
+          <tr data-page-node-id="xrWwz57yp9GokO2JZxIU3c"><td data-page-node-id="tgGsRkhrDB4lxA7zej7Vsx"><code data-page-node-id="f5zQd9QjBaXhPAh2vIH8iI">port</code></td><td data-page-node-id="CAMrtk0cVpOPEgrSA89D7f"><code data-page-node-id="CLsSD0fsNbMRNsbpF8KuGt">null</code></td><td data-page-node-id="XnbMkOeckRtD4cbnSSY1Ym"><code data-page-node-id="G3eh1tlzCw3IeDm2q3TS9X">null</code> 表示按协议取默认端口</td></tr>
+          <tr data-page-node-id="1eBxH40dpHPeisrIOrJgEv"><td data-page-node-id="zBd8xSWGCkYcnMpHPEkECs"><code data-page-node-id="jGc9jZHk9GrtimQtWetqmG">basePath</code></td><td data-page-node-id="tBu5oQKa03BNnbwSAwcJKc"><code data-page-node-id="EBQiC6ZASVNVMrD9gD5ehk">""</code></td><td data-page-node-id="HIY6LkDLs1MQKFZizCbByL">转发时统一加的前缀，如 <code data-page-node-id="tvVEDXxGsCvLajE4Ul03dZ">/zen/go/v1</code></td></tr>
+          <tr data-page-node-id="PLO2VGMv2m6aZ3Ud2Uey22"><td data-page-node-id="njDaCZ9rbBcuQFubpL3ZZC"><code data-page-node-id="KSBb9zOZIcGEe5yD0y8RPK">rewriteHost</code></td><td data-page-node-id="Cgkvr8wCXlo6vV9DMbWQOf"><code data-page-node-id="wDPom3NiTHVp5TqDjsPXLx">true</code></td><td data-page-node-id="WQhOVXwaF5M9e6UVpSggMJ">是否把 Host 头改写成上游主机</td></tr>
         </tbody>
       </table>
     </div>
 
-    <h3>session —— 会话 ID</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>enabled</code></td><td><code>true</code></td><td>是否启用会话 ID 注入</td></tr>
-          <tr><td><code>headerNames</code></td><td><code>x-opencode-session</code> 等</td><td>按顺序从这些请求头读取客户端自带会话 ID</td></tr>
-          <tr><td><code>bodyFields</code></td><td><code>session_id</code> 等</td><td>按顺序从这些请求体字段读取（支持点路径）</td></tr>
-          <tr><td><code>contentHash.fields</code></td><td><code>["system", ...]</code></td><td>参与内容指纹计算的字段</td></tr>
-          <tr><td><code>includeFirstUserMessage</code></td><td><code>true</code></td><td>首条 user 消息是否参与指纹</td></tr>
-          <tr><td><code>idPrefix</code></td><td><code>ses_</code></td><td>生成 ID 的前缀</td></tr>
-          <tr><td><code>idFormat</code></td><td><code>hex26</code></td><td><code>hex26</code> / <code>hex</code> / <code>uuid</code> / <code>base36</code> / <code>short</code></td></tr>
-          <tr><td><code>requestIdFormat</code></td><td><code>msg_{{session.count}}</code></td><td>请求号模板</td></tr>
-          <tr><td><code>maxSessions</code></td><td><code>512</code></td><td>会话表上限，超出淘汰最旧的</td></tr>
-          <tr><td><code>ttlSeconds</code></td><td><code>0</code></td><td>会话过期秒数，0 表示不过期</td></tr>
+    <h3 data-page-node-id="ZBs4rbqeIloBAn8S5tAns0">session —— 会话 ID</h3>
+    <div class="table-wrap" data-page-node-id="htid8Bk3YSdBsa39BKH2nT">
+      <table data-page-node-id="gYJPUgdW848GQK6a36APv9">
+        <thead data-page-node-id="kT0x3zSaUXfZ6TPWuiBJyM"><tr data-page-node-id="pctAKj0RBPEEVJLh7FXCtq"><th data-page-node-id="c5nYyd3VodS5cZcKUHzzP9">字段</th><th data-page-node-id="zxb5fZQ4lFjh5C4Rp2cLup">默认值</th><th data-page-node-id="h3E1zlgTYEHjEg6wPzjPr2">说明</th></tr></thead>
+        <tbody data-page-node-id="VxTNMgbgkTQfolIXsGZNU3">
+          <tr data-page-node-id="aWybqJWrT3LtoxL0oyf9sp"><td data-page-node-id="DrJyUDrG3McpvhS8jXXPdO"><code data-page-node-id="bCXB6UnlxxaOFx3XWepxB6">enabled</code></td><td data-page-node-id="PEgEBnXptAqZ5G4Hn2kfn2"><code data-page-node-id="L9GqrDsoNVTNb5xjMiTzAq">true</code></td><td data-page-node-id="5BoXINlFaEMrv79scWTplw">是否启用会话 ID 注入</td></tr>
+          <tr data-page-node-id="tSGBeACxvN6U8jJqRAXWqB"><td data-page-node-id="fpXhzlA3xj7UZB66JiSsNp"><code data-page-node-id="sm6EABg55epgDu0Gwpx0zX">headerNames</code></td><td data-page-node-id="HD8FFgrGvzTGqytPJOb2gN"><code data-page-node-id="veupjUPynZVLpbiQTu2Afn">x-opencode-session</code> 等</td><td data-page-node-id="Uy1M8OxozJWphPHCh8Yg5N">按顺序从这些请求头读取客户端自带会话 ID</td></tr>
+          <tr data-page-node-id="Zh58Y4DVmR2cp6bWQqRmDr"><td data-page-node-id="oOsEOJuTjrAefSg1UNrnrA"><code data-page-node-id="74Gz1ZPeO68vj7pci49vBh">bodyFields</code></td><td data-page-node-id="hmxBBKvlkdIg4HFf5wDEdJ"><code data-page-node-id="ob8gNrjDOgd7xzJpgGoSCM">session_id</code> 等</td><td data-page-node-id="gBT50Kf9CrpVqWsDH8afHH">按顺序从这些请求体字段读取（支持点路径）</td></tr>
+          <tr data-page-node-id="vZsAxVOLGVJrVn4RkApnno"><td data-page-node-id="Cuy2AwGTvFDJECuq5H4xiD"><code data-page-node-id="2Tyz9zWA0Nwtt7IWCCgNdO">contentHash.fields</code></td><td data-page-node-id="LSEAYRBxT8sepON6Aohnfy"><code data-page-node-id="7ueYRNWov3feKcHGV0aAEH">["system", ...]</code></td><td data-page-node-id="trnRNtRJqZ2kwinPC8zbn9">参与内容指纹计算的字段</td></tr>
+          <tr data-page-node-id="eyGtYfSaTZsWexUp8JKmbr"><td data-page-node-id="VkYDHSo8IkZQ1RaT6fpFX4"><code data-page-node-id="Z2bOMsbGsgfK5Q3b97GBo5">includeFirstUserMessage</code></td><td data-page-node-id="iJ7qyF8B16Q0wZ9sUs0u63"><code data-page-node-id="SBRUkXV7wyRcgdAkpFJY6q">true</code></td><td data-page-node-id="t3tjdJg4NV0StEJBqPtVB0">首条 user 消息是否参与指纹</td></tr>
+          <tr data-page-node-id="WV6EfqKRDdojF6SMOYCK33"><td data-page-node-id="89MT9mJA29TaHkq0oyA208"><code data-page-node-id="lpob7DdRLTdJwXWunf08TF">idPrefix</code></td><td data-page-node-id="XV7Zqxw9bNVn3YY1nNfR35"><code data-page-node-id="36BZSArx7iZEQWMhvUM6vo">ses_</code></td><td data-page-node-id="7IBCu0gXSqxgXCiOnwnCbx">生成 ID 的前缀</td></tr>
+          <tr data-page-node-id="RAHq45LepB1NbVhBI0awHk"><td data-page-node-id="H7RjKwFKjGDDFVRQoVYm6p"><code data-page-node-id="BCgN9SbfJjlsA1KYvGlUsO">idFormat</code></td><td data-page-node-id="ZpnWHEDXCd4lFglJPrNXpV"><code data-page-node-id="91fZAnCb2GUMFmleNi8jEt">hex26</code></td><td data-page-node-id="IeG4RawuRIQQNpRnpbmG6L"><code data-page-node-id="bzNfdRWs7jzg6Sivwo4XUe">hex26</code> / <code data-page-node-id="5JDDBXAbniCDRtZlhkUwhN">hex</code> / <code data-page-node-id="CK2qz7NJX8HDkxb5HSh0U9">uuid</code> / <code data-page-node-id="inQn0hyezAyaZSMfZuLaAu">base36</code> / <code data-page-node-id="hiHU8WhVbCLT5RDRTZjNDe">short</code></td></tr>
+          <tr data-page-node-id="YM3pD4zPTD8hnX7H1hP2sc"><td data-page-node-id="gshDfmcytHi1GwPR0jnln1"><code data-page-node-id="EAg5DBvzKbDIKCHHmQsp25">requestIdFormat</code></td><td data-page-node-id="XTyUIkDPjK6SsEaHDNX4Fs"><code data-page-node-id="K96i4EVZjpjREZESpzUA3V">msg_{{session.count}}</code></td><td data-page-node-id="UFwmLzRxgDYW70Hmk6EVzG">请求号模板</td></tr>
+          <tr data-page-node-id="ykiYANNu8UT2HojDYWOszr"><td data-page-node-id="euFXMqGJXeFQ6sEvfUoUrE"><code data-page-node-id="1q0SqaxnO5cuKl3JFb5AX2">maxSessions</code></td><td data-page-node-id="YwBgy32UXUf7DZGGnu65Rd"><code data-page-node-id="wFNlA9QzJPfMP1l0Qm9rGh">512</code></td><td data-page-node-id="MvErTg6rwTHazofZqVIJp2">会话表上限，超出淘汰最旧的</td></tr>
+          <tr data-page-node-id="xTSHE0bgCH6HYkY8bRiiSS"><td data-page-node-id="THHvG0AMLn7jeo328xDzDW"><code data-page-node-id="slJalzFxGFdXphQCKGGnQB">ttlSeconds</code></td><td data-page-node-id="juB7ockE7UE0EAvIL52dxK"><code data-page-node-id="gyBxZHmbxU4dPmFvbkkWbK">0</code></td><td data-page-node-id="FPKyfKpsJbIZGj2Quq2Ylq">会话过期秒数，0 表示不过期</td></tr>
         </tbody>
       </table>
     </div>
 
-    <h3>inject —— 参数注入</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>headers</code></td><td>4 个 <code>x-opencode-*</code></td><td>要注入的请求头，值为模板字符串；设为 <code>null</code> 可跳过</td></tr>
-          <tr><td><code>body</code></td><td><code>{}</code></td><td>合并进请求体的字段，支持点路径与模板</td></tr>
-          <tr><td><code>removeBodyFields</code></td><td><code>[]</code></td><td>要从请求体删掉的字段路径</td></tr>
-          <tr><td><code>overwrite</code></td><td><code>true</code></td><td><code>false</code> 表示不覆盖客户端已有的同名头 / 字段</td></tr>
+    <h3 data-page-node-id="ploxDXHrBXtAASaeFUHHi4">inject —— 参数注入</h3>
+    <div class="table-wrap" data-page-node-id="LADPIv5CVILySVEXmTNjfJ">
+      <table data-page-node-id="wqCdPsx60ebzjxw35DSR1j">
+        <thead data-page-node-id="OWENblesAaQKXbrnHBdKou"><tr data-page-node-id="EIT5kXQS7WClGOu9iSxEf0"><th data-page-node-id="Ix3di0HgTPGqTy0gChobCB">字段</th><th data-page-node-id="8IknyVHtxAomIqM34Y4ZNG">默认值</th><th data-page-node-id="CzdqDc1OTDThb83nWyAGO9">说明</th></tr></thead>
+        <tbody data-page-node-id="M0Fx7vt3edD7A4wIadNgLF">
+          <tr data-page-node-id="G8rAgTcVn8HXC0G660988l"><td data-page-node-id="TAcoiQuZemlbI7eN31IVsv"><code data-page-node-id="KUbxOPK7PyknTo4E6iVDVN">headers</code></td><td data-page-node-id="RItyfL01s3sp1r8NJgK9CU">4 个 <code data-page-node-id="S1Ajw7g1wdGopWCVlNNI85">x-opencode-*</code></td><td data-page-node-id="kTxG22Kab5DRaEv4ub1ftG">要注入的请求头，值为模板字符串；设为 <code data-page-node-id="H7bTELkuRCctCKkOrClvlz">null</code> 可跳过</td></tr>
+          <tr data-page-node-id="B4QTHg8iXu5gCwmZOLyYjp"><td data-page-node-id="wuhF0lY9qfZrwGtkJIEKI7"><code data-page-node-id="rLFd5l3m6PS4msA2wbLLA3">body</code></td><td data-page-node-id="dzDoMDF8xTYPHqM1c9Jfjz"><code data-page-node-id="ENnlvQ8VcdRHmhUPaWOEeW">{}</code></td><td data-page-node-id="BFlDkWJ72uGtlqhFvAHMOn">合并进请求体的字段，支持点路径与模板</td></tr>
+          <tr data-page-node-id="HFfkWOEH2dd5hpA0qa7GVt"><td data-page-node-id="8QkK0UnjKtz6VucB4xCFAe"><code data-page-node-id="5bcJUdrzlGEyJC5lfCkagx">removeBodyFields</code></td><td data-page-node-id="6yVOcqjSAvNH3BgG2JkUJw"><code data-page-node-id="zEdghgVhSUCVT02nEAGre1">[]</code></td><td data-page-node-id="GolmfNMZaqMZtlaEJsR8Zg">要从请求体删掉的字段路径</td></tr>
+          <tr data-page-node-id="54RPq79UvIu5KCOYQuT0LJ"><td data-page-node-id="sUMkA1zIHtSP0gC9VyvfXm"><code data-page-node-id="JGt5SkdpYSzLeOM4425DJ9">overwrite</code></td><td data-page-node-id="efgvXXVDr02tJRKlADeDMn"><code data-page-node-id="ilG3mVI0bJeJ6JGv1v7GWl">true</code></td><td data-page-node-id="cRRimfc5LOqTGOuGLy4OwR"><code data-page-node-id="MLtfWgI3zOL6kapAMNF3Xo">false</code> 表示不覆盖客户端已有的同名头 / 字段</td></tr>
         </tbody>
       </table>
     </div>
 
-    <h3>model —— 模型名重写</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>stripPrefixes</code></td><td><code>["proxy-"]</code></td><td>需要剥离的前缀，按顺序匹配，命中一个即停</td></tr>
-          <tr><td><code>map</code></td><td><code>{}</code></td><td>精确映射。先按原始名查，未命中则剥前缀后再查一次</td></tr>
-          <tr><td><code>default</code></td><td><code>null</code></td><td>兜底模型名</td></tr>
+    <h3 data-page-node-id="rqhz3ASGctjW5rEECG8jfX">model —— 模型名重写</h3>
+    <div class="table-wrap" data-page-node-id="MmHyzgkkjHGBmxQ9DKwWgx">
+      <table data-page-node-id="owQzIySqEomFm6yerA5el6">
+        <thead data-page-node-id="ToIDC6wG2kI8Gwktu4XzPC"><tr data-page-node-id="pTYmLJA0yyMQsLkZNpshsk"><th data-page-node-id="lQddGsygsPCApzigfrXHJS">字段</th><th data-page-node-id="HB2z9IRH71PyzA4ASBgI7q">默认值</th><th data-page-node-id="slOFvFvtyf9KLQR4AVftCQ">说明</th></tr></thead>
+        <tbody data-page-node-id="22q60evXlEYr7J7TBMCq3W">
+          <tr data-page-node-id="70n0ym2dT1AbpY8Haj4GUO"><td data-page-node-id="V7JaSCHq2DYydc3AjhggyT"><code data-page-node-id="UTESUlcv22rYqZLXkVBObV">stripPrefixes</code></td><td data-page-node-id="0j6cQn2IswubMD9dpKK8kT"><code data-page-node-id="pBVl9gNZWHrz6FvBXrjBDR">["proxy-"]</code></td><td data-page-node-id="guwAfMELn0r9u0ULFpOBmS">需要剥离的前缀，按顺序匹配，命中一个即停</td></tr>
+          <tr data-page-node-id="tFblkyKBAr8zUQPkRHrMpH"><td data-page-node-id="kMbTrL7Nq5OGw5ndDHAQtN"><code data-page-node-id="7ZVe9Hh4DB29vrxbBGfHBG">map</code></td><td data-page-node-id="O5sUuT7hYecKnB7BjDfVx8"><code data-page-node-id="kYygAJGGHRxCpTWBgrQKqC">{}</code></td><td data-page-node-id="vk8pDVvWRJiD7PE0fATkS9">精确映射。先按原始名查，未命中则剥前缀后再查一次</td></tr>
+          <tr data-page-node-id="DfLrH4xTns7qge3DG5aqC2"><td data-page-node-id="4soTi20QLcxpiWmKO23GwQ"><code data-page-node-id="iO5C5TFBlRjjGgp7uVJml7">default</code></td><td data-page-node-id="jOhxwY7uAy2ivoMq27foYf"><code data-page-node-id="e9cxx43FLTXhmYDS2vn2oA">null</code></td><td data-page-node-id="4hS6U2jOjHqwQ7dODzYDM6">兜底模型名</td></tr>
         </tbody>
       </table>
     </div>
 
-    <h3>模板变量</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>变量</th><th>含义</th></tr></thead>
-        <tbody>
-          <tr><td><code>{{session.id}}</code></td><td>本次请求使用的会话 ID</td></tr>
-          <tr><td><code>{{session.count}}</code></td><td>该会话内的第几个请求（从 1 开始）</td></tr>
-          <tr><td><code>{{session.requestId}}</code></td><td>按 requestIdFormat 渲染出的请求号，如 <code>msg_3</code></td></tr>
-          <tr><td><code>{{model}}</code> / <code>{{path}}</code> / <code>{{method}}</code></td><td>重写后的模型名 / 原始路径 / 方法</td></tr>
-          <tr><td><code>{{header.x-foo}}</code> / <code>{{query.foo}}</code></td><td>客户端请求头（小写）/ 查询参数</td></tr>
-          <tr><td><code>{{env.HOME}}</code></td><td>环境变量</td></tr>
-          <tr><td><code>{{uuid}}</code> / <code>{{random}}</code> / <code>{{randomHex:16}}</code></td><td>每次渲染都不同的随机值</td></tr>
-          <tr><td><code>{{timestamp}}</code> / <code>{{timestampMs}}</code></td><td>秒 / 毫秒时间戳</td></tr>
+    <h3 data-page-node-id="CqOxVEzOI53zdY2n9lVEFP">模板变量</h3>
+    <div class="table-wrap" data-page-node-id="GFd8vrcg97ALTzSlAW0n6B">
+      <table data-page-node-id="vXZfM84rYnCHjjxtUlzCnb">
+        <thead data-page-node-id="9pUcnhcZhT5ySRGKHMlTV1"><tr data-page-node-id="zS3ri5Yw6a0Zbj7mSUaDFX"><th data-page-node-id="JBOt7XeLV247nvwECLBewU">变量</th><th data-page-node-id="e9aeQVAthZtOFTsk1U9N8D">含义</th></tr></thead>
+        <tbody data-page-node-id="eQeT4FxgXNhqB56HMrddMD">
+          <tr data-page-node-id="zb8rm6XF2VfhgRq1EI21pH"><td data-page-node-id="2Ip86qerNIUQhB8gkVDf7g"><code data-page-node-id="jU4ZIx96LAwmzgPTIaZ9Sx">{{session.id}}</code></td><td data-page-node-id="BeV8xAqWPam63wgr22BXEj">本次请求使用的会话 ID</td></tr>
+          <tr data-page-node-id="zqOHh5G9ADqVAvTg7FAUAK"><td data-page-node-id="EwzCxddlAkP1UociTO0kZ2"><code data-page-node-id="PeArydiCtsR0FHvswcK3Yh">{{session.count}}</code></td><td data-page-node-id="CvfACPFCbYO9EpCD954cPf">该会话内的第几个请求（从 1 开始）</td></tr>
+          <tr data-page-node-id="ajNq3aKUxNB1p9YExmDQmi"><td data-page-node-id="U6tUGBhQZrAoHkywkwb4n2"><code data-page-node-id="Ie6sWbFL4HgyJqma0HwuMn">{{session.requestId}}</code></td><td data-page-node-id="8tFEeG3FsoyvxCjKjCSaYC">按 requestIdFormat 渲染出的请求号，如 <code data-page-node-id="lgKW9Jds4KIfpDkEZxeqzz">msg_3</code></td></tr>
+          <tr data-page-node-id="4BSHcgGIlTgPWXU3ZRmj5V"><td data-page-node-id="r448uvYlTfrHLEr25cKHRz"><code data-page-node-id="2j6W75ClLDlCOsaFgqiETt">{{model}}</code> / <code data-page-node-id="1nhK0U2QO2PMIhAepizCbU">{{path}}</code> / <code data-page-node-id="HdfYRw4fLjwjF99LYb6uvi">{{method}}</code></td><td data-page-node-id="cOetZS3iLv3mjYEter5Efw">重写后的模型名 / 原始路径 / 方法</td></tr>
+          <tr data-page-node-id="HNjQWBib7MF1YeGyDMN803"><td data-page-node-id="5oEd5eqFVe4K3rA4UHf138"><code data-page-node-id="A3mf4ZsOzKTA4jSdZl48P0">{{header.x-foo}}</code> / <code data-page-node-id="NnFeCD4JVXt12YoEJStSVJ">{{query.foo}}</code></td><td data-page-node-id="yCPO2H8o8TCwQaBvNSAOYq">客户端请求头（小写）/ 查询参数</td></tr>
+          <tr data-page-node-id="QLDclWmvafmOHJ8HDY0Qf7"><td data-page-node-id="t1YcWncIO0r4LoVY7DkkQP"><code data-page-node-id="QzGDTOmDhjtAqkKFOajtOP">{{env.HOME}}</code></td><td data-page-node-id="bH6C3WDKaYs9Fo5OFxyyF6">环境变量</td></tr>
+          <tr data-page-node-id="VEWGFP5vfBSPo0NHOYHnr4"><td data-page-node-id="5qG6y4BWZGjWTM7cAWxJZv"><code data-page-node-id="iXi8Mv3k6REpiMtMDGO5jd">{{uuid}}</code> / <code data-page-node-id="Op55qgR6N5icxGh790CChi">{{random}}</code> / <code data-page-node-id="9wheXQF77wztPgEIlvZIzT">{{randomHex:16}}</code></td><td data-page-node-id="iDzv3FAyGOWDCvqqARiGVp">每次渲染都不同的随机值</td></tr>
+          <tr data-page-node-id="FhQyMky7wBBp21rxAoX3Aj"><td data-page-node-id="aWyiJXNghn4fZo1REktiXl"><code data-page-node-id="sxXjkDMaWJTSTI8liNH7dr">{{timestamp}}</code> / <code data-page-node-id="waC483cDxZ5GmAXAQ73RvJ">{{timestampMs}}</code></td><td data-page-node-id="xfb1Y3Gzm6MvSQWCKJM0Fc">秒 / 毫秒时间戳</td></tr>
         </tbody>
       </table>
     </div>
   </section>
 
-  <section id="cli">
-    <h2>命令行参考</h2>
-    <p class="sub">所有选项都能与配置文件混用，命令行优先级最高。</p>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>参数</th><th>说明</th></tr></thead>
-        <tbody>
-          <tr><td><code>-c, --config &lt;file&gt;</code></td><td>读取配置文件（支持注释与尾随逗号）</td></tr>
-          <tr><td><code>-p, --port &lt;n&gt;</code> / <code>--host &lt;addr&gt;</code></td><td>监听端口 / 地址</td></tr>
-          <tr><td><code>-u, --upstream &lt;url&gt;</code></td><td>上游地址，如 <code>https://opencode.ai</code> 或 <code>host:port</code></td></tr>
-          <tr><td><code>--base-path &lt;path&gt;</code></td><td>转发路径前缀</td></tr>
-          <tr><td><code>--path-rewrite &lt;a=&gt;b&gt;</code></td><td>路径重写（正则），可重复</td></tr>
-          <tr><td><code>--inject &lt;name=value&gt;</code></td><td>注入请求头，可重复</td></tr>
-          <tr><td><code>--body-inject &lt;k=v&gt;</code></td><td>注入请求体字段，支持点路径，可重复</td></tr>
-          <tr><td><code>--model-prefix &lt;prefix&gt;</code></td><td>要剥离的模型名前缀，可重复</td></tr>
-          <tr><td><code>--model-map &lt;a=b&gt;</code></td><td>模型名精确映射，可重复</td></tr>
-          <tr><td><code>--session-header &lt;name&gt;</code> / <code>--session-field &lt;path&gt;</code></td><td>追加会话来源位置，可重复</td></tr>
-          <tr><td><code>--session-id-format &lt;f&gt;</code> / <code>--request-id-format &lt;t&gt;</code></td><td>会话 ID 格式 / 请求号模板</td></tr>
-          <tr><td><code>--no-session</code> / <code>--no-stream</code></td><td>关闭会话注入 / 关闭流式透传</td></tr>
-          <tr><td><code>--timeout &lt;ms&gt;</code> / <code>--max-body &lt;bytes&gt;</code></td><td>上游超时 / 请求体上限</td></tr>
-          <tr><td><code>--log-level &lt;l&gt;</code> / <code>--log-file &lt;f&gt;</code></td><td>日志级别 / 日志文件（自动轮转）</td></tr>
-          <tr><td><code>--init [file]</code></td><td>生成示例配置</td></tr>
-          <tr><td><code>--print-config</code></td><td>打印合并后的最终配置并退出</td></tr>
+  <section id="cli" data-page-node-id="oOuUYPvnycZWoF3IGcuVe5">
+    <h2 data-page-node-id="5tbbqj7MG4COhlX6pxdZSF">命令行参考</h2>
+    <p class="sub" data-page-node-id="t7a4zhlUrEkfLXEOwn8wJT">所有选项都能与配置文件混用，命令行优先级最高。</p>
+    <div class="table-wrap" data-page-node-id="3JyCJmI3wF9wG1grDyvTjg">
+      <table data-page-node-id="4MU1HFzD2LXWVTbtQ9pjI2">
+        <thead data-page-node-id="mhh5T0KCvH8veJyIxV8pW9"><tr data-page-node-id="pGf4XUJzRRUUlnLkW2FCvH"><th data-page-node-id="qTMLjHP9dWGCc1dAYXJvxg">参数</th><th data-page-node-id="WSDZaH9BP2BBViJtAdFIoE">说明</th></tr></thead>
+        <tbody data-page-node-id="53ticRSCSAzu5OQS0xs37r">
+          <tr data-page-node-id="yXrc8ZsPxP0j0mYi8wYnKW"><td data-page-node-id="nPKHatPaJJAXsGQx5EHLVF"><code data-page-node-id="0SOMk76Ncl84FFPontHAW4">-c, --config &lt;file&gt;</code></td><td data-page-node-id="Qieq1HXhTAsmWnpAeouB4F">读取配置文件（支持注释与尾随逗号）</td></tr>
+          <tr data-page-node-id="jtpgFWdWSgZshYL9jqEXMz"><td data-page-node-id="CxbltJ6vEWgz5OI1zDaIGD"><code data-page-node-id="MyLlyawp3fZVMguEP7HsT2">-p, --port &lt;n&gt;</code> / <code data-page-node-id="CWIq7Qmzy5XyHKcSiSWso8">--host &lt;addr&gt;</code></td><td data-page-node-id="w1a6EqjL3qwfXvn07Q05ha">监听端口 / 地址</td></tr>
+          <tr data-page-node-id="lDlATmWsuUtmXmGcBnIOh5"><td data-page-node-id="vdelXHUlP2HRA6TERi1ZUv"><code data-page-node-id="IbT8sEm3TZxVxucB0fV5Ji">-u, --upstream &lt;url&gt;</code></td><td data-page-node-id="OXA5akNAQnnOSpru4f7nYP">上游地址，如 <code data-page-node-id="AXW1B2eszDDgIOJq3pL1L6">https://opencode.ai</code> 或 <code data-page-node-id="iRwtHWi2eC01VcPjwnMOiF">host:port</code></td></tr>
+          <tr data-page-node-id="45ENLgNYIn3RwvYbspE2Rg"><td data-page-node-id="Bqr5lDAArHi2fl3Q1rrilf"><code data-page-node-id="8kmdLermSH8rRn46dS8RzW">--base-path &lt;path&gt;</code></td><td data-page-node-id="3f1RBxLTVTAYB8tlpfs6e5">转发路径前缀</td></tr>
+          <tr data-page-node-id="jGVAPNJlQQNQRONgQmpzmP"><td data-page-node-id="zPzI8E5TjeedI6hDNQLLXj"><code data-page-node-id="Aw7tMfH2nMHYVzET3mWsxl">--path-rewrite &lt;a=&gt;b&gt;</code></td><td data-page-node-id="w6D9yOLSJv8UmJInd1hULc">路径重写（正则），可重复</td></tr>
+          <tr data-page-node-id="YTKDJEV6Knqe6hPsAhgVmJ"><td data-page-node-id="kEpBxuOar0BuinWzp1RDxs"><code data-page-node-id="IJa5s7zRZtFm4Kbu0uhNSR">--inject &lt;name=value&gt;</code></td><td data-page-node-id="0byyOW9DK4UsP3UEnMRzqI">注入请求头，可重复</td></tr>
+          <tr data-page-node-id="av9h3XjZbnZ661SUp186Cj"><td data-page-node-id="AKj0g7A8i81k1mgQ879zv4"><code data-page-node-id="4ExngTweBGxpwFWA1p1Jt9">--body-inject &lt;k=v&gt;</code></td><td data-page-node-id="HjAZAoFeN0rjOp5QK6Y7pS">注入请求体字段，支持点路径，可重复</td></tr>
+          <tr data-page-node-id="QurEzvAmxwG1HDIS9ZR9Rf"><td data-page-node-id="BD5p0VVEDjoXSnaMfYYHsz"><code data-page-node-id="tF0OZMmJjdO1yqhdZxs0wk">--model-prefix &lt;prefix&gt;</code></td><td data-page-node-id="84zCofREZpfy415XEufLAJ">要剥离的模型名前缀，可重复</td></tr>
+          <tr data-page-node-id="Epse9bJmNIybNH3gQtcP3E"><td data-page-node-id="MKCsGhP6bpXkI6K2e3oFOV"><code data-page-node-id="lwEgDWKRv3Zbk7Zn5BCypc">--model-map &lt;a=b&gt;</code></td><td data-page-node-id="hrLrpgonTlWEPyTNpJSYds">模型名精确映射，可重复</td></tr>
+          <tr data-page-node-id="dKgDZwckOITB9njV2J80x1"><td data-page-node-id="qXU7XhSfJgNbn0xBZC5qEd"><code data-page-node-id="YgAuyLQIrD6CLIwBsQdAtG">--session-header &lt;name&gt;</code> / <code data-page-node-id="MMjKOzs7TAUHV5qYUHJvNc">--session-field &lt;path&gt;</code></td><td data-page-node-id="UW3xFRvFK4EUvqiE688CUt">追加会话来源位置，可重复</td></tr>
+          <tr data-page-node-id="yZsl3aSSPR2JWULQABsSSo"><td data-page-node-id="Fso9yqheIPPkOw7CDGFN6Q"><code data-page-node-id="WQft7narOl20VIZN8CgKOF">--session-id-format &lt;f&gt;</code> / <code data-page-node-id="nmWhq070UuRqCKu8LzuPP3">--request-id-format &lt;t&gt;</code></td><td data-page-node-id="cPyVUPpc82geMDYhzgYSmR">会话 ID 格式 / 请求号模板</td></tr>
+          <tr data-page-node-id="18BRlfmOlDpqggoafuDV9o"><td data-page-node-id="SCEBvmamtEDgDM29qAmoCq"><code data-page-node-id="3XwyTbeRF7jJMiOK3P8UVc">--no-session</code> / <code data-page-node-id="ngLNScxlwWHRh8N4XvOxmw">--no-stream</code></td><td data-page-node-id="MbHmj5P1wjUjCYVAUWH64Y">关闭会话注入 / 关闭流式透传</td></tr>
+          <tr data-page-node-id="ndpAkD8YZjY4pgfi1j26VR"><td data-page-node-id="i2nXg0dkbaXdQhXCyCeccx"><code data-page-node-id="GdsNWYe69WMI5hF92lCcsc">--timeout &lt;ms&gt;</code> / <code data-page-node-id="KyNTjuHxkouwJU2wgkXdGg">--max-body &lt;bytes&gt;</code></td><td data-page-node-id="mgBdetSdi1AJxeu8Z2fSpE">上游超时 / 请求体上限</td></tr>
+          <tr data-page-node-id="HkaIGM7CUa5WrJBx0x8m25"><td data-page-node-id="TFrCznEKAtnKFzakcZx3cQ"><code data-page-node-id="LQLm7CHY2tZsGYbO6zZFzX">--log-level &lt;l&gt;</code> / <code data-page-node-id="ByJrSqnSvBX9GegmjoBvmd">--log-file &lt;f&gt;</code></td><td data-page-node-id="zBxh2zlX0FZPxsOVHDvRWH">日志级别 / 日志文件（自动轮转）</td></tr>
+          <tr data-page-node-id="HLL7ZScXFnSQsdJCzppgsi"><td data-page-node-id="BZz2y5ZjetOvVxHLzWGaNP"><code data-page-node-id="awJNlXSqYtE24cjRH2izJk">--init [file]</code></td><td data-page-node-id="kRHp5GyF3OB0Q8isvrfKVP">生成示例配置</td></tr>
+          <tr data-page-node-id="Jpb9T9UxTBO4jorvGCKKtD"><td data-page-node-id="7c2Lpm5C13MZs3IUVhhagE"><code data-page-node-id="XK4FWNgnUnDRSZC0sSYeBu">--print-config</code></td><td data-page-node-id="S6CS2AywjIBMWegAJNUiDZ">打印合并后的最终配置并退出</td></tr>
         </tbody>
       </table>
     </div>
 
-    <h3>本地状态端点</h3>
-    <pre><code><span class="cmt"># 运行概览：会话数、命中率、注入的头、上游地址</span>
+    <h3 data-page-node-id="m7dEYmcz6SL8GHaHejNSEi">本地状态端点</h3>
+    <pre data-page-node-id="c8gSy1j3hGbFwSxny0frRc"><code data-page-node-id="JCiEEcZYRUDMq5prhrZLez"><span class="cmt" data-page-node-id="K1zWkOGl7XoD2ukFi7yI8H"># 运行概览：会话数、命中率、注入的头、上游地址</span>
 curl http://127.0.0.1:9355/__llm_session_proxy__/status
 
-<span class="cmt"># 会话明细：每个会话的 ID、请求数、最后使用时间</span>
+<span class="cmt" data-page-node-id="HGGAldUvqXmhpovNwkuCjZ"># 会话明细：每个会话的 ID、请求数、最后使用时间</span>
 curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
-    <p>
-      排错时很有用：如果 <code>sessions.active</code> 一直是 0，说明请求根本没到代理——
-      多半是模型 ID 没加 <code>proxy-</code> 前缀，被客户端截走了。
+    <p data-page-node-id="KkddHSWeVg4rBy9xvkH2f4">
+      排错时很有用：如果 <code data-page-node-id="2AzoMRj3fxVG6wZ5bM3PfC">sessions.active</code> 一直是 0，说明请求根本没到代理——
+      多半是模型 ID 没加 <code data-page-node-id="pDuJC3IEKrQcUXKIeFACvr">proxy-</code> 前缀，被客户端截走了。
     </p>
   </section>
 
-  <section id="how">
-    <h2>工作原理</h2>
-    <p class="sub">每个请求按固定顺序处理，会话识别的三级策略是关键。</p>
-    <div class="flow">
-      <div class="flow-step"><b>01 读体</b><span>读入请求体并解析 JSON</span></div>
-      <div class="arrow">→</div>
-      <div class="flow-step"><b>02 会话</b><span>显式标识 &gt; 内容指纹 &gt; 随机</span></div>
-      <div class="arrow">→</div>
-      <div class="flow-step"><b>03 重写</b><span>路径与模型名</span></div>
-      <div class="arrow">→</div>
-      <div class="flow-step"><b>04 注入</b><span>请求头与请求体参数</span></div>
-      <div class="arrow">→</div>
-      <div class="flow-step"><b>05 转发</b><span>SSE 逐块回传</span></div>
+  <section id="how" data-page-node-id="6Au2RHdhy4EEfjFCZDrS0p">
+    <h2 data-page-node-id="7AKB9CPLxhXgBaLiXh5XtL">工作原理</h2>
+    <p class="sub" data-page-node-id="9sUik7grsIEuL0vU47JBdp">每个请求按固定顺序处理，会话识别的三级策略是关键。</p>
+    <div class="flow" data-page-node-id="yx96ZEeWZF8LZeDAKeTrX3">
+      <div class="flow-step" data-page-node-id="8Efd3oFOsp9joRKIT0fOuq"><b data-page-node-id="CGADBqb4kGyhJjNHqGqK8u">01 读体</b><span data-page-node-id="8EtwilAAjeDpqoXMuAJlLo">读入请求体并解析 JSON</span></div>
+      <div class="arrow" data-page-node-id="5XbEhRYSIyRwisWr6zrISR">→</div>
+      <div class="flow-step" data-page-node-id="WPnC3DNwXgJXq0DAeaI1T5"><b data-page-node-id="fwAUFe9PSDEFoUhEHHt44p">02 会话</b><span data-page-node-id="JCtingDsMhvR8CFVjoHgA3">显式标识 &gt; 内容指纹 &gt; 随机</span></div>
+      <div class="arrow" data-page-node-id="MfojQMbrJJDT5IgX7KwjFy">→</div>
+      <div class="flow-step" data-page-node-id="KbzKfksUfcNNUcMwVdIxyB"><b data-page-node-id="ExSnfEcHqZiTO95ziHTvbv">03 重写</b><span data-page-node-id="Oh7DYHvCQD88lnHIr2mGno">路径与模型名</span></div>
+      <div class="arrow" data-page-node-id="7k5mvrs7giis026NQDqvUY">→</div>
+      <div class="flow-step" data-page-node-id="HGyYwZ0biU9L4qGVrVMsty"><b data-page-node-id="SifRV4dzoeFjZFHJK7360V">04 注入</b><span data-page-node-id="48XlgFT5LUipvFf6qBetCE">请求头与请求体参数</span></div>
+      <div class="arrow" data-page-node-id="UDd20maUa8VdjAN6lnnhpS">→</div>
+      <div class="flow-step" data-page-node-id="5ryyunCiBniS2s0XAovf1T"><b data-page-node-id="YfafM106ChxITZQbWMbPRy">05 转发</b><span data-page-node-id="nswu8ai0PugDYuE0AQytmk">SSE 逐块回传</span></div>
     </div>
 
-    <h3>会话识别的三级策略</h3>
-    <p>
-      <b>显式标识</b>——客户端自己发了 <code>x-opencode-session</code>，或请求体里有 <code>session_id</code>。直接复用，最准。
+    <h3 data-page-node-id="OFCYlQr5yYv7lBAsEJCg4J">会话识别的三级策略</h3>
+    <p data-page-node-id="U9NdS1HNvjk0qnjPjnvawI">
+      <b data-page-node-id="wDOblaXySX80yGlx3Ki2Hp">显式标识</b>——客户端自己发了 <code data-page-node-id="X0ayHqOWIILWfxjL2Ozd2F">x-opencode-session</code>，或请求体里有 <code data-page-node-id="XkS1iTkYiiejufolAKtXkH">session_id</code>。直接复用，最准。
     </p>
-    <p>
-      <b>内容指纹</b>——对 <code>system</code> + 首条 user 消息做 SHA-256。同一对话的后续轮次只是往后追加消息，
+    <p data-page-node-id="YuX8ZBY9XCDQpTIPn1lGu7">
+      <b data-page-node-id="7SJkVG0ICWHcsvfWvo7EQy">内容指纹</b>——对 <code data-page-node-id="BldZL83qqAG9rXmAPjQOUP">system</code> + 首条 user 消息做 SHA-256。同一对话的后续轮次只是往后追加消息，
       首条不变，所以指纹稳定，能落回同一个 ID。
     </p>
-    <p>
-      <b>一次性随机</b>——两者都没有时（比如请求体不是 JSON），发一个随机 ID，只保证上游不报 400；
+    <p data-page-node-id="ZEm0cpbf4yRSZvw7byVjGo">
+      <b data-page-node-id="dXshAHl1KRY2mOR1uH3MRh">一次性随机</b>——两者都没有时（比如请求体不是 JSON），发一个随机 ID，只保证上游不报 400；
       这类请求不进会话表，避免把表撑爆。
     </p>
 
-    <h3>限制与注意</h3>
-    <p>
-      <b>只监听本机。</b>代理会带上你的 API Key 转发请求，不要把监听地址改成 <code>0.0.0.0</code>。
+    <h3 data-page-node-id="PPyCYsxNA0lmkb1ht8AMl8">限制与注意</h3>
+    <p data-page-node-id="l2OoLWE91jF3MRhSbpUZYo">
+      <b data-page-node-id="tPp7Ih9fLfGbm478UnsVcd">只监听本机。</b>代理会带上你的 API Key 转发请求，不要把监听地址改成 <code data-page-node-id="FG2MIJPQEr7QFhA2w94IKm">0.0.0.0</code>。
     </p>
-    <p>
-      <b><code>response.stream: false</code> 会破坏 SSE。</b>除非确实需要整体缓冲，否则保持默认的 <code>true</code>。
+    <p data-page-node-id="bSy5V7HgmZYhdrtNjSotxl">
+      <b data-page-node-id="vN8X8NMhAxSH3veqWp4cnQ"><code data-page-node-id="d8dG8JCOmMYv0pw3GVGw0h">response.stream: false</code> 会破坏 SSE。</b>除非确实需要整体缓冲，否则保持默认的 <code data-page-node-id="TPxzNHqJuYLuNV5eerwEh4">true</code>。
     </p>
-    <p>
-      <b><code>bufferBody: false</code> 时无法改写请求体。</b>模型重写和参数注入会失效，只能注入请求头。
+    <p data-page-node-id="XsX1yxVC684RCNpQDTXnav">
+      <b data-page-node-id="Rg8lZR9b6pbpiph6BfEb6E"><code data-page-node-id="ujJ71AFLHNsObwL51KRfpn">bufferBody: false</code> 时无法改写请求体。</b>模型重写和参数注入会失效，只能注入请求头。
     </p>
   </section>
 
 </main>
 
-<footer>
-  <p>
-    <a href="https://github.com/alaahong/llm-session-proxy">GitHub</a> ·
-    <a href="https://www.npmjs.com/package/llm-session-proxy">npm</a> ·
+<footer data-page-node-id="F9uYtZCxsFN2m1pY87YiWo">
+  <p data-page-node-id="AjgUD9d6w1kkiEG4Hsxbm8">
+    <a href="https://github.com/alaahong/llm-session-proxy" data-page-node-id="BVnKV0KCtCr4A256zDCmnt">GitHub</a> ·
+    <a href="https://www.npmjs.com/package/llm-session-proxy" data-page-node-id="m03R7glUNtPw49qmBsBFKC">npm</a> ·
     Apache License 2.0 © 2026 alaahong
   </p>
 </footer>

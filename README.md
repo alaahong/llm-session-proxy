@@ -1,5 +1,8 @@
 # llm-session-proxy
 
+[![npm version](https://img.shields.io/npm/v/llm-session-proxy.svg)](https://www.npmjs.com/package/llm-session-proxy)
+[![Publish to npm](https://github.com/alaahong/llm-session-proxy/actions/workflows/publish.yml/badge.svg)](https://github.com/alaahong/llm-session-proxy/actions/workflows/publish.yml)
+
 **可自定义参数的 LLM 本地反向代理。** 零依赖，`npx` 即可运行。
 
 它坐在你的客户端和上游 API 之间，自动补上客户端不会发的会话头、注入任意自定义参数、
@@ -444,6 +447,21 @@ npx llm-session-proxy -u https://api.example.com --inject "x-session-id={{sessio
 
 Point your client's base URL at `http://127.0.0.1:9355/zen/go/v1` and use `proxy-<model-id>`
 as the model name. See the Chinese sections above for the full configuration reference.
+
+## 发布新版本
+
+发布由 GitHub Actions 完成（[`.github/workflows/publish.yml`](.github/workflows/publish.yml)），不需要在本机登录 npm：
+
+1. 改 `package.json` 里的 `version`
+2. 提交并推送
+3. 打一个同名 tag 并推送：
+
+```bash
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本一致，再用仓库 secrets 里的
+`NPM_TOKEN` 发布到 registry.npmjs.org。也可以在 Actions 页面手动触发，勾选 dry run 只做干跑。
 
 ## License
 

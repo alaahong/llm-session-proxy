@@ -1,0 +1,80 @@
+name: Publish to npm
+
+# 两种触发方式：
+#   1. 推一个与 package.json 版本一致的 tag（如 v0.1.0）——正式发布
+#   2. 在 Actions 页面手动触发——可选择只做干跑，用来验证流程
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只做干跑（npm publish --dry-run），不真正发布'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: 测试并发布
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: 运行单元测试
+        run: npm test
+
+      - name: 校验 tag 与 package.json 版本一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          echo "tag=${tag_version}  package.json=${pkg_version}"
+          if [ "${tag_version}" != "${pkg_version}" ]; then
+            echo "::error::tag 版本与 package.json 不一致，请先同步版本号再打 tag"
+            exit 1
+          fi
+
+      - name: 校验 token 是否配置
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::仓库 secrets 里缺少 NPM_TOKEN，请在 Settings → Secrets and variables → Actions 添加"
+            exit 1
+          fi
+          echo "NPM_TOKEN 已配置（长度 ${#NODE_AUTH_TOKEN}）"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 发布到 npm
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "::notice::干跑模式，不会真正发布"
+            npm publish --dry-run
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: 输出结果
+        if: ${{ inputs.dry_run != 'true' }}
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          {
+            echo "### 已发布 ${name}@${version}"
+            echo ""
+            echo "- npm: https://www.npmjs.com/package/${name}"
+            echo "- 版本校验: \`npm view ${name} version --registry https://registry.npmjs.org\`"
+          } >> "$GITHUB_STEP_SUMMARY"
