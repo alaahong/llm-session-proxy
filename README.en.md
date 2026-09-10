@@ -2,9 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/llm-session-proxy.svg)](https://www.npmjs.com/package/llm-session-proxy)
 [![Publish to npm](https://github.com/alaahong/llm-session-proxy/actions/workflows/publish.yml/badge.svg)](https://github.com/alaahong/llm-session-proxy/actions/workflows/publish.yml)
-[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-1f6feb)](https://alaahong.github.io/llm-session-proxy/en/)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-1f6feb)](https://www.ianzhang.cn/llm-session-proxy/en/)
 
-*English · [中文文档](README.md) · [Documentation site](https://alaahong.github.io/llm-session-proxy/en/)*
+*English · [中文文档](README.md) · [Documentation site](https://www.ianzhang.cn/llm-session-proxy/en/)*
 
 **A configurable local reverse proxy for LLM APIs.** Zero dependencies, runnable with `npx`.
 

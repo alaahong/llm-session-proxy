@@ -2,9 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/llm-session-proxy.svg)](https://www.npmjs.com/package/llm-session-proxy)
 [![Publish to npm](https://github.com/alaahong/llm-session-proxy/actions/workflows/publish.yml/badge.svg)](https://github.com/alaahong/llm-session-proxy/actions/workflows/publish.yml)
-[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-1f6feb)](https://alaahong.github.io/llm-session-proxy/)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-1f6feb)](https://www.ianzhang.cn/llm-session-proxy/)
 
-*中文 · [English](README.en.md) · [在线文档](https://alaahong.github.io/llm-session-proxy/)*
+*中文 · [English](README.en.md) · [在线文档](https://www.ianzhang.cn/llm-session-proxy/)*
 
 **可自定义参数的 LLM 本地反向代理。** 零依赖，`npx` 即可运行。
 

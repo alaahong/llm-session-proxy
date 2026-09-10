@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "author": "alaahong",
-  "homepage": "https://alaahong.github.io/llm-session-proxy/",
+  "homepage": "https://www.ianzhang.cn/llm-session-proxy/",
   "repository": {
     "type": "git",
     "url": "git+ssh://git@github.com/alaahong/llm-session-proxy.git"
