@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +13,16 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const bin = path.join(root, 'bin', 'llm-session-proxy.js');
 
 const runCli = (args) => execFileSync(process.execPath, [bin, ...args], { encoding: 'utf8' });
+
+/** 等条件成立；超时就把最后一次的错误抛出去，避免用例永远挂着。 */
+async function waitFor(predicate, timeoutMs = 5000, stepMs = 25) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() > deadline) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+}
 
 test('parseArgv 解析监听地址与上游 URL', () => {
   const { flags } = parseArgv(['-p', '8080', '--host', '0.0.0.0', '-u', 'http://127.0.0.1:11434/v1']);
@@ -88,6 +98,23 @@ test('parseArgv 处理开关型与注入型参数', () => {
   assert.equal(flags.upstream.basePath, '/zen/go/v1');
 });
 
+test('parseArgv 支持日志目录、轮转与归档参数', () => {
+  const { flags } = parseArgv([
+    '--log-dir', './logs',
+    '--log-rotate', 'DAILY',
+    '--log-keep-days', '7',
+  ]);
+
+  assert.equal(flags.log.dir, './logs');
+  assert.equal(flags.log.rotate, 'daily', '轮转方式应当统一小写');
+  assert.equal(flags.log.keepDays, 7);
+
+  // --no-log-file 是"关掉文件输出"的开关
+  assert.equal(parseArgv(['--no-log-file']).flags.log.file, false);
+  // 放在一起时以最后出现的为准
+  assert.equal(parseArgv(['--log-file', './a.log', '--no-log-file']).flags.log.file, false);
+});
+
 test('parseArgv 识别本地工具开关', () => {
   assert.deepEqual(parseArgv(['--help']), { help: true });
   assert.deepEqual(parseArgv(['-h']), { help: true });
@@ -150,7 +177,19 @@ test('CLI --version 输出语义化版本号', () => {
 
 test('CLI --help 打印用法并覆盖关键选项', () => {
   const output = runCli(['--help']);
-  for (const flag of ['--inject', '--model-prefix', '--path-rewrite', '--print-config', '--init', '--lang']) {
+  for (const flag of [
+    '--inject',
+    '--model-prefix',
+    '--path-rewrite',
+    '--print-config',
+    '--init',
+    '--lang',
+    '--log-file',
+    '--no-log-file',
+    '--log-dir',
+    '--log-rotate',
+    '--log-keep-days',
+  ]) {
     assert.ok(output.includes(flag), `帮助里应当提到 ${flag}`);
   }
 });
@@ -171,6 +210,52 @@ test('CLI --print-config 输出可解析的 JSON，且命令行覆盖生效', ()
   assert.equal(config.upstream.host, 'opencode.ai');
   assert.equal(config.inject.headers['x-a'], '1');
   assert.equal(config.__configPath, undefined, '内部字段不应出现在输出里');
+});
+
+test('CLI --print-config 给出日志实际会写到哪里', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-cli-home-'));
+  const env = { ...process.env, LSP_HOME: home };
+  const exec = (args) => execFileSync(process.execPath, [bin, ...args], { encoding: 'utf8', env });
+
+  const def = JSON.parse(exec(['--print-config']));
+  assert.equal(def.log.file, null, 'file 保持 null 表示"用默认位置"');
+  assert.equal(def.log.rotate, 'size');
+  assert.equal(def.log.keepDays, 30);
+  assert.equal(def.log.resolvedFile, path.join(home, 'logs', 'llm-session-proxy.log'));
+
+  const custom = JSON.parse(exec(['--print-config', '--log-dir', path.join(home, 'custom'), '--log-rotate', 'daily', '--log-keep-days', '3']));
+  assert.equal(custom.log.resolvedFile, path.join(home, 'custom', 'llm-session-proxy.log'));
+  assert.equal(custom.log.rotate, 'daily');
+  assert.equal(custom.log.keepDays, 3);
+
+  const off = JSON.parse(exec(['--print-config', '--no-log-file']));
+  assert.equal(off.log.file, false);
+  assert.equal(off.log.resolvedFile, null, '关掉文件输出时没有解析出来的路径');
+});
+
+test('CLI 默认把日志写到 $LSP_HOME/logs 下，并在横幅里报出实际路径', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-cli-run-'));
+  const logFile = path.join(home, 'logs', 'llm-session-proxy.log');
+
+  const child = spawn(process.execPath, [bin, '-p', '0', '-u', 'http://127.0.0.1:1'], {
+    // 固定英文，横幅断言才不会被宿主机的 PROXY_LANG 影响
+    env: { ...process.env, LSP_HOME: home, PROXY_LANG: 'en' },
+    stdio: 'ignore',
+  });
+
+  try {
+    await waitFor(() => {
+      if (!fs.existsSync(logFile)) return false;
+      // 等最后一个断言目标出现：日志是逐行 append，只等 'listening' 会撞上"还没写完"的竞态
+      return fs.readFileSync(logFile, 'utf8').includes('size rotation');
+    }, 10_000);
+
+    const text = fs.readFileSync(logFile, 'utf8');
+    assert.ok(text.includes(logFile), '横幅里的日志路径应当就是默认位置');
+    assert.match(text, /keep 30 days/, '横幅里应当说明轮转与归档策略');
+  } finally {
+    child.kill();
+  }
 });
 
 test('CLI --init 生成的配置能被自己解析并用于启动', () => {

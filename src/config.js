@@ -1,7 +1,14 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
+import { LEVELS, ROTATE_MODES } from './logger.js';
 import { SUPPORTED_LANGS, normalizeLang, setLang, t } from './messages.js';
+
+/** 默认日志文件基名（与包名一致），用于拼默认路径与归档匹配。 */
+export const LOG_BASENAME = 'llm-session-proxy';
+/** 默认配置目录名（家目录下的隐藏目录），可用 LSP_HOME 覆盖。 */
+export const DEFAULT_HOME_DIR = '.lsp';
 
 /**
  * 默认配置。
@@ -90,9 +97,17 @@ export const DEFAULT_CONFIG = {
   },
   log: {
     level: 'info',
+    // null  → 默认位置（$LSP_HOME/logs 或 ~/.lsp/logs）下的 <LOG_BASENAME>.log
+    // string → 指定文件；false → 不写文件，只输出到控制台
     file: null,
+    // 只想改目录、文件名保持默认时用它
+    dir: null,
+    // size | daily | off
+    rotate: 'size',
     maxBytes: 5 * 1024 * 1024,
     backups: 2,
+    // 超过这个天数的历史日志自动删除；0 表示永久保留
+    keepDays: 30,
     requests: true,
   },
 };
@@ -113,6 +128,11 @@ const ENV_MAP = {
   PROXY_LANG: ['lang'],
   LOG_FILE: ['log', 'file'],
   LOG_LEVEL: ['log', 'level'],
+  LOG_DIR: ['log', 'dir'],
+  LOG_ROTATE: ['log', 'rotate'],
+  LOG_KEEP_DAYS: ['log', 'keepDays'],
+  LOG_MAX_BYTES: ['log', 'maxBytes'],
+  LOG_BACKUPS: ['log', 'backups'],
   SESSION_ID_PREFIX: ['session', 'idPrefix'],
   SESSION_ID_FORMAT: ['session', 'idFormat'],
   REQUEST_ID_FORMAT: ['session', 'requestIdFormat'],
@@ -190,11 +210,16 @@ function setByPath(target, keyPath, value) {
 
 function coerce(keyPath, raw) {
   const key = keyPath.join('.');
-  if (/^(listen\.port|upstream\.port|request\.timeoutMs|request\.maxBodyBytes|session\.maxSessions|session\.ttlSeconds|response\.timeoutMs|log\.maxBytes|log\.backups)$/.test(key)) {
+  if (/^(listen\.port|upstream\.port|request\.timeoutMs|request\.maxBodyBytes|session\.maxSessions|session\.ttlSeconds|response\.timeoutMs|log\.maxBytes|log\.backups|log\.keepDays)$/.test(key)) {
     const num = Number(raw);
     if (!Number.isFinite(num)) throw new Error(t('config.envNotNumber', { key, raw }));
     return num;
   }
+  if (key === 'log.file' && /^(off|none|false|no|0)$/i.test(String(raw).trim())) {
+    // LOG_FILE=off 关闭文件输出（命令行对应 --no-log-file）
+    return false;
+  }
+  if (key === 'log.rotate') return String(raw).trim().toLowerCase();
   if (/^(inject\.headers|request\.pathRewrite)$/.test(key)) {
     const value = JSON.parse(raw);
     return value;
@@ -232,6 +257,17 @@ function normalize(config) {
   }
   if (next.model && Array.isArray(next.model.stripPrefixes)) {
     next.model.stripPrefixes = next.model.stripPrefixes.filter((p) => typeof p === 'string' && p.length > 0);
+  }
+  if (isPlainObject(next.log)) {
+    const log = { ...next.log };
+    // 空串等同于"没写"，退回默认位置而不是当成当前目录
+    if (typeof log.file === 'string' && !log.file.trim()) log.file = null;
+    if (typeof log.dir === 'string' && !log.dir.trim()) log.dir = null;
+    if (typeof log.rotate === 'string') log.rotate = log.rotate.trim().toLowerCase();
+    for (const key of ['maxBytes', 'backups', 'keepDays']) {
+      if (log[key] !== undefined && log[key] !== null) log[key] = Number(log[key]);
+    }
+    next.log = log;
   }
   if (next.request && Array.isArray(next.request.pathRewrite)) {
     next.request.pathRewrite = next.request.pathRewrite
@@ -272,8 +308,52 @@ function validate(config) {
   if (!SUPPORTED_LANGS.includes(config.lang)) {
     errors.push(t('config.badLang', { lang: config.lang }));
   }
+  validateLog(config.log, errors);
   if (errors.length) throw new Error(t('config.validationFailed', { list: errors.join('\n  - ') }));
   return config;
+}
+
+/** 日志配置的校验：宁可启动即报错，也不要静默退化成"不写日志"。 */
+function validateLog(log, errors) {
+  if (!isPlainObject(log)) {
+    errors.push(t('config.badLog'));
+    return;
+  }
+  const fileOk =
+    log.file === null ||
+    log.file === false ||
+    (typeof log.file === 'string' && log.file.trim().length > 0);
+  if (!fileOk) errors.push(t('config.badLogFile', { file: JSON.stringify(log.file) }));
+  if (log.dir !== null && (typeof log.dir !== 'string' || !log.dir.trim())) {
+    errors.push(t('config.badLogDir', { dir: JSON.stringify(log.dir) }));
+  }
+  if (!ROTATE_MODES.includes(log.rotate)) {
+    errors.push(t('config.badLogRotate', { rotate: log.rotate, modes: ROTATE_MODES.join(' | ') }));
+  }
+  if (!Object.hasOwn(LEVELS, log.level)) {
+    errors.push(t('config.badLogLevel', { level: log.level, levels: Object.keys(LEVELS).join(' | ') }));
+  }
+  for (const key of ['maxBytes', 'backups', 'keepDays']) {
+    const value = log[key];
+    if (!Number.isFinite(value) || value < 0) {
+      errors.push(t('config.badLogNumber', { key: `log.${key}`, value }));
+    }
+  }
+}
+
+export function resolveLogFile(log = {}, { env = process.env, name = LOG_BASENAME } = {}) {
+  if (log.file === false) return null;
+  if (typeof log.file === 'string' && log.file.trim()) return path.resolve(log.file.trim());
+  const dir =
+    typeof log.dir === 'string' && log.dir.trim() ? path.resolve(log.dir.trim()) : defaultLogDir(env);
+  return path.join(dir, `${name}.log`);
+}
+
+/** 默认日志目录：LSP_HOME/logs（设置了的话），否则 ~/.lsp/logs。 */
+export function defaultLogDir(env = process.env) {
+  const home = typeof env.LSP_HOME === 'string' ? env.LSP_HOME.trim() : '';
+  if (home) return path.resolve(home, 'logs');
+  return path.join(os.homedir(), DEFAULT_HOME_DIR, 'logs');
 }
 
 /**

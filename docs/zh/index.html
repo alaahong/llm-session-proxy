@@ -98,6 +98,11 @@
         <p>逐块转发而不是攒完再发，流式输出体验不受影响；上游 4xx 错误体原样回传。</p>
       </div>
       <div class="card">
+        <div class="tag">ops</div>
+        <h4>日志默认落盘</h4>
+        <p><code>~/.lsp/logs/llm-session-proxy.log</code>，支持按大小 / 按日期轮转与 30 天归档——进程消失也留得下线索。</p>
+      </div>
+      <div class="card">
         <div class="tag">deps</div>
         <h4>零依赖</h4>
         <p>只用 Node 内置模块，不引入任何第三方包，<code>npx</code> 启动无安装负担。</p>
@@ -340,12 +345,42 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--session-id-format &lt;f&gt;</code> / <code>--request-id-format &lt;t&gt;</code></td><td>会话 ID 格式 / 请求号模板</td></tr>
           <tr><td><code>--no-session</code> / <code>--no-stream</code></td><td>关闭会话注入 / 关闭流式透传</td></tr>
           <tr><td><code>--timeout &lt;ms&gt;</code> / <code>--max-body &lt;bytes&gt;</code></td><td>上游超时 / 请求体上限</td></tr>
-          <tr><td><code>--log-level &lt;l&gt;</code> / <code>--log-file &lt;f&gt;</code></td><td>日志级别 / 日志文件（自动轮转）</td></tr>
+          <tr><td><code>--log-level &lt;l&gt;</code></td><td>日志级别：<code>silent</code> | <code>error</code> | <code>warn</code> | <code>info</code> | <code>debug</code></td></tr>
+          <tr><td><code>--log-file &lt;f&gt;</code> / <code>--no-log-file</code></td><td>日志文件路径 / 关闭文件输出（只出控制台）</td></tr>
+          <tr><td><code>--log-dir &lt;dir&gt;</code></td><td>默认日志文件所在目录</td></tr>
+          <tr><td><code>--log-rotate &lt;mode&gt;</code></td><td><code>size</code> | <code>daily</code> | <code>off</code></td></tr>
+          <tr><td><code>--log-keep-days &lt;n&gt;</code></td><td>自动删除超过 N 天的历史日志（<code>0</code> 为永久保留）</td></tr>
           <tr><td><code>--init [file]</code></td><td>生成示例配置</td></tr>
           <tr><td><code>--print-config</code></td><td>打印合并后的最终配置并退出</td></tr>
         </tbody>
       </table>
     </div>
+
+    <h3 id="logs">日志</h3>
+    <p>
+      <b>默认就会写日志文件</b>，因为最难查的故障——未捕获异常、进程悄无声息地消失——恰恰是终端窗口一关就什么线索都不剩的那类。
+      默认位置是 <code>$LSP_HOME/logs/llm-session-proxy.log</code>；未设置 <code>LSP_HOME</code> 时是
+      <code>~/.lsp/logs/llm-session-proxy.log</code>。用 <code>--log-file &lt;path&gt;</code> /
+      <code>--log-dir &lt;dir&gt;</code> 覆盖，用 <code>--no-log-file</code> 关掉。
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th><code>log.rotate</code></th><th>行为</th></tr></thead>
+        <tbody>
+          <tr><td><code>size</code> <span class="sub">（默认）</span></td><td><code>app.log</code> 涨到 <code>log.maxBytes</code> 后变成 <code>app.log.1</code>、<code>.2</code> …，最多保留 <code>log.backups</code> 份</td></tr>
+          <tr><td><code>daily</code></td><td>每天一个文件：<code>app-YYYY-MM-DD.log</code>；<code>log.maxBytes</code> 依然限制单日文件大小</td></tr>
+          <tr><td><code>off</code></td><td>不轮转也不截断，交给 <code>logrotate</code> 之类的外部工具</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <b>归档。</b>启动时、以及运行期间最多每 6 小时一次，符合命名规则
+      （<code>app.log</code>、<code>app.log.N</code>、<code>app-YYYY-MM-DD.log</code>）且 mtime 早于
+      <code>log.keepDays</code>（默认 <b>30 天</b>）的文件会被删除。正在写的文件永不删除；不符合命名规则的文件——
+      包括同目录里其他任何文件——一律不动。
+    </p>
+    <pre><code><span class="cmt"># 日志实际会落在哪儿？</span>
+llm-session-proxy --print-config | grep resolvedFile</code></pre>
 
     <h3>本地状态端点</h3>
     <pre><code><span class="cmt"># 运行概览：会话数、命中率、注入的头、上游地址</span>
@@ -392,7 +427,7 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       <b>单个畸形请求不会让进程退出。</b>非法 <code>Host</code> 头、畸形请求行、上游返回含非法字符的状态行或响应头，都会被转成对应的 4xx / 5xx，进程继续服务。
     </p>
     <p>
-      <b>未捕获异常会写进日志文件。</b>兜底处理器把 <code>uncaughtException</code> 与 <code>unhandledRejection</code> 的完整栈写入 <code>--log-file</code>。Node 默认只打 stderr 就终止进程，日志文件里一片空白——现场看起来就是「日志正常、进程凭空消失」。<b>建议始终带上 <code>--log-file</code>。</b>
+      <b>未捕获异常会写进日志文件。</b>兜底处理器把 <code>uncaughtException</code> 与 <code>unhandledRejection</code> 的完整栈写进日志文件。Node 默认只打 stderr 就终止进程，日志文件里一片空白——现场看起来就是「日志正常、进程凭空消失」。正因如此，<b>文件日志默认就是开着的</b>，详见<a href="#logs">日志</a>一节。
     </p>
 
     <h3>限制与注意</h3>

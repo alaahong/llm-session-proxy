@@ -42,6 +42,13 @@ const en = {
   'config.injectNotObject': () => 'inject.headers must be an object (values are template strings)',
   'config.badLang': ({ lang }) => `Unsupported lang: ${lang} (expected: ${SUPPORTED_LANGS.join(' | ')})`,
   'config.validationFailed': ({ list }) => `Config validation failed:\n  - ${list}`,
+  'config.badLog': () => 'log must be an object',
+  'config.badLogFile': ({ file }) =>
+    `log.file must be a path string or false (console only), got ${file}`,
+  'config.badLogDir': ({ dir }) => `log.dir must be a path string or null, got ${dir}`,
+  'config.badLogRotate': ({ rotate, modes }) => `log.rotate must be ${modes}, got ${rotate}`,
+  'config.badLogLevel': ({ level, levels }) => `log.level must be ${levels}, got ${level}`,
+  'config.badLogNumber': ({ key, value }) => `${key} must be a non-negative number, got ${value}`,
 
   // ---------- cli.js：帮助与示例配置 ----------
   'cli.help': ({ name, version, defaults }) => `
@@ -73,7 +80,11 @@ OPTIONS
       --max-body <bytes>       Maximum request body size (default ${defaults.maxBodyBytes})
   -l, --lang <en|zh>           Language of console output and log messages (default en)
       --log-level <level>      Log level: silent | error | warn | info | debug
-      --log-file <file>        Also write logs to a file (rotated by size)
+      --log-file <file>        Log file (default ~/.lsp/logs/${name}.log)
+      --no-log-file            Do not write a log file (console only)
+      --log-dir <dir>          Directory of the default log file
+      --log-rotate <mode>      size | daily | off (default size)
+      --log-keep-days <days>   Delete rotated logs older than this (default 30, 0 = keep forever)
 
 LOCAL TOOLS
       --print-config           Print the merged config and exit
@@ -169,7 +180,17 @@ EXAMPLES
 
   "lang": "en",                          // language of console output and log messages: en | zh
 
-  "log": { "level": "info", "file": null, "maxBytes": 5242880, "backups": 2 }
+  "log": {
+    "level": "info",                     // silent | error | warn | info | debug
+    // Where logs go. null = default location ($LSP_HOME/logs or ~/.lsp/logs)<name>.log
+    //                 a path = that file;  false = no log file, console only
+    "file": null,
+    "dir": null,                         // change the directory only, keep the default file name
+    "rotate": "size",                    // size | daily | off
+    "maxBytes": 5242880,                 // rotate after this many bytes (size and daily modes)
+    "backups": 2,                        // how many .1/.2 backups to keep
+    "keepDays": 30                       // delete logs older than N days; 0 = keep forever
+  }
 }
 `,
 
@@ -205,7 +226,18 @@ EXAMPLES
   'cli.banner.baseUrlRaw': ({ url }) => `      ${url}/zen/go/v1   or the upstream path appended as-is`,
   'cli.banner.statusEndpoint': ({ url }) => `  status       ${url}/__llm_session_proxy__/status`,
   'cli.banner.configFile': ({ path }) => `  config file  ${path}`,
-  'cli.banner.logFile': ({ path }) => `  log file     ${path}`,
+  'cli.banner.logFile': ({ path, detail }) => `  log file     ${path}${detail ? `  [${detail}]` : ''}`,
+  'cli.banner.logFileOff': () => '  log file     (disabled, console only)',
+
+  // ---------- 日志轮转与归档（横幅里拼接展示） ----------
+  'log.rotate.size': () => 'size',
+  'log.rotate.daily': () => 'daily',
+  'log.rotate.off': () => 'off',
+  'log.rotateMode': ({ mode }) => `${mode} rotation`,
+  'log.rotateOff': () => 'no rotation',
+  'log.sizeLimit': ({ maxBytes, backups }) => `max ${maxBytes} B, ${backups} backups`,
+  'log.keepDays': ({ days }) => `keep ${days} days`,
+  'log.keepForever': () => 'keep forever',
 
   // ---------- cli.js：进程级兜底 ----------
   'cli.guard.uncaught': ({ kind, detail }) => `[${kind}] uncaught error (process continues): ${detail}`,
@@ -273,6 +305,12 @@ const zh = {
   'config.injectNotObject': () => 'inject.headers 必须是对象（值为模板字符串）',
   'config.badLang': ({ lang }) => `不支持的 lang: ${lang}（可选 ${SUPPORTED_LANGS.join(' | ')}）`,
   'config.validationFailed': ({ list }) => `配置校验失败:\n  - ${list}`,
+  'config.badLog': () => 'log 必须是对象',
+  'config.badLogFile': ({ file }) => `log.file 必须是路径字符串或 false（只输出到控制台），收到 ${file}`,
+  'config.badLogDir': ({ dir }) => `log.dir 必须是路径字符串或 null，收到 ${dir}`,
+  'config.badLogRotate': ({ rotate, modes }) => `log.rotate 只能是 ${modes}，收到 ${rotate}`,
+  'config.badLogLevel': ({ level, levels }) => `log.level 只能是 ${levels}，收到 ${level}`,
+  'config.badLogNumber': ({ key, value }) => `${key} 必须是非负数，收到 ${value}`,
 
   // ---------- cli.js ----------
   'cli.help': ({ name, version, defaults }) => `
@@ -301,9 +339,13 @@ ${name} v${version}
       --no-stream              关闭流式透传（整体缓冲后返回）
       --timeout <ms>           上游请求超时（默认 ${defaults.timeoutMs}）
       --max-body <bytes>       请求体上限（默认 ${defaults.maxBodyBytes}）
-  -l, --lang <en|zh>           控制台与日志文案语言（默认 en）
-      --log-level <level>      日志级别：silent | error | warn | info | debug
-      --log-file <file>        额外写入日志文件（自动按大小轮转）
+  -l, --lang <en|zh>            控制台与日志文案语言（默认 en）
+      --log-level <level>       日志级别：silent | error | warn | info | debug
+      --log-file <file>         日志文件（默认 ~/.lsp/logs/${name}.log）
+      --no-log-file             不写日志文件（只输出到控制台）
+      --log-dir <dir>           默认日志文件所在目录
+      --log-rotate <mode>       轮转方式：size | daily | off（默认 size）
+      --log-keep-days <days>    自动删除超过该天数的历史日志（默认 30，0 为永久保留）
 
 本地工具
       --print-config           打印合并后的最终配置并退出
@@ -399,7 +441,17 @@ ${name} v${version}
 
   "lang": "en",                          // 控制台与日志文案语言：en | zh
 
-  "log": { "level": "info", "file": null, "maxBytes": 5242880, "backups": 2 }
+  "log": {
+    "level": "info",                     // silent | error | warn | info | debug
+    // 日志写到哪里。null = 默认位置（$LSP_HOME/logs 或 ~/.lsp/logs）下的 <包名>.log
+    //              路径 = 写到该文件；false = 不写文件，只输出到控制台
+    "file": null,
+    "dir": null,                         // 只想换目录、文件名保持默认时用它
+    "rotate": "size",                    // size | daily | off
+    "maxBytes": 5242880,                 // 超过该字节数就轮转（size 与 daily 都生效）
+    "backups": 2,                        // 保留几份 .1/.2 备份
+    "keepDays": 30                       // 自动删除超过 N 天的历史日志；0 表示永久保留
+  }
 }
 `,
 
@@ -435,7 +487,18 @@ ${name} v${version}
   'cli.banner.baseUrlRaw': ({ url }) => `      ${url}/zen/go/v1   或按上游路径原样拼接`,
   'cli.banner.statusEndpoint': ({ url }) => `  状态端点    ${url}/__llm_session_proxy__/status`,
   'cli.banner.configFile': ({ path }) => `  配置文件    ${path}`,
-  'cli.banner.logFile': ({ path }) => `  日志文件    ${path}`,
+  'cli.banner.logFile': ({ path, detail }) => `  日志文件    ${path}${detail ? `  [${detail}]` : ''}`,
+  'cli.banner.logFileOff': () => '  日志文件    （已关闭，只输出到控制台）',
+
+  // ---------- 日志轮转与归档（横幅里拼接展示） ----------
+  'log.rotate.size': () => '按大小',
+  'log.rotate.daily': () => '按日期',
+  'log.rotate.off': () => '关闭',
+  'log.rotateMode': ({ mode }) => `${mode}轮转`,
+  'log.rotateOff': () => '不轮转',
+  'log.sizeLimit': ({ maxBytes, backups }) => `单文件 ${maxBytes} 字节，保留 ${backups} 份`,
+  'log.keepDays': ({ days }) => `保留 ${days} 天`,
+  'log.keepForever': () => '永久保留',
 
   // ---------- cli.js：进程级兜底 ----------
   'cli.guard.uncaught': ({ kind, detail }) => `[${kind}] 未捕获的错误（进程继续运行）: ${detail}`,

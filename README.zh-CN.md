@@ -55,6 +55,7 @@ x-opencode-session : 会话 ID，同一对话内保持稳定（用于提示词�
 - **请求路径重写**——客户端只会填 `/v1` 时，用一条正则把它转到上游真正要的路径。
 - **请求体参数注入 / 删除**——统一给所有请求补 `temperature`、`metadata`，或删掉上游不认的字段。
 - **SSE 流式零缓冲透传**——逐块转发，不攒完再发，流式体验不受影响。
+- **日志默认落盘**——`~/.lsp/logs/llm-session-proxy.log`，支持按大小 / 按日期轮转与 30 天归档，进程消失也留得下线索。
 - **零依赖**——只用 Node 内置模块，不引入任何第三方包，`npx` 启动无安装负担。
 - **本地状态端点**——随时查看会话数、命中率、注入配置和会话明细。
 
@@ -282,8 +283,49 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 | `userAgentMode` | `replace-generic` | `keep` 保留客户端 UA；`replace` 总是替换；`replace-generic` 仅在客户端 UA 缺失或像个通用 HTTP 库时替换 |
 | `response.stream` | `true` | 是否流式透传。`false` 会整体缓冲后返回（**会破坏 SSE，除非有特殊需要否则别关**） |
 | `log.level` | `info` | `silent` / `error` / `warn` / `info` / `debug` |
-| `log.file` | `null` | 额外的日志文件路径，按大小自动轮转 |
+| `log.file` | `null` | `null` 表示写在默认位置（见「日志」一节）：`~/.lsp/logs/llm-session-proxy.log`；给路径就写在那儿；`false` 关闭文件输出（只出控制台） |
+| `log.dir` | `null` | 只换目录，文件名保持默认 |
+| `log.rotate` | `size` | `size` / `daily` / `off` |
+| `log.maxBytes` | `5242880` | 单个文件超过该字节数就轮转（`size` 与 `daily` 都生效） |
+| `log.backups` | `2` | 保留几份 `.1`/`.2` 备份。`0` 表示直接丢弃旧内容 |
+| `log.keepDays` | `30` | 自动删除超过 N 天的历史日志。`0` 表示永久保留 |
 | `lang` | `en` | 控制台与日志文案语言：`en` / `zh` |
+
+---
+
+## 日志
+
+**默认就会写日志文件**，因为最难查的故障——未捕获异常、进程悄无声息地消失——恰恰是终端窗口一关
+就什么线索都不剩的那类。
+
+| 想做什么 | 怎么做 |
+| --- | --- |
+| 默认位置 | `$LSP_HOME/logs/llm-session-proxy.log`；未设置 `LSP_HOME` 时是 `~/.lsp/logs/llm-session-proxy.log` |
+| 指定文件 | `log.file` / `--log-file <path>` / `LOG_FILE=<path>` |
+| 只换目录 | `log.dir` / `--log-dir <dir>` / `LOG_DIR=<dir>`（文件名保持默认） |
+| 关掉 | `--no-log-file` / `"file": false` / `LOG_FILE=off` |
+
+轮转方式由 `log.rotate` / `--log-rotate` / `LOG_ROTATE` 决定：
+
+| 模式 | 行为 |
+| --- | --- |
+| `size`（默认） | `app.log` 涨到 `log.maxBytes` 后变成 `app.log.1`、`.2` …，最多保留 `log.backups` 份 |
+| `daily` | 每天一个文件：`app-YYYY-MM-DD.log`；`log.maxBytes` 依然限制单日文件大小 |
+| `off` | 不轮转也不截断，交给 `logrotate` 之类的外部工具 |
+
+**归档。** 启动时、以及运行期间最多每 6 小时一次，日志器会删除**符合自己命名规则**
+（`app.log`、`app.log.N`、`app-YYYY-MM-DD.log`）且 mtime 早于 `log.keepDays`（默认 **30**，
+`0` 为永久保留）的文件。正在写的文件永不删除；不符合命名规则的文件（包括同目录里其他任何文件）
+一律不动。
+
+想确认日志实际落在哪儿：
+
+```bash
+llm-session-proxy --print-config | grep resolvedFile
+```
+
+依赖默认位置时 `log.file` 仍是 `null`；`--print-config` 输出里的 `log.resolvedFile` 才是日志器
+真正会打开的那个绝对路径。
 
 ---
 
@@ -328,14 +370,18 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 | `--no-session` | 关闭会话注入 |
 | `--no-stream` | 关闭流式透传 |
 | `--timeout <ms>` / `--max-body <bytes>` | 超时 / 请求体上限 |
-| `--log-level <l>` / `--log-file <f>` | 日志级别 / 日志文件 |
+| `--log-level <l>` | 日志级别 |
+| `--log-file <f>` / `--no-log-file` | 日志文件路径 / 关闭文件输出 |
+| `--log-dir <dir>` | 默认日志文件所在目录 |
+| `--log-rotate <mode>` | `size` / `daily` / `off` |
+| `--log-keep-days <n>` | 自动删除超过 N 天的历史日志（`0` 为永久保留） |
 | `-l, --lang <en\|zh>` | 控制台与日志文案语言（默认 `en`）|
 | `--init [file]` | 生成示例配置 |
 | `--print-config` | 打印合并后的最终配置并退出 |
 
 环境变量与配置文件同名字段一一对应（大写形式）：`PROXY_PORT`、`UPSTREAM_HOST`、
-`UPSTREAM_PROTO`、`OPENCODE_UA`、`LOG_LEVEL`、`LOG_FILE`、`MODEL_ALIAS_PREFIX`、
-`INJECT_HEADERS`（JSON）等。
+`UPSTREAM_PROTO`、`OPENCODE_UA`、`LOG_LEVEL`、`LOG_FILE`、`LOG_DIR`、`LOG_ROTATE`、
+`LOG_KEEP_DAYS`、`MODEL_ALIAS_PREFIX`、`INJECT_HEADERS`（JSON）等。
 
 ---
 
@@ -405,9 +451,9 @@ await proxy.stop();
 - **单个畸形请求不会让进程退出。** 代理拦截了请求处理路径上所有同步抛出：非法的 `Host` 头、
   畸形请求行、上游返回含非法字符的状态行或响应头，都会被转成对应的 4xx / 5xx 响应，进程继续服务。
 - **未捕获异常会写进日志文件。** 兜底处理器把 `uncaughtException` 与 `unhandledRejection`
-  的完整栈写入 `--log-file` 指定的文件（同时输出到 stderr）；Node 默认只打 stderr 然后直接终止进程，
+  的完整栈写进日志文件（同时输出到 stderr）；Node 默认只打 stderr 然后直接终止进程，
   日志文件里一个字都不会有，现场看起来就是「日志一切正常，进程凭空消失」。
-  **建议始终带上 `--log-file`**，否则进程级问题的线索会随终端窗口一起消失。
+  正因如此，**文件日志默认就是开着的**——不特别指定就写在 `~/.lsp/logs/llm-session-proxy.log`。
 - 60 秒内连续出现 20 次未捕获错误会判定为持续故障并主动退出，避免带着坏状态空转。
 
 ---

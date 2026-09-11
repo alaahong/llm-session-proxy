@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import defaultExport, * as entry from '../src/index.js';
@@ -73,14 +76,18 @@ test('startProxy 端到端可用，并让输出语言跟随 config.lang', async 
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
   const upstreamPort = upstream.address().port;
 
+  // 把默认日志位置指到临时目录，避免测试往真实家目录里写文件
+  const lspHome = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-home-'));
+
   const previous = getLang();
   let proxy = null;
   try {
     proxy = await entry.startProxy({
       silent: true,
+      env: { ...process.env, LSP_HOME: lspHome },
       flags: {
-        port: 0,
-        host: '127.0.0.1',
+        // 注意是 listen.port，不是顶层的 port——写错了会退回默认 9355
+        listen: { host: '127.0.0.1', port: 0 },
         lang: 'zh',
         upstream: { host: `http://127.0.0.1:${upstreamPort}` },
       },
@@ -102,6 +109,11 @@ test('startProxy 端到端可用，并让输出语言跟随 config.lang', async 
     const payload = await status.json();
     assert.equal(payload.ok, true);
     assert.ok(Array.isArray(payload.inject.headers));
+
+    // 默认就该落盘：$LSP_HOME/logs/<包名>.log
+    const logFile = path.join(lspHome, 'logs', `${entry.NAME}.log`);
+    assert.ok(fs.existsSync(logFile), `默认应当写入日志文件 ${logFile}`);
+    assert.match(fs.readFileSync(logFile, 'utf8'), /\[req\]/, '日志文件里应当有请求记录');
   } finally {
     if (proxy) await proxy.stop();
     setLang(previous);

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { DEFAULT_CONFIG, buildConfig, parseUpstream } from './config.js';
+import { DEFAULT_CONFIG, buildConfig, parseUpstream, resolveLogFile } from './config.js';
 import { NAME, VERSION } from './index.js';
 import { Logger } from './logger.js';
 import { MESSAGES, getLang, normalizeLang, setLang, t } from './messages.js';
@@ -234,6 +234,18 @@ export function parseArgv(argv) {
       case '--log-file':
         setByPath(flags, ['log', 'file'], takeValue());
         break;
+      case '--no-log-file':
+        setByPath(flags, ['log', 'file'], false);
+        break;
+      case '--log-dir':
+        setByPath(flags, ['log', 'dir'], takeValue());
+        break;
+      case '--log-rotate':
+        setByPath(flags, ['log', 'rotate'], takeValue().toLowerCase());
+        break;
+      case '--log-keep-days':
+        setByPath(flags, ['log', 'keepDays'], Number(takeValue()));
+        break;
       default:
         if (VALUE_FLAGS.has(flag)) throw new Error(t('cli.err.notImplemented', { flag }));
         throw new Error(t('cli.err.unknownFlag', { flag }));
@@ -243,6 +255,19 @@ export function parseArgv(argv) {
   return { flags, configFile, printConfig, initRequested, initFile };
 }
 
+
+/** 把轮转与归档参数拼成一行可读说明，供启动横幅展示。 */
+export function logDetail(log = {}) {
+  const bits = [];
+  if (log.rotate === 'off') {
+    bits.push(t('log.rotateOff'));
+  } else {
+    bits.push(t('log.rotateMode', { mode: t(`log.rotate.${log.rotate}`) }));
+    bits.push(t('log.sizeLimit', { maxBytes: log.maxBytes, backups: log.backups }));
+  }
+  bits.push(log.keepDays > 0 ? t('log.keepDays', { days: log.keepDays }) : t('log.keepForever'));
+  return bits.join(', ');
+}
 
 export function printBanner(logger, config, proxy, url) {
   const injected = Object.keys(config.inject.headers || {});
@@ -288,7 +313,11 @@ export function printBanner(logger, config, proxy, url) {
   }
   logger.info(t('cli.banner.statusEndpoint', { url }));
   if (config.__configPath) logger.info(t('cli.banner.configFile', { path: config.__configPath }));
-  if (config.log.file) logger.info(t('cli.banner.logFile', { path: path.resolve(config.log.file) }));
+  if (logger.filePath) {
+    logger.info(t('cli.banner.logFile', { path: logger.filePath, detail: logDetail(config.log) }));
+  } else {
+    logger.info(t('cli.banner.logFileOff'));
+  }
 }
 
 /**
@@ -382,11 +411,17 @@ export async function runCli(argv = process.argv.slice(2)) {
   if (parsed.printConfig) {
     const printable = { ...config };
     delete printable.__configPath;
+    // 默认路径依赖家目录，这里把"实际会写到哪"一并算出来，方便一眼确认
+    printable.log = { ...printable.log, resolvedFile: resolveLogFile(config.log, { name: NAME }) };
     process.stdout.write(`${JSON.stringify(printable, null, 2)}\n`);
     return;
   }
 
-  const logger = new Logger({ ...config.log, console: config.log.level !== 'silent' });
+  const logger = new Logger({
+    ...config.log,
+    file: resolveLogFile(config.log, { name: NAME }),
+    console: config.log.level !== 'silent',
+  });
   installProcessGuards(logger);
   const proxy = createProxyServer({ config, logger });
 

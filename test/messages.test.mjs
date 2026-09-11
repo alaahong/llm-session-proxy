@@ -189,7 +189,17 @@ test('两种语言的帮助文本都能生成，且都覆盖全部选项', () =>
   for (const lang of SUPPORTED_LANGS) {
     const text = helpText(lang);
     assert.ok(text.includes('llm-session-proxy'), `${lang} 帮助里应当有包名`);
-    for (const flag of ['--lang', '--inject', '--init', '--print-config', '--log-file']) {
+    for (const flag of [
+      '--lang',
+      '--inject',
+      '--init',
+      '--print-config',
+      '--log-file',
+      '--no-log-file',
+      '--log-dir',
+      '--log-rotate',
+      '--log-keep-days',
+    ]) {
       assert.ok(text.includes(flag), `${lang} 帮助里应当提到 ${flag}`);
     }
   }
@@ -236,4 +246,37 @@ test('启动横幅按语言输出，且英文横幅里没有中文', () => {
   for (const value of [url, 'opencode.ai', '__llm_session_proxy__/status']) {
     assert.ok(en.text().includes(value) && zh.text().includes(value), `两种语言的横幅都应包含 ${value}`);
   }
+});
+
+test('横幅里的日志行会带出轮转与归档策略（两种语言都完整）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-banner-'));
+  const file = path.join(dir, 'llm-session-proxy.log');
+  const proxy = { upstream: { protocol: 'https', hostHeader: 'opencode.ai', basePath: '' } };
+  const url = 'http://127.0.0.1:9355';
+  /** 带 filePath 的假 logger：printBanner 靠它判断有没有落盘。 */
+  const withLog = (filePath) => ({ ...collector(), filePath });
+
+  setLang('en');
+  const en = withLog(file);
+  printBanner(en, buildConfig({ env: {}, flags: {} }), proxy, url);
+
+  setLang('zh');
+  const zh = withLog(file);
+  printBanner(zh, buildConfig({ env: {}, flags: { lang: 'zh' } }), proxy, url);
+  setLang(DEFAULT_LANG);
+
+  assert.match(en.text(), /size rotation, max 5242880 B, 2 backups, keep 30 days/);
+  assert.match(zh.text(), /按大小轮转/);
+  assert.match(zh.text(), /保留 30 天/);
+  for (const text of [en.text(), zh.text()]) {
+    assert.ok(text.includes(file), '应当印出实际写入的日志路径');
+  }
+  assert.ok(!/\p{Script=Han}/u.test(en.text()), `英文横幅里不应有中文:\n${en.text()}`);
+
+  // 关掉文件输出时给出明确说明，而不是默默少一行
+  setLang('en');
+  const off = withLog(null);
+  printBanner(off, buildConfig({ env: {}, flags: { log: { file: false } } }), proxy, url);
+  setLang(DEFAULT_LANG);
+  assert.match(off.text(), /console only/);
 });

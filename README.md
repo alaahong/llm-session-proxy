@@ -64,6 +64,8 @@ If your client already sends a session header, you do not need this tool (though
   strip fields the upstream rejects.
 - **Zero-buffer SSE pass-through** — chunks are forwarded as they arrive; streams stay streams.
   Upstream 4xx bodies are returned verbatim.
+- **Log file on by default** — `~/.lsp/logs/llm-session-proxy.log` with size or date rotation and
+  30-day archival, so a vanished process still leaves clues behind.
 - **Zero dependencies** — Node built-ins only, so `npx` starts instantly.
 - **Local status endpoint** — inspect session count, cache hit rate, and injected headers at runtime.
 
@@ -291,8 +293,51 @@ Priority: **defaults < config file < environment variables < CLI flags**.
 | `userAgentMode` | `replace-generic` | `keep` preserves the client UA; `replace` always overrides; `replace-generic` only when missing or library-like |
 | `response.stream` | `true` | Stream pass-through. `false` buffers everything (**breaks SSE**) |
 | `log.level` | `info` | `silent` / `error` / `warn` / `info` / `debug` |
-| `log.file` | `null` | Extra log file, rotated by size |
+| `log.file` | `null` | `null` uses the default location (§Logs): `~/.lsp/logs/llm-session-proxy.log`. A path writes there. `false` disables the file (console only) |
+| `log.dir` | `null` | Directory only — keeps the default file name |
+| `log.rotate` | `size` | `size` / `daily` / `off` |
+| `log.maxBytes` | `5242880` | Rotate once a file would exceed this (`size` and `daily` modes) |
+| `log.backups` | `2` | How many `.1`/`.2` backups to keep. `0` discards old content instead |
+| `log.keepDays` | `30` | Delete logs older than N days. `0` keeps them forever |
 | `lang` | `en` | Language of console output and log messages: `en` / `zh` |
+
+---
+
+## Logs
+
+**Logging to disk is on by default**, because the process-level failures that are hardest to
+diagnose — an uncaught exception, a silent crash — leave nothing behind on stderr once the
+terminal is gone.
+
+| What | Where |
+| --- | --- |
+| Default file | `$LSP_HOME/logs/llm-session-proxy.log`, or `~/.lsp/logs/llm-session-proxy.log` when `LSP_HOME` is unset |
+| Own file | `log.file` / `--log-file <path>`, or `LOG_FILE=<path>` |
+| Own directory | `log.dir` / `--log-dir <dir>`, or `LOG_DIR=<dir>` (default file name is kept) |
+| Turn it off | `--no-log-file`, `"file": false`, or `LOG_FILE=off` |
+
+Rotation, chosen with `log.rotate` / `--log-rotate` / `LOG_ROTATE`:
+
+| Mode | Behaviour |
+| --- | --- |
+| `size` (default) | `app.log` grows to `log.maxBytes`, then becomes `app.log.1`, `.2` … up to `log.backups` |
+| `daily` | One file per local date: `app-YYYY-MM-DD.log`. `log.maxBytes` still caps a single day's file |
+| `off` | Never rotate or truncate — hand the file to `logrotate` or similar |
+
+**Archival.** On startup, and at most once every six hours while running, the logger deletes
+files matching its own naming pattern (`app.log`, `app.log.N`, `app-YYYY-MM-DD.log`) whose
+mtime is older than `log.keepDays` (default **30**, `0` = keep forever). The file currently
+being written is never deleted, and files that do not match the pattern — including anything
+else in the same directory — are left alone.
+
+A quick way to confirm where logs actually land:
+
+```bash
+llm-session-proxy --print-config | grep resolvedFile
+```
+
+`log.file` stays `null` when you rely on the default location; `log.resolvedFile` in
+`--print-config` output is the absolute path the logger will open.
 
 ---
 
@@ -332,14 +377,18 @@ Priority: **defaults < config file < environment variables < CLI flags**.
 | `--session-id-format <f>` / `--request-id-format <t>` | Session ID format / request-id template |
 | `--no-session` / `--no-stream` | Disable session injection / disable streaming |
 | `--timeout <ms>` / `--max-body <bytes>` | Upstream timeout / body limit |
-| `--log-level <l>` / `--log-file <f>` | Log level / log file |
+| `--log-level <l>` | Log level |
+| `--log-file <f>` / `--no-log-file` | Log file path / turn file logging off |
+| `--log-dir <dir>` | Directory of the default log file |
+| `--log-rotate <mode>` | `size` / `daily` / `off` |
+| `--log-keep-days <n>` | Delete logs older than N days (`0` = keep forever) |
 | `-l, --lang <en\|zh>` | Language of console output and log messages (default `en`) |
 | `--init [file]` | Write a sample config |
 | `--print-config` | Print the merged config and exit |
 
 Environment variables mirror the config field names in uppercase: `PROXY_PORT`, `UPSTREAM_HOST`,
-`UPSTREAM_PROTO`, `OPENCODE_UA`, `LOG_LEVEL`, `LOG_FILE`, `MODEL_ALIAS_PREFIX`, `INJECT_HEADERS`
-(JSON), and so on.
+`UPSTREAM_PROTO`, `OPENCODE_UA`, `LOG_LEVEL`, `LOG_FILE`, `LOG_DIR`, `LOG_ROTATE`,
+`LOG_KEEP_DAYS`, `MODEL_ALIAS_PREFIX`, `INJECT_HEADERS` (JSON), and so on.
 
 ### Local status endpoints
 
@@ -410,10 +459,10 @@ You can also take just the parts you need: `createProxyServer` (own the lifecycl
   status line / header containing illegal characters all become ordinary 4xx / 5xx responses, and
   the proxy keeps serving.
 - **Uncaught errors land in the log file.** A last-resort handler writes the full stack of
-  `uncaughtException` and `unhandledRejection` into the file given by `--log-file` (and to stderr).
-  Node's default is to print to stderr and terminate immediately — leaving nothing at all in the
-  log file, which looks exactly like "the logs are fine, the process just vanished".
-  **Always pass `--log-file`**, otherwise process-level clues disappear with the terminal window.
+  `uncaughtException` and `unhandledRejection` into the log file (and to stderr). Node's default is
+  to print to stderr and terminate immediately — leaving nothing at all in the log file, which
+  looks exactly like "the logs are fine, the process just vanished". This is why **file logging is
+  on by default**: it goes to `~/.lsp/logs/llm-session-proxy.log` unless you say otherwise.
 - 20 uncaught errors within 60 seconds are treated as a persistent fault and the process exits on
   purpose, rather than spinning in a broken state.
 

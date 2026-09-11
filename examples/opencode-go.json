@@ -65,5 +65,12 @@
 
   "response": { "stream": true },
 
-  "log": { "level": "info", "file": null }
+  "log": {
+    "level": "info",
+    "file": null,                 // null = 默认位置 ~/.lsp/logs/llm-session-proxy.log；false = 不落盘
+    "rotate": "size",             // size | daily | off
+    "maxBytes": 5242880,
+    "backups": 2,
+    "keepDays": 30                // 超过 30 天的历史日志自动删除，0 表示永久保留
+  }
 }

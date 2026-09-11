@@ -9,9 +9,11 @@ import {
   buildConfig,
   configFromEnv,
   deepMerge,
+  defaultLogDir,
   loadConfigFile,
   parseJsonLoose,
   parseUpstream,
+  resolveLogFile,
   resolveUpstream,
   shouldReplaceUserAgent,
 } from '../src/config.js';
@@ -221,4 +223,95 @@ test('parseUpstream 默认补 https，并把路径当 basePath', () => {
     basePath: '',
   });
   assert.equal(parseUpstream('').host, undefined);
+});
+
+// ------------------------------------------------------------- 日志落盘与轮转
+
+test('默认日志目录：~/.lsp/logs，可用 LSP_HOME 覆盖', () => {
+  const fallback = defaultLogDir({});
+  assert.equal(path.basename(fallback), 'logs');
+  assert.equal(path.basename(path.dirname(fallback)), '.lsp');
+
+  const custom = defaultLogDir({ LSP_HOME: path.join(os.tmpdir(), 'my-home') });
+  assert.equal(custom, path.join(os.tmpdir(), 'my-home', 'logs'));
+  assert.equal(defaultLogDir({ LSP_HOME: '   ' }), fallback, '空值应当退回默认位置');
+});
+
+test('resolveLogFile：默认位置 / 自定义目录 / 指定文件 / 关闭', () => {
+  const home = path.join(os.tmpdir(), 'lsp-resolve');
+
+  assert.equal(
+    resolveLogFile({}, { env: { LSP_HOME: home }, name: 'demo' }),
+    path.join(home, 'logs', 'demo.log'),
+  );
+  // 只改目录，文件名保持默认
+  assert.equal(
+    resolveLogFile({ dir: path.join(home, 'other') }, { env: {}, name: 'demo' }),
+    path.resolve(path.join(home, 'other'), 'demo.log'),
+  );
+  // 显式文件优先于目录
+  assert.equal(
+    resolveLogFile({ file: './custom.log', dir: '/ignored' }, { env: {}, name: 'demo' }),
+    path.resolve('./custom.log'),
+  );
+  // file 为空串等于没写，仍走默认位置
+  assert.equal(
+    resolveLogFile({ file: '  ' }, { env: { LSP_HOME: home }, name: 'demo' }),
+    path.join(home, 'logs', 'demo.log'),
+  );
+  // 明确关闭
+  assert.equal(resolveLogFile({ file: false }, { env: { LSP_HOME: home }, name: 'demo' }), null);
+  assert.equal(resolveLogFile({ file: 'x.log' }).endsWith(path.join('x.log')), true, '默认 env 也应当可用');
+});
+
+test('日志配置的默认值齐备（默认就会落盘）', () => {
+  const config = buildConfig({ env: {} });
+  assert.equal(config.log.file, null, '默认 file 为 null 表示走默认位置，而不是不写');
+  assert.equal(config.log.dir, null);
+  assert.equal(config.log.rotate, 'size');
+  assert.equal(config.log.keepDays, 30);
+  assert.equal(config.log.maxBytes, DEFAULT_CONFIG.log.maxBytes);
+  assert.equal(config.log.backups, DEFAULT_CONFIG.log.backups);
+});
+
+test('日志配置可从环境变量覆盖', () => {
+  const fromEnv = configFromEnv({
+    LOG_DIR: '/tmp/mylogs',
+    LOG_ROTATE: 'DAILY',
+    LOG_KEEP_DAYS: '7',
+    LOG_MAX_BYTES: '2048',
+    LOG_BACKUPS: '5',
+    LOG_LEVEL: 'debug',
+  });
+
+  assert.equal(fromEnv.log.dir, '/tmp/mylogs');
+  assert.equal(fromEnv.log.rotate, 'daily', '应当归一化成小写');
+  assert.equal(fromEnv.log.keepDays, 7);
+  assert.equal(fromEnv.log.maxBytes, 2048);
+  assert.equal(fromEnv.log.backups, 5);
+  assert.equal(fromEnv.log.level, 'debug');
+
+  // LOG_FILE=off 关闭文件输出
+  assert.equal(configFromEnv({ LOG_FILE: 'off' }).log.file, false);
+  assert.equal(configFromEnv({ LOG_FILE: 'none' }).log.file, false);
+  assert.equal(configFromEnv({ LOG_FILE: './a.log' }).log.file, './a.log');
+});
+
+test('非法日志配置在启动时就报错，而不是静默退化成不写日志', () => {
+  assert.throws(
+    () => buildConfig({ env: {}, flags: { log: { rotate: 'weekly' } } }),
+    /log\.rotate/,
+  );
+  assert.throws(() => buildConfig({ env: {}, flags: { log: { level: 'verbose' } } }), /log\.level/);
+  assert.throws(() => buildConfig({ env: {}, flags: { log: { keepDays: -1 } } }), /log\.keepDays/);
+  assert.throws(() => buildConfig({ env: {}, flags: { log: { file: 42 } } }), /log\.file/);
+  assert.throws(() => buildConfig({ env: {}, flags: { log: { dir: 42 } } }), /log\.dir/);
+  assert.throws(() => buildConfig({ env: {}, flags: { log: null } }), /log must be an object/);
+});
+
+test('日志配置的字符串空值会被归一化成默认值', () => {
+  const config = buildConfig({ env: {}, flags: { log: { file: '   ', dir: '', rotate: ' DAILY ' } } });
+  assert.equal(config.log.file, null);
+  assert.equal(config.log.dir, null);
+  assert.equal(config.log.rotate, 'daily');
 });

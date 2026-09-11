@@ -6,9 +6,11 @@ import {
   DEFAULT_CONFIG,
   buildConfig,
   deepMerge,
+  defaultLogDir,
   loadConfigFile,
   parseJsonLoose,
   parseUpstream,
+  resolveLogFile,
   resolveUpstream,
 } from './config.js';
 import { applyBodyInject, buildInjectHeaders, rewriteModel, rewritePath } from './inject.js';
@@ -42,6 +44,7 @@ export {
   createContext,
   createProxyServer,
   deepMerge,
+  defaultLogDir,
   findExplicitSession,
   generateId,
   getLang,
@@ -54,6 +57,7 @@ export {
   randomHex,
   renderDeep,
   renderTemplate,
+  resolveLogFile,
   resolveSession,
   resolveUpstream,
   rewriteModel,
@@ -85,7 +89,13 @@ export async function startProxy(options = {}) {
   // 让内嵌使用时的日志/报错语言也跟随配置（默认英文）
   if (typeof config.lang === 'string') setLang(config.lang);
 
-  const logger = providedLogger || new Logger({ ...config.log, console: !silent && config.log.level !== 'silent' });
+  const logger =
+    providedLogger ||
+    new Logger({
+      ...config.log,
+      file: resolveLogFile(config.log, { name: NAME, env }),
+      console: !silent && config.log.level !== 'silent',
+    });
   const proxy = createProxyServer({ config, logger });
   await proxy.listen();
 

@@ -100,6 +100,11 @@
         <p>Chunks are forwarded as they arrive instead of being buffered, so streaming stays streaming. Upstream 4xx bodies come back verbatim.</p>
       </div>
       <div class="card">
+        <div class="tag">ops</div>
+        <h4>Logs on by default</h4>
+        <p><code>~/.lsp/logs/llm-session-proxy.log</code> with size or date rotation and 30-day archival — a vanished process still leaves clues behind.</p>
+      </div>
+      <div class="card">
         <div class="tag">deps</div>
         <h4>Zero dependencies</h4>
         <p>Built-in Node modules only, no third-party packages, and nothing to install before <code>npx</code> starts.</p>
@@ -347,12 +352,45 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--session-id-format &lt;f&gt;</code> / <code>--request-id-format &lt;t&gt;</code></td><td>Session ID format / per-request ID template</td></tr>
           <tr><td><code>--no-session</code> / <code>--no-stream</code></td><td>Disable session injection / disable streaming pass-through</td></tr>
           <tr><td><code>--timeout &lt;ms&gt;</code> / <code>--max-body &lt;bytes&gt;</code></td><td>Upstream timeout / request body limit</td></tr>
-          <tr><td><code>--log-level &lt;l&gt;</code> / <code>--log-file &lt;f&gt;</code></td><td>Log level / log file (rotated automatically)</td></tr>
+          <tr><td><code>--log-level &lt;l&gt;</code></td><td>Log level: <code>silent</code> | <code>error</code> | <code>warn</code> | <code>info</code> | <code>debug</code></td></tr>
+          <tr><td><code>--log-file &lt;f&gt;</code> / <code>--no-log-file</code></td><td>Log file path / turn file logging off (console only)</td></tr>
+          <tr><td><code>--log-dir &lt;dir&gt;</code></td><td>Directory of the default log file</td></tr>
+          <tr><td><code>--log-rotate &lt;mode&gt;</code></td><td><code>size</code> | <code>daily</code> | <code>off</code></td></tr>
+          <tr><td><code>--log-keep-days &lt;n&gt;</code></td><td>Delete logs older than N days (<code>0</code> = keep forever)</td></tr>
           <tr><td><code>--init [file]</code></td><td>Write a sample config</td></tr>
           <tr><td><code>--print-config</code></td><td>Print the merged config and exit</td></tr>
         </tbody>
       </table>
     </div>
+
+    <h3 id="logs">Logs</h3>
+    <p>
+      <b>Logging to disk is on by default</b>, because the failures that are hardest to diagnose — an
+      uncaught exception, a silent crash — leave nothing behind on stderr once the terminal is gone.
+      The file is <code>$LSP_HOME/logs/llm-session-proxy.log</code>, or
+      <code>~/.lsp/logs/llm-session-proxy.log</code> when <code>LSP_HOME</code> is unset.
+      Override it with <code>--log-file &lt;path&gt;</code> / <code>--log-dir &lt;dir&gt;</code>, or switch
+      it off with <code>--no-log-file</code>.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th><code>log.rotate</code></th><th>Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td><code>size</code> <span class="sub">(default)</span></td><td><code>app.log</code> grows to <code>log.maxBytes</code>, then becomes <code>app.log.1</code>, <code>.2</code> … up to <code>log.backups</code></td></tr>
+          <tr><td><code>daily</code></td><td>One file per local date: <code>app-YYYY-MM-DD.log</code>. <code>log.maxBytes</code> still caps a single day's file</td></tr>
+          <tr><td><code>off</code></td><td>Never rotate or truncate — hand the file to <code>logrotate</code> or similar</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <b>Archival.</b> On startup, and at most once every six hours while running, rotated files
+      (<code>app.log</code>, <code>app.log.N</code>, <code>app-YYYY-MM-DD.log</code>) older than
+      <code>log.keepDays</code> — <b>30 days</b> by default — are deleted. The file currently being
+      written is never touched, and files that do not match that naming pattern, including anything
+      else in the same directory, are left alone.
+    </p>
+    <pre><code><span class="cmt"># Where will logs actually land?</span>
+llm-session-proxy --print-config | grep resolvedFile</code></pre>
 
     <h3>Local status endpoints</h3>
     <pre><code><span class="cmt"># Overview: session count, hit rate, injected headers, upstream target</span>
@@ -406,10 +444,10 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
     </p>
     <p>
       <b>Uncaught errors land in the log file.</b> A last-resort handler writes the full stack of
-      <code>uncaughtException</code> and <code>unhandledRejection</code> into the file given by
-      <code>--log-file</code>. Node's default prints to stderr and terminates immediately, leaving
-      the log file empty — which looks exactly like "logs are fine, the process just vanished".
-      <b>Always pass <code>--log-file</code>.</b>
+      <code>uncaughtException</code> and <code>unhandledRejection</code> into the log file. Node's
+      default prints to stderr and terminates immediately, leaving the log file empty — which looks
+      exactly like "logs are fine, the process just vanished". That is why <b>file logging is on by
+      default</b>: see <a href="#logs">Logs</a>.
     </p>
 
     <h3>Limitations</h3>

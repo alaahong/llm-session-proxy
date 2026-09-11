@@ -22,8 +22,8 @@ below has to fit that shape.
 | Injection | Arbitrary request headers and body fields, templated (`{{session.id}}`, `{{uuid}}`, `{{env.HOME}}`, …), with dot-path support and an `overwrite` switch. |
 | Rewriting | Model aliases (exact map + prefix stripping, composable) and request paths (regex rules). |
 | Streaming | SSE is piped chunk by chunk, never buffered. Upstream 4xx bodies come back verbatim. |
-| Operations | `/__llm_session_proxy__/status` and `/sessions`, size-rotated log file, four-layer config merge (defaults < file < env < CLI). |
-| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; 103 tests including a 43-scenario malformed-input corpus. |
+| Operations | `/__llm_session_proxy__/status` and `/sessions`, **log-to-disk on by default** (`~/.lsp/logs`) with size/date rotation and 30-day archival, four-layer config merge (defaults < file < env < CLI). |
+| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; 147 tests including a 43-scenario malformed-input corpus. |
 | Language | Console output and log messages are **English by default**, switchable to Chinese with `--lang zh` / `PROXY_LANG=zh`. |
 
 ### Known gaps (stated plainly)
