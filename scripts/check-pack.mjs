@@ -10,7 +10,7 @@ const errors = [];
 const REQUIRED_FILES = [
   'package.json',
   'README.md',
-  'README.zh-CN.md',
+  'README-zh-CN.md',
   'ROADMAP.md',
   'ROADMAP.zh-CN.md',
   'LICENSE',
@@ -56,10 +56,16 @@ for (const [name, target] of Object.entries(pkg.bin || {})) {
 // 确认 files 白名单覆盖了 bin 与 src，否则发布出去的包会缺文件
 const covered = (relative) =>
   (pkg.files || []).some((entry) => relative === entry || relative.startsWith(entry.replace(/\/$/, '') + '/'));
-for (const relative of ['bin/llm-session-proxy.js', 'src/index.js', 'README.md', 'README.zh-CN.md', 'LICENSE']) {
+for (const relative of ['bin/llm-session-proxy.js', 'src/index.js', 'README.md', 'README-zh-CN.md', 'LICENSE']) {
   if (fs.existsSync(path.join(root, relative)) && !covered(relative)) {
     errors.push(`files 白名单没有覆盖: ${relative}`);
   }
+}
+
+// 防回归：npm 挑 readme 用 glob {README,README.*} 取第一个匹配，README.zh-CN.md 会抢在
+// README.md 之前，导致 npm 页面显示中文版。中文 README 必须用连字符命名（README-zh-CN.md）。
+if (fs.existsSync(path.join(root, 'README.zh-CN.md'))) {
+  errors.push('存在 README.zh-CN.md：npm 会把它当成包 readme 展示在页面上，请命名为 README-zh-CN.md');
 }
 
 if (errors.length) {

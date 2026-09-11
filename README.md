@@ -4,7 +4,12 @@
 [![Publish to npm](https://github.com/alaahong/llm-session-proxy/actions/workflows/publish.yml/badge.svg)](https://github.com/alaahong/llm-session-proxy/actions/workflows/publish.yml)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-1f6feb)](https://www.ianzhang.cn/llm-session-proxy/)
 
-*English · [中文文档](README.zh-CN.md) · [Documentation site](https://www.ianzhang.cn/llm-session-proxy/) · [Roadmap](ROADMAP.md)*
+*English · [中文文档](README-zh-CN.md) · [Documentation site](https://www.ianzhang.cn/llm-session-proxy/) · [Roadmap](ROADMAP.md)*
+
+> The Chinese README is intentionally named `README-zh-CN.md` (hyphen, not dot). When building the
+> npm package page, npm picks the **first** file matching the glob `{README,README.*}` — in practice
+> `README.zh-CN.md` sorts ahead of `README.md` and the page would show the Chinese version. The
+> hyphenated name does not match that glob, so the English README is always selected.
 
 **A configurable local reverse proxy for LLM APIs.** Zero dependencies, runnable with `npx`.
 
@@ -518,7 +523,7 @@ no local `npm login` required:
 3. Tag and push the matching tag:
 
 ```bash
-git tag v0.1.2 && git push origin v0.1.2
+git tag v0.1.3 && git push origin v0.1.3
 ```
 
 The workflow runs the full test suite, verifies the tag matches `package.json`, then publishes to

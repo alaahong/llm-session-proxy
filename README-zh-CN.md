@@ -6,6 +6,10 @@
 
 *中文 · [English](README.md) · [在线文档](https://www.ianzhang.cn/llm-session-proxy/zh/) · [Roadmap](ROADMAP.zh-CN.md)*
 
+> 说明：本文件刻意命名为 `README-zh-CN.md`（连字符而非点号）。npm 生成包页面 readme 时会按 glob
+> `{README,README.*}` 取**第一个**匹配文件，实测 `README.zh-CN.md` 会排在 `README.md` 之前，
+> 导致 npm 页面展示中文版；连字符写法不匹配该 glob，保证 npm 页面默认展示英文 README。
+
 **可自定义参数的 LLM 本地反向代理。** 零依赖，`npx` 即可运行。
 
 它坐在你的客户端和上游 API 之间，自动补上客户端不会发的会话头、注入任意自定义参数、
@@ -520,7 +524,7 @@ as the model name. See the Chinese sections above for the full configuration ref
 3. 打一个同名 tag 并推送：
 
 ```bash
-git tag v0.1.2 && git push origin v0.1.2
+git tag v0.1.3 && git push origin v0.1.3
 ```
 
 workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本一致，再用仓库 secrets 里的
