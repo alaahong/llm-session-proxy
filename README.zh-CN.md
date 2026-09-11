@@ -520,7 +520,7 @@ as the model name. See the Chinese sections above for the full configuration ref
 3. 打一个同名 tag 并推送：
 
 ```bash
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.1.2 && git push origin v0.1.2
 ```
 
 workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本一致，再用仓库 secrets 里的

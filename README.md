@@ -518,7 +518,7 @@ no local `npm login` required:
 3. Tag and push the matching tag:
 
 ```bash
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.1.2 && git push origin v0.1.2
 ```
 
 The workflow runs the full test suite, verifies the tag matches `package.json`, then publishes to
