@@ -5,6 +5,8 @@ import path from 'node:path';
 import { LEVELS, ROTATE_MODES } from './logger.js';
 import { SUPPORTED_LANGS, normalizeLang, setLang, t } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
+import { BUILTIN_BUCKETS, emptyBucket, hasMatcher, normalizeRule } from './router.js';
+import { isTransformer, listTransformers } from './transformers.js';
 
 /** 默认日志文件基名（与包名一致），用于拼默认路径与归档匹配。 */
 export const LOG_BASENAME = 'llm-session-proxy';
@@ -96,6 +98,24 @@ export const DEFAULT_CONFIG = {
   // keep：完全保留客户端 UA；replace：始终用上面的 UA；
   // replace-generic：仅当客户端 UA 缺失或像个通用 HTTP 库时才替换（默认）
   userAgentMode: 'replace-generic',
+  // 始终挂载的命名变换（与 router 无关），按数组顺序执行。
+  // 变换定义在 src/transformers.js，参数写在 options 里，按名字索引。
+  transformers: {
+    enabled: [],
+    options: {},
+  },
+  // 路由分桶：按请求性质选模型、挂变换。默认关闭，保证升级到本版本不改变既有行为。
+  router: {
+    enabled: false,
+    // --router <bucket> 指定的强制桶：优先级高于 enabled 与所有规则，
+    // 主要用于验证与排错（"把所有请求都按 longContext 处理看看"）。
+    forced: null,
+    defaultBucket: 'default',
+    // 四个内置桶预先声明好（都是空桶），用户只要填 model / transformers 就能用
+    buckets: Object.fromEntries(BUILTIN_BUCKETS.map((name) => [name, emptyBucket()])),
+    // 自上而下匹配，首个命中生效；同一条规则内多条件为 AND
+    rules: [],
+  },
   // 控制台与日志文案语言。默认英文，需要中文显式切换（--lang zh / PROXY_LANG=zh）。
   lang: 'en',
   response: {
@@ -150,6 +170,9 @@ const ENV_MAP = {
   PATH_REWRITE: ['request', 'pathRewrite'],
   TIMEOUT_MS: ['request', 'timeoutMs'],
   MAX_BODY_BYTES: ['request', 'maxBodyBytes'],
+  // 逗号分隔的变换名列表，整体替换 transformers.enabled（与 --model-prefix 同一套数组语义）
+  TRANSFORMERS: ['transformers', 'enabled'],
+  ROUTER_ENABLED: ['router', 'enabled'],
 };
 
 function isPlainObject(value) {
@@ -231,9 +254,10 @@ function coerce(keyPath, raw) {
     const value = JSON.parse(raw);
     return value;
   }
-  if (key === 'model.stripPrefixes') {
+  if (key === 'model.stripPrefixes' || key === 'transformers.enabled') {
     return String(raw).split(',').map((s) => s.trim()).filter(Boolean);
   }
+  if (key === 'router.enabled') return !/^(0|false|no|off|disable[d]?)$/i.test(String(raw).trim());
   return raw;
 }
 
@@ -294,7 +318,49 @@ function normalize(config) {
       })
       .filter(Boolean);
   }
+  next.router = normalizeRouter(next.router);
+  next.transformers = normalizeTransformers(next.transformers);
   return next;
+}
+
+/**
+ * router 段归一化：桶一律补齐成 { model, transformers } 的形状，
+ * 规则走 normalizeRule 丢掉空条件。数值条件在这里就转成 Number，
+ * 免得比较时拿字符串和数字比。
+ *
+ * 类型不对时**原样返回**，交给 validate 报错 —— 静默退回默认值和「配了但没生效」
+ * 是同一种坑，这个项目宁可启动就吵。
+ */
+function normalizeRouter(router) {
+  if (!isPlainObject(router)) return router;
+  const out = { ...router };
+
+  const buckets = {};
+  for (const [name, bucket] of Object.entries(isPlainObject(router.buckets) ? router.buckets : {})) {
+    if (!isPlainObject(bucket)) continue;
+    buckets[name] = {
+      model: typeof bucket.model === 'string' && bucket.model.trim() ? bucket.model.trim() : null,
+      transformers: Array.isArray(bucket.transformers)
+        ? bucket.transformers.filter((item) => typeof item === 'string' && item)
+        : [],
+    };
+  }
+  out.buckets = buckets;
+
+  out.rules = (Array.isArray(router.rules) ? router.rules : []).map(normalizeRule).filter(Boolean);
+  out.forced = typeof router.forced === 'string' && router.forced.trim() ? router.forced.trim() : null;
+  return out;
+}
+
+/** transformers 段归一化：名单去空。类型不对的字段原样留着，交给校验去报。 */
+function normalizeTransformers(transformers) {
+  if (!isPlainObject(transformers)) return transformers;
+  return {
+    enabled: Array.isArray(transformers.enabled)
+      ? transformers.enabled.filter((item) => typeof item === 'string' && item)
+      : transformers.enabled,
+    options: transformers.options === undefined ? {} : transformers.options,
+  };
 }
 
 function validate(config) {
@@ -316,9 +382,103 @@ function validate(config) {
     errors.push(t('config.badLang', { lang: config.lang }));
   }
   validateModel(config.model, errors);
+  validateTransformers(config.transformers, errors);
+  validateRouter(config.router, errors);
   validateLog(config.log, errors);
   if (errors.length) throw new Error(t('config.validationFailed', { list: errors.join('\n  - ') }));
   return config;
+}
+
+/**
+ * 变换段的校验：名字必须是注册表里真实存在的。
+ * 拼错一个名字等于这个变换静默失效，正是最该当场报出来的那类错误。
+ */
+function validateTransformers(transformers, errors, { where = 'transformers' } = {}) {
+  if (!isPlainObject(transformers)) {
+    errors.push(t('config.badTransformers'));
+    return;
+  }
+  const known = listTransformers();
+  if (transformers.enabled !== undefined && !Array.isArray(transformers.enabled)) {
+    // 不是数组就直说，别让它退化成空列表——那等于"配了但没生效"
+    errors.push(t('config.badTransformerEnabled'));
+    return;
+  }
+  for (const name of transformers.enabled || []) {
+    if (!isTransformer(name)) {
+      errors.push(t('config.badTransformerName', { where, name, known: known.join(' | ') }));
+    }
+  }
+  const options = transformers?.options;
+  if (options !== undefined && !isPlainObject(options)) {
+    errors.push(t('config.badTransformerOptions'));
+  } else {
+    for (const key of Object.keys(options || {})) {
+      if (!isTransformer(key)) {
+        errors.push(t('config.badTransformerName', { where: `${where}.options`, name: key, known: known.join(' | ') }));
+      }
+    }
+  }
+}
+
+/** 路由段的校验：桶必须存在、规则必须有条件且指向存在的桶。 */
+function validateRouter(router, errors) {
+  if (!isPlainObject(router)) {
+    errors.push(t('config.badRouter'));
+    return;
+  }
+  const bucketNames = Object.keys(router.buckets || {});
+  if (!bucketNames.length) errors.push(t('config.badRouterBuckets'));
+
+  if (typeof router.defaultBucket !== 'string' || !bucketNames.includes(router.defaultBucket)) {
+    errors.push(
+      t('config.badRouterDefaultBucket', {
+        bucket: JSON.stringify(router.defaultBucket),
+        buckets: bucketNames.join(' | '),
+      }),
+    );
+  }
+
+  // --router <bucket> 写错桶名要说出来，而不是静默落到一个空桶上
+  if (router.forced !== null && router.forced !== undefined && !bucketNames.includes(router.forced)) {
+    errors.push(
+      t('config.badRouterForced', { bucket: router.forced, buckets: bucketNames.join(' | ') }),
+    );
+  }
+
+  const rules = Array.isArray(router.rules) ? router.rules : [];
+  rules.forEach((rule, index) => {
+    if (!bucketNames.includes(rule.bucket)) {
+      errors.push(
+        t('config.badRouterRuleBucket', { index, bucket: rule.bucket, buckets: bucketNames.join(' | ') }),
+      );
+    }
+    if (!hasMatcher(rule)) {
+      errors.push(t('config.badRouterRuleNoMatch', { index, bucket: rule.bucket }));
+    }
+    for (const key of ['minBytes', 'maxBytes']) {
+      const value = rule[key];
+      if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
+        errors.push(t('config.badRouterRuleBytes', { index, key, value: JSON.stringify(value) }));
+      }
+    }
+  });
+
+  // 桶里挂的变换名同样要真实存在
+  const known = listTransformers();
+  for (const [name, bucket] of Object.entries(router.buckets || {})) {
+    for (const transformer of bucket.transformers || []) {
+      if (!isTransformer(transformer)) {
+        errors.push(
+          t('config.badTransformerName', {
+            where: `router.buckets.${name}`,
+            name: transformer,
+            known: known.join(' | '),
+          }),
+        );
+      }
+    }
+  }
 }
 
 /** 模型段的校验。`map` 现在默认非空，用户也常自己写，写错要当场报出来。 */

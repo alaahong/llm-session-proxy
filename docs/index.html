@@ -90,6 +90,16 @@
         <p>Prefix stripping (<code>proxy-glm</code> → <code>glm-5.3</code>) and exact mapping, and the two compose. The OpenCode Go alias table ships built in, so the <code>proxy-</code> prefix the client needs actually resolves — and an alias that strips down to nothing is reported by name instead of being forwarded silently.</p>
       </div>
       <div class="card">
+        <div class="tag">router</div>
+        <h4>Rule-based routing into buckets</h4>
+        <p>Four buckets — <code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code> — each with its own model override and body transforms. Rules match on path prefix, model prefix, a body field or request size; they run top-down with first match winning, and the conditions inside one rule are ANDed. <b>Off by default</b>, so upgrading changes nothing.</p>
+      </div>
+      <div class="card">
+        <div class="tag">transform</div>
+        <h4>Composable body transforms</h4>
+        <p>Five named, in-tree transforms (<code>drop-fields</code>, <code>drop-empty-fields</code>, <code>rename-fields</code>, <code>clamp-max-tokens</code>, <code>noop</code>), applied globally or per bucket in a fixed order. The registry is a hard-coded list on purpose: the proxy never loads code from a path.</p>
+      </div>
+      <div class="card">
         <div class="tag">path</div>
         <h4>Request path rewriting</h4>
         <p>When the client can only be pointed at <code>/v1</code>, one regex moves it to the path the upstream actually wants.</p>
@@ -321,6 +331,82 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
       </table>
     </div>
 
+    <h3 id="transformers">transformers — body transforms, always on</h3>
+    <p class="sub">Names only: the registry is a fixed list compiled into the proxy, so a config file can never make it execute code.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>[]</code></td><td>Transformer names, applied <b>left to right</b></td></tr>
+          <tr><td><code>options</code></td><td><code>{}</code></td><td>Per-transformer options, keyed by transformer name</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Options</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>noop</code></td><td>—</td><td>Changes nothing. Useful for confirming the registry is wired up</td></tr>
+          <tr><td><code>drop-fields</code></td><td><code>fields: ["a.b"]</code></td><td>Delete the listed dot paths</td></tr>
+          <tr><td><code>drop-empty-fields</code></td><td><code>fields?: [...]</code></td><td>Delete fields that are <code>null</code>, <code>""</code>, <code>[]</code> or <code>{}</code>. <code>0</code> and <code>false</code> survive. Without <code>fields</code>, every top-level key is inspected</td></tr>
+          <tr><td><code>rename-fields</code></td><td><code>map: {"from": "to"}</code></td><td>Rename dot paths, creating parent objects as needed. A mapping onto itself is ignored</td></tr>
+          <tr><td><code>clamp-max-tokens</code></td><td><code>max: 4096</code></td><td>Lower <code>max_tokens</code> / <code>max_completion_tokens</code> to at most <code>max</code>. Never raises a value</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Order matters, because each transformer mutates the body in place: <code>rename-fields</code>
+      before <code>drop-fields</code> is not the same as the reverse. A name that is not in the table is
+      a <b>startup error</b>, not a silent no-op.
+    </p>
+
+    <h3 id="router">router — buckets and rules</h3>
+    <p class="sub">A bucket decides two things: which model to use and which transforms to attach. <code>enabled</code> is <code>false</code> by default, so an existing config behaves exactly as before until you turn it on.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>false</code></td><td>Master switch. <code>--no-router</code> forces it off</td></tr>
+          <tr><td><code>forced</code></td><td><code>null</code></td><td>Pin every request to this bucket, ignoring all rules (<code>--router &lt;bucket&gt;</code>). It outranks <code>enabled: false</code> as well — naming a bucket explicitly should not be silently ignored</td></tr>
+          <tr><td><code>defaultBucket</code></td><td><code>default</code></td><td>Where requests that match no rule go</td></tr>
+          <tr><td><code>buckets</code></td><td>the four built-ins, all empty</td><td><code>{ "model": &lt;id or null&gt;, "transformers": [&lt;name&gt;] }</code>. Custom names may be added; an undeclared name degrades to an empty bucket</td></tr>
+          <tr><td><code>rules</code></td><td><code>[]</code></td><td>Evaluated top-down, first match wins. A rule needs a <code>bucket</code> plus at least one matcher — zero matchers is a config error, since a rule that cannot be evaluated is not the same as one that matches everything</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Matcher</th><th>Matches when</th></tr></thead>
+        <tbody>
+          <tr><td><code>path</code></td><td>The request path <b>starts with</b> this string. Matched against the path the client sent, before <code>request.pathRewrite</code></td></tr>
+          <tr><td><code>modelPrefix</code></td><td>Either the model <b>the client sent</b> or the model <b>after rewriting</b> starts with this, so <code>proxy-think</code> and <code>glm-5.3</code> are both usable as rule material</td></tr>
+          <tr><td><code>bodyField</code></td><td>That dot path exists and is non-empty. Add <code>bodyFieldValue</code> to require one exact value instead</td></tr>
+          <tr><td><code>minBytes</code> / <code>maxBytes</code></td><td>Request body size, inclusive on both ends. <b>Bytes, not tokens</b> — a token estimate would mean shipping a tokenizer, and a byte count is a figure you can actually tune</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"router": {
+  "enabled": true,
+  "defaultBucket": "default",
+  "buckets": {
+    "think":       { "model": "glm-5.3-think" },
+    "longContext": { "model": "glm-5.3-long" },
+    "background":  { "model": "glm-5.3-flash", "transformers": ["clamp-max-tokens"] }
+  },
+  "rules": [
+    { "bucket": "think",       "path": "/zen/go/v1/messages" },
+    { "bucket": "longContext", "minBytes": 60000 },
+    { "bucket": "background",  "modelPrefix": "proxy-haiku", "maxBytes": 4096 }
+  ]
+}</code></pre>
+    <p>
+      A bucket's <code>transformers</code> are <b>appended</b> to the global
+      <code>transformers.enabled</code> list — a bucket can add transforms but cannot cancel a global
+      one. A bucket's <code>model</code> is applied after alias rewriting and replaces whatever was
+      there, so it should be a real upstream ID rather than a <code>proxy-</code> alias.
+      <code>{{model}}</code> in an injected header sees the bucket's value, because injection runs last.
+    </p>
+
     <h3>Template variables</h3>
     <div class="table-wrap">
       <table>
@@ -355,6 +441,9 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--body-inject &lt;k=v&gt;</code></td><td>Inject a body field, dot paths supported, repeatable</td></tr>
           <tr><td><code>--model-prefix &lt;prefix&gt;</code></td><td>Model name prefix to strip, repeatable</td></tr>
           <tr><td><code>--model-map &lt;a=b&gt;</code></td><td>Exact model name mapping, repeatable. Merged over the built-in alias table</td></tr>
+          <tr><td><code>--transformer &lt;name&gt;</code></td><td>Attach a named body transform, repeatable. <b>Replaces</b> <code>transformers.enabled</code> rather than appending to it, the same way <code>--model-prefix</code> replaces <code>stripPrefixes</code></td></tr>
+          <tr><td><code>--router &lt;bucket&gt;</code></td><td>Force every request through one bucket, ignoring the rules</td></tr>
+          <tr><td><code>--no-router</code></td><td>Turn router buckets off, even if the config file enables them</td></tr>
           <tr><td><code>--session-header &lt;name&gt;</code> / <code>--session-field &lt;path&gt;</code></td><td>Append a session source location, repeatable</td></tr>
           <tr><td><code>--session-id-format &lt;f&gt;</code> / <code>--request-id-format &lt;t&gt;</code></td><td>Session ID format / per-request ID template</td></tr>
           <tr><td><code>--no-session</code> / <code>--no-stream</code></td><td>Disable session injection / disable streaming pass-through</td></tr>
@@ -411,14 +500,29 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       a 400 from the upstream.
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.2.0 — dry run
+llm-session-proxy v0.2.1 — dry run
 
 Model
-  sample        proxy-glm
-  strip         prefix "proxy-" -&gt; glm
-  mapped        glm -&gt; glm-5.3
-  result        glm-5.3  (mapped)
-  map           27 built-in aliases, 0 overrides
+  sample              proxy-glm
+  strip               prefix "proxy-" -&gt; glm
+  mapped              glm -&gt; glm-5.3
+  result              glm-5.3  (mapped)
+  map                 27 built-in aliases, 0 overrides
+
+Router
+  enabled             no
+  default bucket      default
+  bucket default      (none)
+  bucket background   (none)
+  bucket think        (none)
+  bucket longContext  (none)
+  rules               (no rules)
+  sample route        default (router disabled)
+
+Transformers
+  global              (none)
+  effective           (none)
+  available           noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens
 
 Result
   OK — the configuration is valid.</code></pre>
@@ -433,6 +537,38 @@ Result
         </tbody>
       </table>
     </div>
+    <p>
+      The <code>Router</code> and <code>Transformers</code> blocks answer "which bucket would this
+      request land in, and what would be done to it". For the config shown under
+      <a href="#router">router</a> above:
+    </p>
+    <pre><code>Router
+  enabled             yes
+  default bucket      default
+  bucket default      (none)
+  bucket background   model=glm-5.3-flash transformers=clamp-max-tokens
+  bucket think        model=glm-5.3-think
+  bucket longContext  model=glm-5.3-long
+  #0                  path^=/zen/go/v1/messages -&gt; think
+  #1                  bytes&gt;=60000 -&gt; longContext
+  #2                  model~=proxy-haiku* AND bytes&lt;=4096 -&gt; background
+  sample route        default  (default bucket, no rule matched /v1/chat/completions)
+
+Transformers
+  global              drop-empty-fields
+  effective           drop-empty-fields
+  available           noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens</code></pre>
+    <p>
+      <code>#0</code>/<code>#1</code>/<code>#2</code> are the rules in order, with <code>path^=</code>
+      meaning "path starts with" and <code>model~=</code> meaning "model prefix". The
+      <code>sample route</code> row is the result of actually running the matcher over a sample
+      <code>POST /v1/chat/completions</code>, so it lands on the fallback: nothing matched and the
+      request goes to the default bucket. <code>--router think</code> overrides the whole thing:
+      <code>sample route  think  (forced by --router)</code>. <code>effective</code> is what will
+      really run — the global list first, then whatever the winning bucket appends. In Chinese output
+      these two blocks are titled <code>路由分桶</code> and <code>变换</code>, deliberately distinct
+      from the pre-existing <code>路由</code> (path rewriting) section.
+    </p>
     <p>
       <code>--doctor</code> runs the same report and adds DNS resolution, a TCP connect with handshake
       time, a TLS handshake when the protocol is <code>https</code> (an untrusted certificate is
@@ -465,12 +601,20 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       <div class="arrow">→</div>
       <div class="flow-step"><b>02 SESSION</b><span>explicit &gt; fingerprint &gt; random</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>03 REWRITE</b><span>path and model name</span></div>
+      <div class="flow-step"><b>03 REWRITE</b><span>model name: strip, then map</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>04 INJECT</b><span>headers and body fields</span></div>
+      <div class="flow-step"><b>04 ROUTE</b><span>bucket model + transforms</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>05 FORWARD</b><span>stream SSE chunk by chunk</span></div>
+      <div class="flow-step"><b>05 INJECT</b><span>headers and body fields</span></div>
+      <div class="arrow">→</div>
+      <div class="flow-step"><b>06 FORWARD</b><span>stream SSE chunk by chunk</span></div>
     </div>
+    <p>
+      The order of 03–05 is deliberate. Rules see the model name the client sent <i>and</i> the
+      resolved one; the bucket's model override lands after alias resolution, so it can only be a real
+      upstream ID; injection comes last, so <code>{{model}}</code> in a header reflects the final
+      decision rather than the original request.
+    </p>
 
     <h3>The three-tier session strategy</h3>
     <p>
@@ -521,6 +665,12 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       alias stops resolving, it is a one-line override in your config file — not a bug — and
       <code>--dry-run</code> shows which alias resolved to what before you send a real request.
     </p>
+    <p>
+      <b>No protocol translation, and the transform registry is a fixed list.</b> A client that only
+      speaks one protocol can only reach the models that accept it, and the five built-in transforms
+      are all there is — the proxy never loads a transform from a path. Both are deliberate, and
+      protocol translation is the headline item of v0.2.2.
+    </p>
   </section>
 
   <section id="roadmap">
@@ -530,8 +680,8 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       <thead><tr><th>Milestone</th><th>Theme</th><th>Highlights</th></tr></thead>
       <tbody>
         <tr><td><code>v0.2.0</code> ✓</td><td>Correctness</td><td>A curated built-in model map (27 aliases), a warn-once notice when a <code>proxy-</code>-prefixed alias resolves to nothing, and the <code>--dry-run</code> / <code>--doctor</code> preflight. The release that fixes <em>&ldquo;my alias silently reached the upstream verbatim&rdquo;</em>.</td></tr>
-        <tr><td><code>v0.2.1</code></td><td>Routing</td><td>A config-selectable transformer registry and router buckets (<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>). The host the translators plug into.</td></tr>
-        <tr><td><code>v0.2.2</code></td><td>Protocol reach</td><td>Anthropic ↔ OpenAI ↔ Responses translation with field normalisation, streaming included. The release that stops a client&rsquo;s protocol from deciding which models it can reach.</td></tr>
+        <tr><td><code>v0.2.1</code> ✓</td><td>Routing</td><td>Five named in-tree transforms (<code>noop</code>, <code>drop-fields</code>, <code>drop-empty-fields</code>, <code>rename-fields</code>, <code>clamp-max-tokens</code>) and router buckets (<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>) with top-down first-match rules over path, model prefix, body field and request size. Off by default; the host the translators plug into. The load-a-plugin-from-a-path model originally sketched for this milestone was dropped on purpose.</td></tr>
+        <tr><td><code>v0.2.2</code></td><td>Protocol reach</td><td>Anthropic ↔ OpenAI ↔ Responses translation with field normalisation, streaming included. The release that stops a client&rsquo;s protocol from deciding which models it can reach. <b>Next up.</b></td></tr>
         <tr><td><code>v0.3</code></td><td>Observability and control</td><td>Prometheus <code>/metrics</code>, JSON log mode, OTLP/JSON export, a session and prompt-cache inspector, token and cost accounting, and a zero-build local dashboard.</td></tr>
         <tr><td><code>v0.4</code></td><td>Reliability under real upstreams</td><td>Multiple upstreams, fallback with jittered retry, circuit breaking, separated timeouts with a stream idle watchdog, graceful drain on shutdown.</td></tr>
         <tr><td><code>v0.5</code></td><td>Safety and hygiene</td><td>Log redaction, regex guardrails, line-precise config schema errors, and <code>--check-config</code> for CI.</td></tr>

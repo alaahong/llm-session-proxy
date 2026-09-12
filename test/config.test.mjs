@@ -358,3 +358,87 @@ test('model 段写错会被配置校验当场拦下', () => {
   assert.throws(() => buildConfig({ env: {}, flags: { model: { field: '  ' } } }), /model\.field/);
   assert.throws(() => buildConfig({ env: {}, flags: { model: null } }), /model must be an object/);
 });
+
+test('router 与 transformers 的默认值不改变既有行为', () => {
+  const config = buildConfig({ env: {}, flags: {} });
+
+  assert.equal(config.router.enabled, false, '默认关闭：升级到本版本不该改变任何既有请求的行为');
+  assert.equal(config.router.forced, null);
+  assert.equal(config.router.defaultBucket, 'default');
+  assert.deepEqual(config.router.rules, []);
+  assert.deepEqual(config.transformers, { enabled: [], options: {} });
+});
+
+test('router 深合并：桶里的键逐个覆盖，内置四桶始终在', () => {
+  const config = buildConfig({
+    env: {},
+    flags: {
+      router: {
+        enabled: true,
+        buckets: { think: { model: 'glm-think', transformers: ['noop'] } },
+        rules: [{ bucket: 'think', modelPrefix: 'proxy-think' }],
+      },
+    },
+  });
+
+  assert.equal(config.router.enabled, true);
+  assert.equal(config.router.buckets.think.model, 'glm-think');
+  assert.deepEqual(config.router.buckets.think.transformers, ['noop']);
+  assert.deepEqual(config.router.buckets.default, { model: null, transformers: [] }, '没动的桶保持默认');
+  assert.equal(config.router.rules.length, 1);
+  assert.equal(config.router.rules[0].modelPrefix, 'proxy-think');
+});
+
+test('router 段的错误都在启动时暴露', () => {
+  const bad = (flags) => buildConfig({ env: {}, flags });
+  const bucket = { enabled: true, buckets: { think: { model: null } } };
+
+  assert.throws(() => bad({ router: null }), /router must be an object/);
+  assert.throws(() => bad({ transformers: 'noop' }), /transformers must be an object/);
+  assert.throws(
+    () => bad({ router: { enabled: true, defaultBucket: 'nope' } }),
+    /defaultBucket .* is not declared/,
+  );
+  assert.throws(
+    () => bad({ router: { ...bucket, rules: [{ bucket: 'ghost', path: '/v1' }] } }),
+    /points at bucket "ghost"/,
+  );
+  assert.throws(
+    () => bad({ router: { ...bucket, rules: [{ bucket: 'think', minBytes: -1 }] } }),
+    /minBytes must be a non-negative number/,
+  );
+  assert.throws(() => bad({ router: { ...bucket, rules: [{ bucket: 'think' }] } }), /has no matcher/);
+  assert.throws(() => bad({ router: { forced: 'ghost' } }), /is not a declared bucket/);
+});
+
+test('变换名字拼错会被拦下，不管是全局还是在桶里', () => {
+  const bad = (flags) => buildConfig({ env: {}, flags });
+
+  assert.throws(() => bad({ transformers: { enabled: ['drop-feilds'] } }), /not a registered transformer/);
+  assert.throws(
+    () => bad({ transformers: { options: { 'drop-feilds': {} } } }),
+    /transformers.options.*not a registered transformer/,
+  );
+  assert.throws(
+    () => bad({ router: { enabled: true, buckets: { think: { transformers: ['nope'] } } } }),
+    /router.buckets.think.*not a registered transformer/,
+  );
+  assert.throws(() => bad({ transformers: { options: [] } }), /must be an object keyed/);
+  assert.throws(() => bad({ transformers: { enabled: 'noop' } }), /must be an array/);
+
+  // 合法名字不该报错
+  const ok = buildConfig({
+    env: {},
+    flags: { transformers: { enabled: ['noop'], options: { 'drop-fields': { fields: ['temperature'] } } } },
+  });
+  assert.deepEqual(ok.transformers.enabled, ['noop']);
+});
+
+test('TRANSFORMERS 与 ROUTER_ENABLED 环境变量', () => {
+  const config = buildConfig({ env: { TRANSFORMERS: 'noop, drop-fields', ROUTER_ENABLED: 'true' }, flags: {} });
+
+  assert.deepEqual(config.transformers.enabled, ['noop', 'drop-fields'], '逗号分隔，整体替换');
+  assert.equal(config.router.enabled, true);
+
+  assert.equal(buildConfig({ env: { ROUTER_ENABLED: 'off' }, flags: {} }).router.enabled, false);
+});

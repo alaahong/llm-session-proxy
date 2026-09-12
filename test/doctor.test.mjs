@@ -94,7 +94,7 @@ test('diagnose 对默认配置给出完整分节，且没有问题也没有警�
   assert.deepEqual(diagnosis.warnings, []);
   assert.deepEqual(
     diagnosis.sections.map((section) => section.title),
-    ['Config', 'Upstream', 'Routing', 'Injection', 'Model', 'Log'],
+    ['Config', 'Upstream', 'Routing', 'Injection', 'Model', 'Router', 'Transformers', 'Log'],
   );
   assert.equal(diagnosis.explanation.outcome, 'mapped');
 });
@@ -239,4 +239,118 @@ test('renderDiagnosis 在有问题时给出 FAILED 结果行', async () => {
 
   assert.match(text, /FAILED/);
   assert.match(text, /1 problem\(s\)/);
+});
+
+// ---------- v0.2.1 路由与变换区块 ----------
+
+function routerConfig(flags = {}) {
+  return buildConfig({
+    env: ENV,
+    flags: {
+      router: {
+        enabled: true,
+        buckets: {
+          think: { model: 'glm-5.3-think', transformers: ['drop-empty-fields'] },
+          longContext: { model: 'glm-5.3-long' },
+        },
+        rules: [
+          { bucket: 'think', path: '/zen/go/v1/messages' },
+          { bucket: 'longContext', minBytes: 60000 },
+        ],
+      },
+      transformers: { enabled: ['noop'], options: {} },
+      ...flags,
+    },
+  });
+}
+
+test('diagnose 会真的跑一遍路由，并列出桶与规则', () => {
+  const diagnosis = diagnose(routerConfig(), { env: ENV });
+  const router = diagnosis.sections.find((section) => section.title === 'Router');
+
+  assert.ok(router, '应当有 Router 区块');
+  const rows = router.rows.map(([label, value]) => `${label} :: ${value}`).join('\n');
+  assert.match(rows, /enabled :: yes/);
+  assert.match(rows, /default bucket :: default/);
+  assert.match(rows, /bucket think :: model=glm-5\.3-think transformers=drop-empty-fields/);
+  assert.match(rows, /bucket longContext :: model=glm-5\.3-long/);
+  assert.match(rows, /#0 :: path\^=\/zen\/go\/v1\/messages -> think/);
+  assert.match(rows, /#1 :: bytes>=60000 -> longContext/);
+  // 默认样例模型是 proxy-glm，两条规则都不该命中
+  assert.match(rows, /sample route :: default {2}\(default bucket/);
+});
+
+test('Transformers 区块区分全局、生效与可用三行', () => {
+  const diagnosis = diagnose(routerConfig(), { env: ENV });
+  const transformers = diagnosis.sections.find((section) => section.title === 'Transformers');
+  const rows = Object.fromEntries(transformers.rows);
+
+  assert.equal(rows.global, 'noop');
+  // 样例落在 default 桶，而 default 桶没挂变换 → 生效的只有全局那一个
+  assert.equal(rows.effective, 'noop');
+  assert.match(rows.available, /^noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens$/);
+});
+
+test('样例请求命中规则时，生效变换会把桶挂的一并算上', () => {
+  // 样例路径固定为 /v1/chat/completions，所以用 modelPrefix 把样例模型引到 think 桶
+  const config = buildConfig({
+    env: ENV,
+    flags: {
+      transformers: { enabled: ['noop'] },
+      router: {
+        enabled: true,
+        buckets: { think: { transformers: ['drop-empty-fields'] } },
+        rules: [{ bucket: 'think', modelPrefix: 'proxy-' }],
+      },
+    },
+  });
+  const diagnosis = diagnose(config, { env: ENV });
+  const router = Object.fromEntries(
+    diagnosis.sections.find((section) => section.title === 'Router').rows,
+  );
+  const transformers = Object.fromEntries(
+    diagnosis.sections.find((section) => section.title === 'Transformers').rows,
+  );
+
+  assert.match(router['sample route'], /think {2}\(rule #0/);
+  assert.equal(transformers.effective, 'noop, drop-empty-fields', '全局在前，桶的追加在后');
+});
+
+test('router 开启但什么都没配会给出警告', () => {
+  const diagnosis = diagnose(buildConfig({ env: ENV, flags: { router: { enabled: true } } }), { env: ENV });
+
+  assert.equal(diagnosis.warnings.length, 1);
+  assert.match(diagnosis.warnings[0], /no rule and no bucket is configured/);
+});
+
+test('router 关闭时不产生这个警告，即使桶是空的', () => {
+  const diagnosis = diagnose(enConfig(), { env: ENV });
+  assert.deepEqual(diagnosis.warnings, []);
+});
+
+test('--router 强制桶会在报告里标出来', () => {
+  const diagnosis = diagnose(buildConfig({ env: ENV, flags: { router: { forced: 'think' } } }), { env: ENV });
+  const rows = Object.fromEntries(diagnosis.sections.find((section) => section.title === 'Router').rows);
+
+  assert.match(rows.enabled, /forced to "think"/);
+  assert.match(rows['sample route'], /think {2}\(forced by --router\)/);
+});
+
+test('中文报告里的新区块也成对出现，且不与既有的"路由"区块撞名', () => {
+  const diagnosis = diagnose(routerConfig({ lang: 'zh' }), { env: ENV, model: 'proxy-glm' });
+  const titles = diagnosis.sections.map((section) => section.title);
+
+  // 既有的 Routing 区块在中文里叫「路由」，新的 Router 区块必须能区分开
+  assert.ok(titles.includes('路由'), titles.join(','));
+  assert.ok(titles.includes('路由分桶'), titles.join(','));
+  assert.ok(titles.includes('变换'), titles.join(','));
+  assert.equal(titles.filter((title) => title === '路由').length, 1, '区块标题不能重复');
+  assert.equal(new Set(titles).size, titles.length, '所有区块标题必须互不相同');
+
+  const router = diagnosis.sections.find((section) => section.title === '路由分桶');
+  assert.ok(router.rows.some(([label]) => label === '样例路由'), router.rows.map(([l]) => l).join(','));
+  // 规则行是 [「#序号」, 「<匹配式> -> <桶>」]，序号在标签列、桶在值列
+  assert.ok(router.rows.some(([label]) => label === '#0'), '规则行要有序号标签');
+  assert.ok(router.rows.some(([, value]) => value.includes('-> think')), '规则行要写明落进哪个桶');
+  setLang(DEFAULT_LANG);
 });

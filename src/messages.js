@@ -54,6 +54,23 @@ const en = {
   'config.badModelMapEntry': ({ alias, value }) =>
     `model.map["${alias}"] must be a non-empty model id string, got ${value}`,
   'config.badModelField': ({ field }) => `model.field must be a non-empty string, got ${field}`,
+  'config.badRouter': () => 'router must be an object',
+  'config.badRouterBuckets': () => 'router.buckets must declare at least one bucket',
+  'config.badRouterDefaultBucket': ({ bucket, buckets }) =>
+    `router.defaultBucket ${bucket} is not declared in router.buckets (available: ${buckets})`,
+  'config.badRouterForced': ({ bucket, buckets }) =>
+    `--router "${bucket}" is not a declared bucket (available: ${buckets})`,
+  'config.badRouterRuleBucket': ({ index, bucket, buckets }) =>
+    `router.rules[${index}] points at bucket "${bucket}", which is not declared (available: ${buckets})`,
+  'config.badRouterRuleNoMatch': ({ index, bucket }) =>
+    `router.rules[${index}] (bucket "${bucket}") has no matcher — add one of path / modelPrefix / bodyField / minBytes / maxBytes, or the rule can never apply`,
+  'config.badRouterRuleBytes': ({ index, key, value }) =>
+    `router.rules[${index}].${key} must be a non-negative number, got ${value}`,
+  'config.badTransformerName': ({ where, name, known }) =>
+    `${where}: "${name}" is not a registered transformer (available: ${known})`,
+  'config.badTransformerOptions': () => 'transformers.options must be an object keyed by transformer name',
+  'config.badTransformers': () => 'transformers must be an object with "enabled" and "options"',
+  'config.badTransformerEnabled': () => 'transformers.enabled must be an array of transformer names',
 
   // ---------- cli.js：帮助与示例配置 ----------
   'cli.help': ({ name, version, defaults }) => `
@@ -76,6 +93,11 @@ OPTIONS
       --model-prefix <prefix>  Model name prefix to strip, repeatable (default proxy-)
       --model-map <a=b>        Exact model name mapping, repeatable (takes precedence over prefix
                                stripping; merged over the built-in OpenCode alias table)
+      --transformer <name>     Attach a named body transform, repeatable (replaces the whole list;
+                               the name alone enables it). Available: noop | drop-fields |
+                               drop-empty-fields | rename-fields | clamp-max-tokens
+      --router <bucket>        Force every request through one bucket, ignoring the rules
+      --no-router              Disable router buckets
       --session-header <name>  Add a request header to read the client session from, repeatable
       --session-field <path>   Add a request body field to read the client session from, repeatable
       --session-id-format <f>  Session ID format: hex26 | hex | uuid | base36 | short
@@ -194,6 +216,37 @@ EXAMPLES
     "warnUnmapped": true          // warn once per alias that strips to an unmapped name
   },
 
+  // Named body transforms, applied in order. Always active, router or not.
+  // Available names: noop | drop-fields | drop-empty-fields | rename-fields | clamp-max-tokens
+  "transformers": {
+    "enabled": [],
+    "options": {
+      // "drop-empty-fields": { "fields": ["tools", "temperature"] },
+      // "rename-fields":     { "map": { "max_completion_tokens": "max_tokens" } },
+      // "clamp-max-tokens":  { "max": 32000 }
+    }
+  },
+
+  // Router buckets: pick a model and a set of transforms per request.
+  // Rules are evaluated top-down, first match wins; conditions inside one rule are ANDed.
+  "router": {
+    "enabled": false,
+    "forced": null,               // a bucket name, or null; overrides every rule (--router)
+    "defaultBucket": "default",
+    "buckets": {
+      "default":     { "model": null, "transformers": [] },
+      "background":  { "model": null, "transformers": [] },
+      "think":       { "model": null, "transformers": [] },
+      "longContext": { "model": null, "transformers": [] }
+    },
+    "rules": [
+      // { "bucket": "think",       "path": "/zen/go/v1/messages" },
+      // { "bucket": "think",       "modelPrefix": "proxy-think" },
+      // { "bucket": "background",  "bodyField": "metadata.kind", "bodyFieldValue": "background" },
+      // { "bucket": "longContext", "minBytes": 60000 }
+    ]
+  },
+
   "userAgent": "opencode/1.18.29 cli",
   "userAgentMode": "replace-generic",  // keep | replace | replace-generic
 
@@ -270,6 +323,8 @@ EXAMPLES
   'doctor.section.routing': () => 'Routing',
   'doctor.section.injection': () => 'Injection',
   'doctor.section.model': () => 'Model',
+  'doctor.section.router': () => 'Router',
+  'doctor.section.transformers': () => 'Transformers',
   'doctor.section.log': () => 'Log',
   'doctor.section.checks': () => 'Checks',
   'doctor.section.result': () => 'Result',
@@ -292,6 +347,14 @@ EXAMPLES
   'doctor.label.mapped': () => 'mapped',
   'doctor.label.mapResult': () => 'result',
   'doctor.label.map': () => 'map',
+  'doctor.label.routerEnabled': () => 'enabled',
+  'doctor.label.defaultBucket': () => 'default bucket',
+  'doctor.label.bucketRow': ({ name }) => `bucket ${name}`,
+  'doctor.label.rules': () => 'rules',
+  'doctor.label.sampleRoute': () => 'sample route',
+  'doctor.label.globalTransformers': () => 'global',
+  'doctor.label.effectiveTransformers': () => 'effective',
+  'doctor.label.availableTransformers': () => 'available',
   'doctor.label.logFile': () => 'file',
   'doctor.label.rotation': () => 'rotation',
   'doctor.label.upstreamCheck': () => 'upstream',
@@ -301,6 +364,12 @@ EXAMPLES
   'doctor.value.passthrough': () => '(none, passed through as-is)',
   'doctor.value.yes': () => 'yes',
   'doctor.value.no': () => 'no',
+  'doctor.value.forced': ({ bucket }) => `yes — forced to "${bucket}"`,
+  'doctor.value.disabled': ({ bucket }) => `${bucket} (router disabled)`,
+  'doctor.value.noRules': () => '(no rules)',
+  'doctor.value.routeBy': ({ bucket, index, path }) => `${bucket}  (rule #${index}, sample path ${path})`,
+  'doctor.value.routeDefault': ({ bucket, path }) => `${bucket}  (default bucket, no rule matched ${path})`,
+  'doctor.value.routeForced': ({ bucket }) => `${bucket}  (forced by --router)`,
   'doctor.value.ua': ({ ua, mode }) => `${ua} (mode ${mode})`,
   'doctor.value.sessionFrom': ({ headers, body }) => `header ${headers}; body ${body}`,
   'doctor.value.mapSize': ({ builtin, overrides }) => `${builtin} built-in aliases, ${overrides} overrides`,
@@ -335,12 +404,26 @@ EXAMPLES
   'doctor.warn.modelMapEmpty': () =>
     'model.map is empty while prefix stripping is enabled — aliases such as "proxy-deepseek" will be forwarded stripped and verbatim',
   'doctor.warn.portBusy': ({ port }) => `listen port ${port} is already in use`,
+  'doctor.warn.routerEmpty': () =>
+    'router is enabled but no rule and no bucket is configured — every request falls through to the default bucket, so the routing layer costs a check and decides nothing',
   'doctor.fail.dns': ({ host }) => `cannot resolve upstream host ${host}`,
   'doctor.fail.connect': ({ host, port }) => `cannot connect to ${host}:${port}`,
   'doctor.fail.tls': () => 'TLS handshake failed',
   'doctor.fail.unresolvedAlias': ({ alias, resolved }) =>
     `alias "${alias}" strips to "${resolved}", which matches no model.map entry and no model.default — ` +
     `the upstream will most likely reject it as an unknown model`,
+
+  // ---------- router.js：路由分桶 ----------
+  'router.ruleNoMatch': () => '(no matcher — this rule never applies)',
+
+  // ---------- transformers.js：命名变换 ----------
+  'transformer.noop': () => 'do nothing; useful for verifying the pipeline end to end',
+  'transformer.dropFields': () => 'delete the body fields listed in options.fields (dot paths allowed)',
+  'transformer.dropEmptyFields': () =>
+    'delete fields whose value is null, "", [] or {} — upstreams commonly reject empty arrays such as tools: []',
+  'transformer.renameFields': () =>
+    'rename body fields per options.map, e.g. max_completion_tokens -> max_tokens',
+  'transformer.clampMaxTokens': () => 'cap max_tokens / max_completion_tokens at options.max',
 
   // ---------- cli.js：进程级兜底 ----------
   'cli.guard.uncaught': ({ kind, detail }) => `[${kind}] uncaught error (process continues): ${detail}`,
@@ -395,6 +478,8 @@ EXAMPLES
     `[model] alias "${alias}" matched no mapping after stripping "${prefix}" — forwarding "${resolved}" to the upstream as-is. ` +
     `Add model.map["${resolved}"], or have the client send the real model id.`,
   'proxy.log.clientParseFailed': ({ code }) => `[client] failed to parse the request: ${code}`,
+  'proxy.log.transformerSkipped': ({ name, bucket }) =>
+    `[transformer] "${name}" from bucket "${bucket}" is not a registered request-phase transformer — skipped`,
   'proxy.log.serverError': ({ detail }) => `[server] server error (process continues): ${detail}`,
 };
 
@@ -422,6 +507,23 @@ const zh = {
   'config.badModelMapEntry': ({ alias, value }) =>
     `model.map["${alias}"] 必须是非空的模型 ID 字符串，收到 ${value}`,
   'config.badModelField': ({ field }) => `model.field 必须是非空字符串，收到 ${field}`,
+  'config.badRouter': () => 'router 必须是对象',
+  'config.badRouterBuckets': () => 'router.buckets 至少要声明一个桶',
+  'config.badRouterDefaultBucket': ({ bucket, buckets }) =>
+    `router.defaultBucket ${bucket} 不在 router.buckets 里（可用：${buckets}）`,
+  'config.badRouterForced': ({ bucket, buckets }) =>
+    `--router 指定的「${bucket}」不是已声明的桶（可用：${buckets}）`,
+  'config.badRouterRuleBucket': ({ index, bucket, buckets }) =>
+    `router.rules[${index}] 指向的桶「${bucket}」未声明（可用：${buckets}）`,
+  'config.badRouterRuleNoMatch': ({ index, bucket }) =>
+    `router.rules[${index}]（桶「${bucket}」）没有任何匹配条件 —— 请补 path / modelPrefix / bodyField / minBytes / maxBytes 之一，否则这条规则永远不会生效`,
+  'config.badRouterRuleBytes': ({ index, key, value }) =>
+    `router.rules[${index}].${key} 必须是非负数字，收到 ${value}`,
+  'config.badTransformerName': ({ where, name, known }) =>
+    `${where}：「${name}」不是已注册的变换（可用：${known}）`,
+  'config.badTransformerOptions': () => 'transformers.options 必须是以变换名为键的对象',
+  'config.badTransformers': () => 'transformers 必须是带 enabled 与 options 的对象',
+  'config.badTransformerEnabled': () => 'transformers.enabled 必须是变换名数组',
 
   // ---------- cli.js ----------
   'cli.help': ({ name, version, defaults }) => `
@@ -442,6 +544,10 @@ ${name} v${version}
       --body-inject <k=v>      往请求体注入字段（支持点路径与模板），可重复
       --model-prefix <prefix>  需要剥离的模型名前缀，可重复（默认 proxy-）
       --model-map <a=b>        模型名精确映射，可重复（优先于前缀剥离，与内置别名表逐键合并）
+      --transformer <name>     挂一个命名请求体变换，可重复（整体替换，只写名字即启用）。
+                               可用：noop | drop-fields | drop-empty-fields | rename-fields | clamp-max-tokens
+      --router <bucket>        强制所有请求走指定桶，忽略规则
+      --no-router              关闭路由分桶
       --session-header <name>  追加"从哪个请求头读客户端会话"，可重复
       --session-field <path>   追加"从哪个请求体字段读客户端会话"，可重复
       --session-id-format <f>  会话 ID 格式：hex26 | hex | uuid | base36 | short
@@ -559,6 +665,37 @@ ${name} v${version}
     "warnUnmapped": true          // 别名剥完前缀仍无映射时，每个别名告警一次
   },
 
+  // 命名请求体变换，按数组顺序执行。与 router 无关，始终生效。
+  // 可用名字：noop | drop-fields | drop-empty-fields | rename-fields | clamp-max-tokens
+  "transformers": {
+    "enabled": [],
+    "options": {
+      // "drop-empty-fields": { "fields": ["tools", "temperature"] },
+      // "rename-fields":     { "map": { "max_completion_tokens": "max_tokens" } },
+      // "clamp-max-tokens":  { "max": 32000 }
+    }
+  },
+
+  // 路由分桶：按请求的性质决定用哪个模型、挂哪些变换。
+  // 规则自上而下匹配，首个命中生效；同一条规则内的多个条件是 AND。
+  "router": {
+    "enabled": false,
+    "forced": null,               // 桶名或 null；写了就压过所有规则（对应 --router）
+    "defaultBucket": "default",
+    "buckets": {
+      "default":     { "model": null, "transformers": [] },
+      "background":  { "model": null, "transformers": [] },
+      "think":       { "model": null, "transformers": [] },
+      "longContext": { "model": null, "transformers": [] }
+    },
+    "rules": [
+      // { "bucket": "think",       "path": "/zen/go/v1/messages" },
+      // { "bucket": "think",       "modelPrefix": "proxy-think" },
+      // { "bucket": "background",  "bodyField": "metadata.kind", "bodyFieldValue": "background" },
+      // { "bucket": "longContext", "minBytes": 60000 }
+    ]
+  },
+
   "userAgent": "opencode/1.18.29 cli",
   "userAgentMode": "replace-generic",  // keep | replace | replace-generic
 
@@ -635,6 +772,8 @@ ${name} v${version}
   'doctor.section.routing': () => '路由',
   'doctor.section.injection': () => '注入',
   'doctor.section.model': () => '模型',
+  'doctor.section.router': () => '路由分桶',
+  'doctor.section.transformers': () => '变换',
   'doctor.section.log': () => '日志',
   'doctor.section.checks': () => '检查',
   'doctor.section.result': () => '结果',
@@ -657,6 +796,14 @@ ${name} v${version}
   'doctor.label.mapped': () => '映射',
   'doctor.label.mapResult': () => '结果',
   'doctor.label.map': () => '映射表',
+  'doctor.label.routerEnabled': () => '启用',
+  'doctor.label.defaultBucket': () => '默认桶',
+  'doctor.label.bucketRow': ({ name }) => `桶 ${name}`,
+  'doctor.label.rules': () => '规则',
+  'doctor.label.sampleRoute': () => '样例路由',
+  'doctor.label.globalTransformers': () => '全局',
+  'doctor.label.effectiveTransformers': () => '生效',
+  'doctor.label.availableTransformers': () => '可用',
   'doctor.label.logFile': () => '文件',
   'doctor.label.rotation': () => '轮转',
   'doctor.label.upstreamCheck': () => '上游',
@@ -666,6 +813,12 @@ ${name} v${version}
   'doctor.value.passthrough': () => '（无，原样透传）',
   'doctor.value.yes': () => '是',
   'doctor.value.no': () => '否',
+  'doctor.value.forced': ({ bucket }) => `是 —— 已强制为「${bucket}」`,
+  'doctor.value.disabled': ({ bucket }) => `${bucket}（路由已关闭）`,
+  'doctor.value.noRules': () => '（无规则）',
+  'doctor.value.routeBy': ({ bucket, index, path }) => `${bucket}（规则 #${index}，样例路径 ${path}）`,
+  'doctor.value.routeDefault': ({ bucket, path }) => `${bucket}（默认桶，${path} 未命中任何规则）`,
+  'doctor.value.routeForced': ({ bucket }) => `${bucket}（由 --router 强制）`,
   'doctor.value.ua': ({ ua, mode }) => `${ua}（模式 ${mode}）`,
   'doctor.value.sessionFrom': ({ headers, body }) => `请求头 ${headers}；请求体 ${body}`,
   'doctor.value.mapSize': ({ builtin, overrides }) => `内置 ${builtin} 条，覆盖 ${overrides} 条`,
@@ -698,12 +851,27 @@ ${name} v${version}
   'doctor.warn.modelMapEmpty': () =>
     '前缀剥离已启用但 model.map 为空 —— proxy-deepseek 这类别名会被剥完前缀后原样转发',
   'doctor.warn.portBusy': ({ port }) => `监听端口 ${port} 已被占用`,
+  'doctor.warn.routerEmpty': () =>
+    '路由已开启，但既没有规则、也没有任何桶配了模型或变换 —— 所有请求都会落到默认桶，等于白跑一层判定',
   'doctor.fail.dns': ({ host }) => `无法解析上游主机名 ${host}`,
   'doctor.fail.connect': ({ host, port }) => `无法连接 ${host}:${port}`,
   'doctor.fail.tls': () => 'TLS 握手失败',
   'doctor.fail.unresolvedAlias': ({ alias, resolved }) =>
     `别名 "${alias}" 剥完前缀是 "${resolved}"，既没命中 model.map 也没有 model.default —— ` +
     `上游极可能直接以「未知模型」拒绝`,
+
+  // ---------- cli.js：进程级兜底 ----------
+  // ---------- router.js：路由分桶 ----------
+  'router.ruleNoMatch': () => '（没有匹配条件 —— 这条规则永远不会生效）',
+
+  // ---------- transformers.js：命名变换 ----------
+  'transformer.noop': () => '什么都不做；用来端到端验证流水线本身',
+  'transformer.dropFields': () => '删除 options.fields 列出的请求体字段（支持点路径）',
+  'transformer.dropEmptyFields': () =>
+    '删除值为 null、""、[] 或 {} 的字段 —— 上游普遍不接受空数组，比如 tools: []',
+  'transformer.renameFields': () =>
+    '按 options.map 重命名字段，例如 max_completion_tokens -> max_tokens',
+  'transformer.clampMaxTokens': () => '把 max_tokens / max_completion_tokens 压到 options.max 以内',
 
   // ---------- cli.js：进程级兜底 ----------
   'cli.guard.uncaught': ({ kind, detail }) => `[${kind}] 未捕获的错误（进程继续运行）: ${detail}`,
@@ -754,6 +922,8 @@ ${name} v${version}
     `[model] 别名 "${alias}" 剥掉前缀 "${prefix}" 后没有命中任何映射 —— 会把 "${resolved}" 原样发给上游。` +
     `请补 model.map["${resolved}"]，或让客户端直接填真实模型 ID。`,
   'proxy.log.clientParseFailed': ({ code }) => `[client] 解析请求失败: ${code}`,
+  'proxy.log.transformerSkipped': ({ name, bucket }) =>
+    `[transformer] 桶 "${bucket}" 挂的 "${name}" 不是已注册的请求相位变换 —— 已跳过`,
   'proxy.log.serverError': ({ detail }) => `[server] 服务器错误（进程继续）: ${detail}`,
 };
 

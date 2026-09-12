@@ -408,3 +408,52 @@ test('CLI --dry-run / --doctor 跟随 --lang 输出中文', () => {
   assert.ok(out.includes('映射表'));
   assert.ok(out.includes('通过 —— 配置有效。'));
 });
+
+test('parseArgv 识别 --transformer / --router / --no-router', () => {
+  assert.deepEqual(parseArgv(['--transformer', 'noop']).flags.transformers.enabled, ['noop']);
+  assert.deepEqual(
+    parseArgv(['--transformer', 'noop', '--transformer', 'drop-empty-fields']).flags.transformers.enabled,
+    ['noop', 'drop-empty-fields'],
+    '可重复，按给定顺序收集',
+  );
+
+  assert.equal(parseArgv(['--router', 'think']).flags.router.forced, 'think');
+  assert.equal(parseArgv(['--no-router']).flags.router.enabled, false);
+  assert.equal(parseArgv(['--router=longContext']).flags.router.forced, 'longContext', '要支持等号写法');
+});
+
+test('CLI --dry-run 会打印 Router 与 Transformers 两个区块', () => {
+  const env = doctorEnv();
+  const out = execFileSync(process.execPath, [bin, '--dry-run'], { encoding: 'utf8', env });
+
+  assert.ok(out.includes('Router'), out);
+  assert.ok(out.includes('Transformers'), out);
+  assert.ok(out.includes('default bucket'), out);
+  assert.ok(out.includes('noop, drop-fields, drop-empty-fields'), '要列出可用的变换名');
+  assert.ok(out.includes('(no rules)'), '默认没有规则');
+  assert.ok(out.includes('(router disabled)'), '默认关闭时样例路由要说明原因');
+});
+
+test('CLI --router 强制桶：样例路由与生效变换都跟着变', () => {
+  const env = doctorEnv();
+  const out = execFileSync(process.execPath, [bin, '--dry-run', '--router', 'think'], { encoding: 'utf8', env });
+
+  assert.ok(out.includes('forced to "think"'), out);
+  assert.ok(out.includes('forced by --router'), out);
+});
+
+test('CLI --router 写错桶名以退出码 2 结束，并指出可用的桶', () => {
+  const env = doctorEnv();
+  assert.throws(
+    () => execFileSync(process.execPath, [bin, '--dry-run', '--router', 'ghost'], { encoding: 'utf8', env, stdio: 'pipe' }),
+    (error) => error.status === 2 && /not a declared bucket/.test(error.stderr),
+  );
+});
+
+test('CLI --transformer 拼错名字以退出码 2 结束', () => {
+  const env = doctorEnv();
+  assert.throws(
+    () => execFileSync(process.execPath, [bin, '--dry-run', '--transformer', 'noop2'], { encoding: 'utf8', env, stdio: 'pipe' }),
+    (error) => error.status === 2 && /not a registered transformer/.test(error.stderr),
+  );
+});

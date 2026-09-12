@@ -15,6 +15,9 @@
   //  所以不加 -c 也能直接用这些别名。本文件保留为「把每一项显式写全」的参考，
   //  也方便你在上面覆盖个别条目——配置文件里的 map 会与内置表逐键合并。
   //
+  //  从 v0.2.1 起还能按请求性质分桶：把长上下文、后台任务、思考型请求分别送到不同
+  //  模型（见 model 段下面注释掉的 "router" 段）。不打开就与以前完全一样。
+  //
   //  启动：llm-session-proxy -c examples/opencode-go-models.json
   // ════════════════════════════════════════════════════════════════════
 
@@ -113,6 +116,37 @@
     // 别名剥完前缀既无映射也无 default 时，每个别名告警一次（带上该补哪一条）
     "warnUnmapped": true
   },
+
+  // ── v0.2.1 起可选：请求体变换与分桶路由 ────────────────────────────────
+  // 两者都默认不生效（transformers.enabled 为空、router.enabled 为 false），
+  // 所以整段注释掉时行为与 v0.2.0 完全一致。
+  //
+  // 规则自上而下求值、首个命中即止；同一条规则内的多个条件是「与」。
+  // 大小阈值一律按**字节**（请求体字节数），刻意不估 token——估 token 要带分词器。
+  // path 比对的是客户端发来的路径（早于 request.pathRewrite）。
+  //
+  // "transformers": {
+  //   "enabled": ["drop-empty-fields"],          // 全局生效，与走哪个桶无关
+  //   "options": {
+  //     "drop-empty-fields": { "fields": ["temperature", "top_p"] },
+  //     "clamp-max-tokens": { "max": 4096 }
+  //   }
+  // },
+  //
+  // "router": {
+  //   "enabled": true,
+  //   "defaultBucket": "default",
+  //   "buckets": {
+  //     "think":       { "model": "glm-5.3-think" },
+  //     "longContext": { "model": "glm-5.3-long" },
+  //     "background":  { "model": "glm-5.3-flash", "transformers": ["clamp-max-tokens"] }
+  //   },
+  //   "rules": [
+  //     { "bucket": "think",       "path": "/zen/go/v1/messages" },
+  //     { "bucket": "longContext", "minBytes": 60000 },
+  //     { "bucket": "background",  "modelPrefix": "proxy-glm-flash", "maxBytes": 4096 }
+  //   ]
+  // },
 
   "userAgent": "opencode/1.18.29 cli",
   "userAgentMode": "replace-generic",

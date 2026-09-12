@@ -88,6 +88,16 @@
         <p>前缀剥离（<code>proxy-glm</code> → <code>glm-5.3</code>）与精确映射双管齐下，两种写法可以叠加。OpenCode Go 的别名表已内置，客户端必须带的 <code>proxy-</code> 前缀真能解析出结果；别名剥完却对不上任何条目时，会<b>按名字报出来</b>，而不是静默转发。</p>
       </div>
       <div class="card">
+        <div class="tag">router</div>
+        <h4>按规则分桶路由</h4>
+        <p>四个桶——<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>，各自可以换模型、挂请求体变换。规则按路径前缀、模型前缀、请求体字段、请求体大小匹配，<b>自上而下、首个命中即止</b>，同一条规则内条件是与。<b>默认关闭</b>，升级不会改变现有行为。</p>
+      </div>
+      <div class="card">
+        <div class="tag">transform</div>
+        <h4>可组合的请求体变换</h4>
+        <p>五个内置命名变换（<code>drop-fields</code>、<code>drop-empty-fields</code>、<code>rename-fields</code>、<code>clamp-max-tokens</code>、<code>noop</code>），可全局挂也可按桶挂，按固定顺序执行。注册表是写死的清单：<b>代理绝不从某个路径加载代码</b>。</p>
+      </div>
+      <div class="card">
         <div class="tag">path</div>
         <h4>请求路径重写</h4>
         <p>客户端只会填 <code>/v1</code> 时，一条正则把它转到上游真正要的路径。</p>
@@ -315,6 +325,81 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
       </table>
     </div>
 
+    <h3 id="transformers">transformers —— 请求体变换（始终生效）</h3>
+    <p class="sub">只能写名字：注册表是编译进代理里的固定清单，配置文件无法让它执行任意代码。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>[]</code></td><td>变换名列表，<b>从左到右</b>依次执行</td></tr>
+          <tr><td><code>options</code></td><td><code>{}</code></td><td>每个变换各自的参数，按变换名索引</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>名称</th><th>参数</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>noop</code></td><td>—</td><td>什么都不做。适合用来确认注册表确实接上了</td></tr>
+          <tr><td><code>drop-fields</code></td><td><code>fields: ["a.b"]</code></td><td>删除列出的点路径</td></tr>
+          <tr><td><code>drop-empty-fields</code></td><td><code>fields?: [...]</code></td><td>删除值为 <code>null</code>、<code>""</code>、<code>[]</code>、<code>{}</code> 的字段。<code>0</code> 和 <code>false</code> 会保留。不给 <code>fields</code> 时逐个检查顶层键</td></tr>
+          <tr><td><code>rename-fields</code></td><td><code>map: {"from": "to"}</code></td><td>重命名点路径，父对象不存在会自动创建。映射到自己身上的会被忽略</td></tr>
+          <tr><td><code>clamp-max-tokens</code></td><td><code>max: 4096</code></td><td>把 <code>max_tokens</code> / <code>max_completion_tokens</code> 压到不超过 <code>max</code>；只降不升</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      顺序会影响结果，因为每个变换都是原地改请求体：<code>rename-fields</code> 放在
+      <code>drop-fields</code> 前面，和反过来跑，结果不一样。名字不在上表里是<b>启动即报错</b>，
+      不会静默忽略。
+    </p>
+
+    <h3 id="router">router —— 分桶与规则</h3>
+    <p class="sub">一个桶决定两件事：用哪个模型、挂哪些变换。<code>enabled</code> 默认 <code>false</code>，所以现有配置在你主动打开之前行为完全不变。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>false</code></td><td>总开关。<code>--no-router</code> 强制关闭</td></tr>
+          <tr><td><code>forced</code></td><td><code>null</code></td><td>所有请求都走这个桶、忽略全部规则（<code>--router &lt;桶名&gt;</code>）。它的优先级同样高于 <code>enabled: false</code>——用户都点名了，再被配置挡掉只会让人困惑</td></tr>
+          <tr><td><code>defaultBucket</code></td><td><code>default</code></td><td>没命中任何规则的请求落到这个桶</td></tr>
+          <tr><td><code>buckets</code></td><td>内置四个，全为空</td><td><code>{ "model": &lt;模型 ID 或 null&gt;, "transformers": [&lt;名字&gt;] }</code>。可以自己加桶名；没声明过的桶名退化成空桶</td></tr>
+          <tr><td><code>rules</code></td><td><code>[]</code></td><td>自上而下求值，首个命中即止。一条规则必须有 <code>bucket</code> 外加至少一个匹配条件——一个条件都不给是配置错误：无法判定的规则和「命中一切」不是一回事</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>匹配条件</th><th>命中条件</th></tr></thead>
+        <tbody>
+          <tr><td><code>path</code></td><td>请求路径<b>以该字符串开头</b>。比对的是客户端发来的路径，早于 <code>request.pathRewrite</code></td></tr>
+          <tr><td><code>modelPrefix</code></td><td><b>客户端原始模型名</b>或<b>重写后的模型名</b>任一个以它开头，所以 <code>proxy-think</code> 和 <code>glm-5.3</code> 都能拿来写规则</td></tr>
+          <tr><td><code>bodyField</code></td><td>该点路径存在且非空。再加 <code>bodyFieldValue</code> 则要求等于某个具体值</td></tr>
+          <tr><td><code>minBytes</code> / <code>maxBytes</code></td><td>请求体字节数，两端都是闭区间。按<b>字节、不按 token</b>——估 token 就得带一个分词器，而字节数是你能实际调得动的数字</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"router": {
+  "enabled": true,
+  "defaultBucket": "default",
+  "buckets": {
+    "think":       { "model": "glm-5.3-think" },
+    "longContext": { "model": "glm-5.3-long" },
+    "background":  { "model": "glm-5.3-flash", "transformers": ["clamp-max-tokens"] }
+  },
+  "rules": [
+    { "bucket": "think",       "path": "/zen/go/v1/messages" },
+    { "bucket": "longContext", "minBytes": 60000 },
+    { "bucket": "background",  "modelPrefix": "proxy-haiku", "maxBytes": 4096 }
+  ]
+}</code></pre>
+    <p>
+      桶的 <code>transformers</code> 是<b>追加</b>到全局 <code>transformers.enabled</code>
+      后面的：桶只能加、不能取消全局的某个变换。桶的 <code>model</code> 在别名重写<b>之后</b>生效并
+      直接替换结果，所以这里应当写真实的上游模型 ID、而不是 <code>proxy-</code> 别名。引用
+      <code>{{model}}</code> 的请求头模板看到的是桶覆盖后的值，因为注入是最后一步。
+    </p>
+
     <h3>模板变量</h3>
     <div class="table-wrap">
       <table>
@@ -349,6 +434,9 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--body-inject &lt;k=v&gt;</code></td><td>注入请求体字段，支持点路径，可重复</td></tr>
           <tr><td><code>--model-prefix &lt;prefix&gt;</code></td><td>要剥离的模型名前缀，可重复</td></tr>
           <tr><td><code>--model-map &lt;a=b&gt;</code></td><td>模型名精确映射，可重复；合并到内置别名表之上</td></tr>
+          <tr><td><code>--transformer &lt;name&gt;</code></td><td>挂一个命名请求体变换，可重复。是<b>整体替换</b> <code>transformers.enabled</code> 而不是追加（与 <code>--model-prefix</code> 替换 <code>stripPrefixes</code> 同理）</td></tr>
+          <tr><td><code>--router &lt;bucket&gt;</code></td><td>强制所有请求走指定桶，忽略全部规则</td></tr>
+          <tr><td><code>--no-router</code></td><td>关闭路由分桶，即使配置文件里开着</td></tr>
           <tr><td><code>--session-header &lt;name&gt;</code> / <code>--session-field &lt;path&gt;</code></td><td>追加会话来源位置，可重复</td></tr>
           <tr><td><code>--session-id-format &lt;f&gt;</code> / <code>--request-id-format &lt;t&gt;</code></td><td>会话 ID 格式 / 请求号模板</td></tr>
           <tr><td><code>--no-session</code> / <code>--no-stream</code></td><td>关闭会话注入 / 关闭流式透传</td></tr>
@@ -361,7 +449,7 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--log-keep-days &lt;n&gt;</code></td><td>自动删除超过 N 天的历史日志（<code>0</code> 为永久保留）</td></tr>
           <tr><td><code>--init [file]</code></td><td>生成示例配置</td></tr>
           <tr><td><code>--print-config</code></td><td>打印合并后的最终配置并退出</td></tr>
-          <tr><td><code>--dry-run</code></td><td>校验配置并打印路由、注入与模型解析结果，不走任何网络</td></tr>
+          <tr><td><code>--dry-run</code></td><td>校验配置并打印路由、分桶、注入与模型解析结果，不走任何网络</td></tr>
           <tr><td><code>--doctor</code></td><td>在 <code>--dry-run</code> 基础上追加 DNS/TCP/TLS 连通性与监听端口检查；有问题时退出码非零</td></tr>
           <tr><td><code>--model &lt;id&gt;</code></td><td><code>--dry-run</code> / <code>--doctor</code> 用于演示的样例模型名</td></tr>
         </tbody>
@@ -401,14 +489,29 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       所以模板写错了会在这里暴露，而不是等上游回一个 400。
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.2.0 —— 试运行
+llm-session-proxy v0.2.1 —— 试运行
 
 模型
-  样例       proxy-glm
-  剥离       前缀 "proxy-" -&gt; glm
-  映射       glm -&gt; glm-5.3
-  结果       glm-5.3  （命中映射）
-  映射表     内置 27 条，覆盖 0 条
+  样例            proxy-glm
+  剥离            前缀 "proxy-" -&gt; glm
+  映射            glm -&gt; glm-5.3
+  结果            glm-5.3  （命中映射）
+  映射表          内置 27 条，覆盖 0 条
+
+路由分桶
+  启用            否
+  默认桶          default
+  桶 default      （无）
+  桶 background   （无）
+  桶 think        （无）
+  桶 longContext  （无）
+  规则            （无规则）
+  样例路由        default（路由已关闭）
+
+变换
+  全局            （无）
+  生效            （无）
+  可用            noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens
 
 结果
   通过 —— 配置有效。</code></pre>
@@ -423,6 +526,33 @@ llm-session-proxy v0.2.0 —— 试运行
         </tbody>
       </table>
     </div>
+    <p>
+      <b>路由分桶</b>与<b>变换</b>两段回答的是「这条请求会落进哪个桶、会被怎么改」。以上文
+      <a href="#router">router</a> 的配置为例：
+    </p>
+    <pre><code>路由分桶
+  启用            是
+  默认桶          default
+  桶 default      （无）
+  桶 background   model=glm-5.3-flash transformers=clamp-max-tokens
+  桶 think        model=glm-5.3-think
+  桶 longContext  model=glm-5.3-long
+  #0              path^=/zen/go/v1/messages -&gt; think
+  #1              bytes&gt;=60000 -&gt; longContext
+  #2              model~=proxy-haiku* AND bytes&lt;=4096 -&gt; background
+  样例路由        default（默认桶，/v1/chat/completions 未命中任何规则）
+
+变换
+  全局            drop-empty-fields
+  生效            drop-empty-fields
+  可用            noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens</code></pre>
+    <p>
+      <code>#0</code>/<code>#1</code>/<code>#2</code> 就是按顺序排列的规则，<code>path^=</code>
+      表示「路径以此开头」，<code>model~=</code> 表示「模型前缀」。<code>样例路由</code> 那行是真的拿一条
+      <code>POST /v1/chat/completions</code> 跑了一遍匹配，所以它落在兜底路径上：一条规则都没命中，
+      请求进默认桶。<code>--router think</code> 会覆盖这一切：<code>样例路由  think（由 --router 强制）</code>。
+      <code>生效</code> 才是真正会执行的那串——全局列表在前，命中的桶往里追加。
+    </p>
     <p>
       <code>--doctor</code> 在同一份报告之上追加 DNS 解析、TCP 连接与握手耗时、协议为 <code>https</code>
       时的 TLS 握手（证书不受信任会如实报出，但不算硬失败）、监听端口是否空闲，以及一句「代理从不注入凭据」的提醒。
@@ -451,12 +581,19 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       <div class="arrow">→</div>
       <div class="flow-step"><b>02 会话</b><span>显式标识 &gt; 内容指纹 &gt; 随机</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>03 重写</b><span>路径与模型名</span></div>
+      <div class="flow-step"><b>03 重写</b><span>模型名：先剥前缀，再查映射</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>04 注入</b><span>请求头与请求体参数</span></div>
+      <div class="flow-step"><b>04 分桶</b><span>桶的模型覆盖 + 请求体变换</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>05 转发</b><span>SSE 逐块回传</span></div>
+      <div class="flow-step"><b>05 注入</b><span>请求头与请求体参数</span></div>
+      <div class="arrow">→</div>
+      <div class="flow-step"><b>06 转发</b><span>SSE 逐块回传</span></div>
     </div>
+    <p>
+      03～05 的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
+      别名解析之后，所以它只可能是真实 ID；注入放在最后，于是请求头里的 <code>{{model}}</code>
+      反映的是最终决定，而不是客户端最初填的那个。
+    </p>
 
     <h3>会话识别的三级策略</h3>
     <p>
@@ -494,6 +631,11 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       而本代理刻意不通过网络去发现它们。某个别名哪天解析不出来了，那是配置里改一行的事，不是 bug——
       发真实请求之前先用 <code>--dry-run</code> 看一眼每个别名最终变成了什么。
     </p>
+    <p>
+      <b>不做协议转换，变换注册表也是写死的清单。</b>只会说一种协议的客户端，就只能用接受那种协议的
+      模型；内置的五个变换就是全部——代理绝不会从某个路径加载变换。两者都是刻意的，而协议转换正是
+      v0.2.2 的头号目标。
+    </p>
   </section>
 
   <section id="roadmap">
@@ -503,8 +645,8 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       <thead><tr><th>里程碑</th><th>主题</th><th>要点</th></tr></thead>
       <tbody>
         <tr><td><code>v0.2.0</code> ✓</td><td>正确性</td><td>内置精选模型映射表（27 条别名）、以 <code>proxy-</code> 开头的别名解析不出结果时的「同别名只报一次」告警，以及 <code>--dry-run</code> / <code>--doctor</code> 启动前自检。修掉的正是「别名被静默原样转发给上游」这个坑。</td></tr>
-        <tr><td><code>v0.2.1</code></td><td>路由</td><td>配置可选的 transformer 注册表，以及路由分桶（<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>）。互转器要挂靠的宿主。</td></tr>
-        <tr><td><code>v0.2.2</code></td><td>协议覆盖</td><td>Anthropic ↔ OpenAI ↔ Responses 互转与字段归一化，含流式。从这个版本起，客户端用哪套协议不再决定它能用到哪些模型。</td></tr>
+        <tr><td><code>v0.2.1</code> ✓</td><td>路由</td><td>五个内置命名变换（<code>noop</code>、<code>drop-fields</code>、<code>drop-empty-fields</code>、<code>rename-fields</code>、<code>clamp-max-tokens</code>），以及路由分桶（<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>）——规则自上而下、首个命中即止，可匹配路径、模型前缀、请求体字段与请求体大小。默认关闭；互转器要挂靠的宿主。原本设想的「从路径加载插件」被有意砍掉了。</td></tr>
+        <tr><td><code>v0.2.2</code></td><td>协议覆盖</td><td>Anthropic ↔ OpenAI ↔ Responses 互转与字段归一化，含流式。从这个版本起，客户端用哪套协议不再决定它能用到哪些模型。<b>下一个就是它。</b></td></tr>
         <tr><td><code>v0.3</code></td><td>可观测与可控</td><td>Prometheus <code>/metrics</code>、JSON 日志模式、OTLP/JSON 导出、会话与提示词缓存检查器、token 与成本统计、免构建的本地看板。</td></tr>
         <tr><td><code>v0.4</code></td><td>真实上游下的可靠性</td><td>多上游、带抖动重试的兜底、熔断、超时拆分与流空闲看门狗、退出时优雅排空。</td></tr>
         <tr><td><code>v0.5</code></td><td>安全与卫生</td><td>日志脱敏、正则护栏、精确到行的配置 schema 报错、CI 用的 <code>--check-config</code>。</td></tr>

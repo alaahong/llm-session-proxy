@@ -2,8 +2,10 @@ import http from 'node:http';
 import https from 'node:https';
 import { resolveUpstream, shouldReplaceUserAgent } from './config.js';
 import { applyBodyInject, buildInjectHeaders, rewriteModel, rewritePath } from './inject.js';
+import { applyBucketModel, composeTransformers, getBucket, resolveRoute } from './router.js';
 import { resolveSession, SessionStore } from './session.js';
 import { createContext } from './template.js';
+import { applyTransformers } from './transformers.js';
 import { t } from './messages.js';
 
 /** 逐跳头不能转发给上游，也不能回给客户端。 */
@@ -345,9 +347,10 @@ export function createProxyServer({ config, logger }) {
           }`;
         }
 
-        // ---- 重写模型名 / 注入请求体参数 ----
+        // ---- 重写模型名 / 路由分桶 / 变换 / 注入请求体参数 ----
         let outBuffer = buffer;
         let modelNote = '';
+        let routeNote = '';
         const bodyChanges = [];
         if (parsedBody) {
           const modelResult = rewriteModel(parsedBody, config.model, { logger: log });
@@ -368,9 +371,46 @@ export function createProxyServer({ config, logger }) {
               );
             }
           }
+
+          // 路由分桶。判定用「客户端原始名」与「解析后名字」两个候选，
+          // 因为用户写 modelPrefix 时心里想的可能是 proxy-think 也可能是 glm-5.3。
+          const route = resolveRoute(
+            {
+              path: req.url,
+              method: req.method,
+              body: parsedBody,
+              byteLength: buffer ? buffer.length : 0,
+              clientModel: modelResult.from,
+              resolvedModel: modelResult.to,
+            },
+            config.router,
+          );
+          const bucket = getBucket(config.router, route.bucket);
+          routeNote = ` route=${route.bucket}${route.source === 'default' ? '' : `(${route.source})`}`;
+
+          // 桶指定的模型覆盖。放在注入之前，这样 {{model}} 模板看到的是最终名字。
+          const override = applyBucketModel(parsedBody, bucket, config.model);
+          if (override.changed) {
+            context.model = override.to;
+            modelNote = ` model=${override.from}->${override.to}(bucket:${route.bucket})`;
+          }
+
+          // 变换：全局 enabled + 命中桶挂载的，按顺序执行
+          const transformerNames = composeTransformers(config.transformers, bucket);
+          if (transformerNames.length) {
+            const transformed = applyTransformers(parsedBody, transformerNames, {
+              options: config.transformers.options,
+            });
+            if (transformed.changes.length) bodyChanges.push(...transformed.changes);
+            // 配置校验已经拦过拼写错误，这里再兜一次：跳过即等于静默失效，必须留痕
+            for (const name of transformed.skipped) {
+              log.warn(t('proxy.log.transformerSkipped', { name, bucket: route.bucket }));
+            }
+          }
+
           const bodyResult = applyBodyInject(parsedBody, config.inject, context);
           if (bodyResult.changed) bodyChanges.push(...bodyResult.changes);
-          if (modelResult.changed || bodyResult.changed) {
+          if (modelResult.changed || override.changed || bodyChanges.length) {
             // 改了 body 就必须重算长度，交给 http 模块自动处理
             outBuffer = Buffer.from(JSON.stringify(parsedBody), 'utf8');
           }
@@ -402,7 +442,7 @@ export function createProxyServer({ config, logger }) {
         log.info(
           `[req] ${req.method} ${req.url} | session=${session.id} req=${session.requestId} source=${session.source} ` +
             `sessions=${store.size} auth=${headersLower.has('authorization') ? 'present' : 'MISSING'}` +
-            `${modelNote}${bodyChanges.length ? ` body=${bodyChanges.join('|')}` : ''}`,
+            `${modelNote}${routeNote}${bodyChanges.length ? ` body=${bodyChanges.join('|')}` : ''}`,
         );
         log.debug(`[req-headers] ${JSON.stringify(outHeaders, null, 0)}`);
 

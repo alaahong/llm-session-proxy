@@ -56,6 +56,8 @@ x-opencode-session : 会话 ID，同一对话内保持稳定（用于提示词�
 - **自动生成会话 ID**——三级策略：客户端显式会话标识 → 内容指纹（system + 首条用户消息）→ 一次性随机。同一对话稳定复用，提示词缓存才有效。
 - **任意请求头注入**——值支持模板（`{{session.id}}`、`{{uuid}}`、`{{env.HOME}}`…），想注什么注什么。
 - **模型别名重写**——前缀剥离（`proxy-glm-5.3-flash` → `glm-5.3-flash`）与精确映射（`fast` → `deepseek-chat`）双管齐下。**内置了 OpenCode Go 的别名表**，文档里让你写的 `proxy-` 前缀开箱就能解析；万一某个别名剥完前缀查不到映射，代理会明确告诉你该补哪一条，而不是悄悄把一个不存在的模型名发给上游。
+- **按规则分桶路由**——`default` / `background` / `think` / `longContext` 四个桶，各自可以换模型、挂变换。规则按路径前缀、模型前缀、请求体字段、请求体大小匹配，**自上而下、首个命中即止**，同一条规则内的条件是与关系。默认关闭，升级不会改变现有行为。
+- **可组合的请求体变换**——五个内置命名变换（`drop-fields`、`drop-empty-fields`、`rename-fields`、`clamp-max-tokens`、`noop`），可以全局挂，也可以按桶挂，按固定顺序执行。注册表是**写死的清单**：**代理绝不会从某个路径加载代码**，「零依赖 + 只听回环」这句话才站得住。
 - **请求路径重写**——客户端只会填 `/v1` 时，用一条正则把它转到上游真正要的路径。
 - **请求体参数注入 / 删除**——统一给所有请求补 `temperature`、`metadata`，或删掉上游不认的字段。
 - **SSE 流式零缓冲透传**——逐块转发，不攒完再发，流式体验不受影响。
@@ -167,7 +169,7 @@ npx llm-session-proxy --path-rewrite "^/v1/=>/zen/go/v1/"
 
 > 本代理**不做协议转换**。客户端发 OpenAI 格式的请求体时，②③ 两类模型用不了——
 > 它只负责补头、改名、换路径，不会把 Chat Completions 的 body 翻译成 Messages 的 body。
-> （这条正是 [Roadmap](ROADMAP.zh-CN.md) 里 v0.2 的头号目标。）
+> （这条正是 [Roadmap](ROADMAP.zh-CN.md) 里 v0.2.2 的头号目标。）
 >
 > 直接写上游真实 ID（不加别名、不加前缀）也能用，代理会原样放行。
 > 模型清单随时可能变，以[上游文档](https://opencode.ai/docs/go/)和 `https://opencode.ai/zen/go/v1/models` 为准。
@@ -305,6 +307,79 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 每个别名在一个进程里最多喊一次，客户端狂发也不会把日志刷爆；`"warnUnmapped": false` 可关掉。
 不带前缀的名字永远不告警——直接填真实 ID 是正常用法，不该吵。
 
+### `transformers`
+
+对**所有**请求生效的请求体变换，与 router 开关无关。只能写名字：注册表是编译进代理里的固定清单，配置文件无法让它执行任意代码。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `[]` | 变换名列表，**从左到右**依次执行 |
+| `options` | `{}` | 每个变换各自的参数，按变换名索引 |
+
+| 名称 | 参数 | 作用 |
+| --- | --- | --- |
+| `noop` | — | 什么都不做。适合用来确认注册表确实接上了 |
+| `drop-fields` | `fields: ["a.b"]` | 删除列出的点路径 |
+| `drop-empty-fields` | `fields?: [...]` | 删除值为 `null`、`""`、`[]`、`{}` 的字段。`0` 和 `false` 会保留。不给 `fields` 时逐个检查顶层键 |
+| `rename-fields` | `map: { "from": "to" }` | 重命名点路径，父对象不存在会自动创建。映射到自己身上的会被忽略 |
+| `clamp-max-tokens` | `max: 4096`、`fields?: [...]` | 把 `max_tokens` / `max_completion_tokens` 压到不超过 `max`；只降不升，`max` 非法时等于不做 |
+
+顺序会影响结果，因为每个变换都是原地改请求体：`rename-fields` 放在 `drop-fields` 前面，和反过来跑，结果不一样。
+
+```json
+"transformers": {
+  "enabled": ["drop-empty-fields"],
+  "options": { "drop-empty-fields": { "fields": ["temperature", "top_p"] } }
+}
+```
+
+名字不在上表里是**启动即报错**，不会静默忽略。
+
+### `router`
+
+把流量分到不同的桶。一个桶决定两件事：用哪个**模型**、挂哪些**变换**。`enabled` 默认 `false`，所以现有配置在你主动打开之前行为完全不变。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `false` | 总开关。`--no-router` 强制关闭 |
+| `forced` | `null` | 所有请求都走这个桶、忽略全部规则（`--router <桶名>`）。它的优先级高于 `enabled: false`——用户都点名了，再被配置挡掉只会让人困惑 |
+| `defaultBucket` | `default` | 没命中任何规则的请求落到这个桶 |
+| `buckets` | 内置四个，全为空 | `{ "model": <模型 ID 或 null>, "transformers": [<名字>] }`。可以自己加桶名；没声明过的桶名退化成空桶 |
+| `rules` | `[]` | 见下 |
+
+一条规则必须有 `bucket`，外加**至少一个**匹配条件。一个条件都不给是配置错误：无法判定的规则和「命中一切」不是一回事。
+
+| 匹配条件 | 命中条件 |
+| --- | --- |
+| `path` | 请求路径**以该字符串开头**。比对的是客户端发来的路径，早于 `request.pathRewrite` |
+| `modelPrefix` | **客户端原始模型名**或**重写后的模型名**任一个以它开头，所以 `proxy-think` 和 `glm-5.3` 都能拿来写规则 |
+| `bodyField` | 该点路径存在且非空（`0` 和 `false` 算非空）。再加 `bodyFieldValue` 则要求等于某个具体值 |
+| `minBytes` / `maxBytes` | 请求体字节数，两端都是闭区间 |
+
+规则**自上而下求值，首个命中即止**；同一条规则内多个条件是「与」，所以写的时候要从具体到宽泛。
+大小一律按**字节，不按 token**：估 token 就得带一个分词器，而字节数是你能实际调得动的数字。
+
+```json
+"router": {
+  "enabled": true,
+  "defaultBucket": "default",
+  "buckets": {
+    "think":       { "model": "glm-5.3-think" },
+    "longContext": { "model": "glm-5.3-long" },
+    "background":  { "model": "glm-5.3-flash", "transformers": ["clamp-max-tokens"] }
+  },
+  "rules": [
+    { "bucket": "think",       "path": "/zen/go/v1/messages" },
+    { "bucket": "longContext", "minBytes": 60000 },
+    { "bucket": "background",  "modelPrefix": "proxy-haiku", "maxBytes": 4096 }
+  ]
+}
+```
+
+桶的 `transformers` 是**追加**到全局 `transformers.enabled` 后面的：桶只能加、不能取消全局的某个变换，要取消就把它从全局列表里删掉。
+
+桶的 `model` 在别名重写**之后**生效并直接替换结果，所以这里应当写真实的上游模型 ID、而不是 `proxy-` 别名。引用 `{{model}}` 的请求头模板看到的是桶覆盖后的值，因为注入是最后一步。
+
 ### 其他
 
 | 字段 | 默认值 | 说明 |
@@ -369,40 +444,55 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.2.0 —— 试运行
+llm-session-proxy v0.2.1 —— 试运行
 
 配置
-  文件       （无）
-  语言       en
-  监听       127.0.0.1:9355
+  文件            （无）
+  语言            zh
+  监听            127.0.0.1:9355
 
 上游
-  地址       https://opencode.ai
-  Host 头    opencode.ai
-  路径前缀   （无）
-  改写 Host  是
-  UA         opencode/1.18.29 cli（模式 replace-generic）
+  地址            https://opencode.ai
+  Host 头         opencode.ai
+  路径前缀        （无）
+  改写 Host       是
+  UA              opencode/1.18.29 cli（模式 replace-generic）
 
 路由
-  路径重写   （无，原样透传）
-  会话来源   请求头 x-opencode-session, x-session-id, …；请求体 session_id, sessionId, …
-  会话 ID    hex26 | msg_{{session.count}}
+  路径重写        （无，原样透传）
+  会话来源        请求头 x-opencode-session, x-session-id, …；请求体 session_id, sessionId, …
+  会话 ID         hex26 | msg_{{session.count}}
 
 注入
-  请求头     x-opencode-session = {{session.id}}  ->  ses_378f3582ae608b101b83606614
-  请求头     x-opencode-request = {{session.requestId}}  ->  msg_1
+  请求头          x-opencode-session = {{session.id}}  ->  ses_378f3582ae608b101b83606614
+  请求头          x-opencode-request = {{session.requestId}}  ->  msg_1
   …
 
 模型
-  样例       proxy-glm
-  剥离       前缀 "proxy-" -> glm
-  映射       glm -> glm-5.3
-  结果       glm-5.3  （命中映射）
-  映射表     内置 27 条，覆盖 0 条
+  样例            proxy-glm
+  剥离            前缀 "proxy-" -> glm
+  映射            glm -> glm-5.3
+  结果            glm-5.3  （命中映射）
+  映射表          内置 27 条，覆盖 0 条
+
+路由分桶
+  启用            否
+  默认桶          default
+  桶 default      （无）
+  桶 background   （无）
+  桶 think        （无）
+  桶 longContext  （无）
+  规则            （无规则）
+  样例路由        default（路由已关闭）
+
+变换
+  全局            （无）
+  生效            （无）
+  可用            noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens
 
 日志
-  文件       ~/.lsp/logs/llm-session-proxy.log
-  轮转       按大小轮转，单文件 5242880 字节，保留 2 份，保留 30 天
+  文件            ~/.lsp/logs/llm-session-proxy.log
+  轮转            按大小轮转，单文件 5242880 字节，保留 2 份，保留 30 天
 
 结果
   通过 —— 配置有效。
@@ -430,6 +520,39 @@ llm-session-proxy --dry-run --model proxy-deepseek
 # 1 = 你明确点名了这个别名，但它解析不出来
 llm-session-proxy --dry-run --model proxy-not-a-real-alias
 ```
+
+`路由分桶` 与 `变换` 两段回答的是「这条请求会落进哪个桶、会被怎么改」。以上文
+[`router`](#router) 的配置为例：
+
+```
+路由分桶
+  启用            是
+  默认桶          default
+  桶 default      （无）
+  桶 background   model=glm-5.3-flash transformers=clamp-max-tokens
+  桶 think        model=glm-5.3-think
+  桶 longContext  model=glm-5.3-long
+  #0              path^=/zen/go/v1/messages -> think
+  #1              bytes>=60000 -> longContext
+  #2              model~=proxy-haiku* AND bytes<=4096 -> background
+  样例路由        default（默认桶，/v1/chat/completions 未命中任何规则）
+
+变换
+  全局            drop-empty-fields
+  生效            drop-empty-fields
+  可用            noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens
+```
+
+`#0`/`#1`/`#2` 就是按顺序排列的规则，`path^=` 表示「路径以此开头」，`model~=` 表示「模型前缀」。
+`样例路由` 那行是真的拿一条 `POST /v1/chat/completions` 跑了一遍匹配，所以它落在兜底路径上：
+一条规则都没命中，请求进默认桶。`--router think` 会覆盖这一切，把路由钉死：
+
+```
+  样例路由        think（由 --router 强制）
+```
+
+`生效` 才是真正会执行的那串：全局列表在前，命中的桶往里追加。`--doctor` 报的是同样的两段——
+中文标题是 `路由分桶` 与 `变换`，刻意与既有的 `路由`（路径重写）那段区分开。
 
 `--doctor` 会在这份报告之外再检查：
 
@@ -482,6 +605,9 @@ llm-session-proxy --doctor && llm-session-proxy
 | `--body-inject <k=v>` | 注入请求体字段，可重复 |
 | `--model-prefix <prefix>` | 要剥离的模型名前缀，可重复 |
 | `--model-map <a=b>` | 模型名精确映射，可重复。与内置别名表逐键合并 |
+| `--transformer <name>` | 挂一个命名请求体变换，可重复。是**整体替换** `transformers.enabled` 而不是追加（与 `--model-prefix` 替换 `stripPrefixes` 同理） |
+| `--router <bucket>` | 强制所有请求走指定桶，忽略全部规则 |
+| `--no-router` | 关闭路由分桶，即使配置文件里开着 |
 | `--session-header <name>` | 追加会话来源请求头，可重复 |
 | `--session-field <path>` | 追加会话来源请求体字段，可重复 |
 | `--session-id-format <f>` | 会话 ID 格式 |
@@ -497,13 +623,14 @@ llm-session-proxy --doctor && llm-session-proxy
 | `-l, --lang <en\|zh>` | 控制台与日志文案语言（默认 `en`）|
 | `--init [file]` | 生成示例配置 |
 | `--print-config` | 打印合并后的最终配置并退出 |
-| `--dry-run` | 校验配置并打印路由、注入与模型解析结果，不产生任何网络请求 |
+| `--dry-run` | 校验配置并打印路由、分桶、注入与模型解析结果，不产生任何网络请求 |
 | `--doctor` | 同 `--dry-run`，再加 DNS/TCP/TLS 可达性与监听端口检查；有问题时退出码非 0 |
 | `--model <id>` | `--dry-run` / `--doctor` 演示用的样例模型名 |
 
 环境变量与配置文件同名字段一一对应（大写形式）：`PROXY_PORT`、`UPSTREAM_HOST`、
 `UPSTREAM_PROTO`、`OPENCODE_UA`、`LOG_LEVEL`、`LOG_FILE`、`LOG_DIR`、`LOG_ROTATE`、
-`LOG_KEEP_DAYS`、`MODEL_ALIAS_PREFIX`、`INJECT_HEADERS`（JSON）等。
+`LOG_KEEP_DAYS`、`MODEL_ALIAS_PREFIX`、`INJECT_HEADERS`（JSON）、`TRANSFORMERS`（逗号分隔）、
+`ROUTER_ENABLED` 等。
 
 ---
 
@@ -530,10 +657,15 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions
               │
               ├─ 1. 读请求体，解析 JSON
               ├─ 2. 解析会话：显式标识 > 内容指纹 > 随机
-              ├─ 3. 重写路径、模型名
-              ├─ 4. 注入请求头与请求体参数
-              └─ 5. 转发，SSE 逐块回传
+              ├─ 3. 重写模型名：剥前缀，再查别名表
+              ├─ 4. 选桶、应用桶的模型覆盖、跑请求体变换
+              ├─ 5. 注入请求头与请求体参数
+              └─ 6. 转发，SSE 逐块回传
 ```
+
+第 3～5 步的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
+别名解析之后，所以它只可能是真实 ID；注入放在最后，于是请求头里的 `{{model}}` 反映的是最终决定，
+而不是客户端最初填的那个。
 
 会话识别的三级策略是关键，它决定了会话 ID 能不能在同一对话内保持稳定：
 
@@ -564,7 +696,8 @@ await proxy.stop();
 ```
 
 也可以只取零件：`createProxyServer`（自己控制生命周期）、`SessionStore`（会话表）、
-`renderTemplate`（模板引擎）、`buildConfig`（配置合并）。
+`renderTemplate`（模板引擎）、`buildConfig`（配置合并）、`resolveRoute` / `getBucket`（选桶）、
+`applyTransformers`（变换注册表）、`diagnose`（`--dry-run` 与 `--doctor` 底层跑的就是它）。
 
 ---
 
@@ -656,7 +789,8 @@ workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本�
 - **v0.2 — 协议转换与路由。** Anthropic ↔ OpenAI ↔ Responses 互转、按请求规则路由。
   这是唯一能让一个客户端吃满所有模型类的功能——否则它只能用自己那套协议支持的端点。
   **已交付 v0.2.0：** 内置别名表、别名未命中告警、`--dry-run` / `--doctor`。
-  **接下来：** v0.2.1（转换器注册表、路由分桶），然后是 v0.2.2（协议转换本体）。
+  **已交付 v0.2.1：** 变换注册表与路由分桶。
+  **接下来 v0.2.2：** 协议转换本体——风险最高的一块，单独占一个版本。
 - **v0.3 — 可观测与可控。** Prometheus 格式指标、结构化 JSON 日志、token/成本统计端点、
   免构建的本地看板。
 - **v0.4 — 真实上游下的可靠性。** 熔断、上游健康检查、带抖动的重试、流空闲看门狗、优雅退出。

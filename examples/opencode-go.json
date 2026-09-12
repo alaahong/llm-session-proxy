@@ -7,6 +7,9 @@
   // 为什么要加 proxy- 前缀：Trae 按模型 ID 决定走不走自定义通道，
   // 与内置预设重名（如 glm-5.3-flash）时流量会被它自己的云通道接走，
   // 本代理会被绕过。加前缀即可强制走代理，代理会剥掉前缀再发给上游。
+  //
+  // 想按请求性质分桶（长上下文 / 后台任务 / 思考型）或统一删掉某些请求体字段时，
+  // 见 README 的 transformers / router 两节，以及 examples/opencode-go-models.json 末尾。
 
   "listen": { "host": "127.0.0.1", "port": 9355 },
 

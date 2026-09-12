@@ -7,36 +7,40 @@ below has to fit that shape.
 - **Scope:** one developer machine, one upstream (a few at v0.4+), one process.
 - **Non-negotiable:** `dependencies` in `package.json` stays empty. Features that would need a
   library get re-implemented on Node built-ins, or they do not ship.
-- **Status:** v0.1.x — the session/header injection core works and is hardened. Everything else is
-  on this page.
+- **Status:** v0.2.x — the session/header injection core works and is hardened; model aliasing,
+  `--dry-run` / `--doctor`, the transform registry and routing buckets have shipped. Everything else
+  is on this page.
 
 ---
 
 ## 1. Where it stands today
 
-### Working (v0.2.0)
+### Working (v0.2.1)
 
 | Area | What ships now |
 | --- | --- |
 | Sessions | Three-tier resolution: explicit client identifier → content fingerprint (`system` + first user message) → one-off random. Stable per conversation, so upstream prompt caching works. |
 | Injection | Arbitrary request headers and body fields, templated (`{{session.id}}`, `{{uuid}}`, `{{env.HOME}}`, …), with dot-path support and an `overwrite` switch. |
 | Rewriting | Model aliases (exact map + prefix stripping, composable) and request paths (regex rules). A curated OpenCode Go alias table now ships **in the box**, so the `proxy-` prefix the README prescribes resolves without a config file; an alias that strips down to something unmapped is reported by name instead of being forwarded silently. |
-| Diagnostics | `--dry-run` prints the effective routing, the **rendered** injection table and the model-resolution chain with no network I/O; `--doctor` adds DNS/TCP/TLS reachability and listen-port checks and exits non-zero on problems. |
+| Routing | Four buckets (`default` / `background` / `think` / `longContext`), each with its own model override and transform list. Rules match on path prefix, model prefix, body field or request size, evaluate **top-down with the first match winning**, and AND the conditions inside one rule. **Off by default**, so upgrading changes nothing. |
+| Transforms | Five named in-tree body transforms (`noop`, `drop-fields`, `drop-empty-fields`, `rename-fields`, `clamp-max-tokens`), attachable globally or per bucket, applied in a fixed order. Selected **by name, never by path**, so a config file cannot make the proxy execute code. |
+| Diagnostics | `--dry-run` prints the effective routing, the **rendered** injection table, the model-resolution chain and the bucket/transform decision with no network I/O; `--doctor` adds DNS/TCP/TLS reachability and listen-port checks and exits non-zero on problems. |
 | Streaming | SSE is piped chunk by chunk, never buffered. Upstream 4xx bodies come back verbatim. |
 | Operations | `/__llm_session_proxy__/status` and `/sessions`, **log-to-disk on by default** (`~/.lsp/logs`) with size/date rotation and 30-day archival, four-layer config merge (defaults < file < env < CLI). |
-| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; 178 tests including a 43-scenario malformed-input corpus. |
+| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **231 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
 | Language | Console output and log messages are **English by default**, switchable to Chinese with `--lang zh` / `PROXY_LANG=zh`. |
 
 ### Known gaps (stated plainly)
 
 1. **No protocol translation.** The client's protocol decides which models are reachable. A client
    that only speaks Anthropic Messages cannot use `/chat/completions`-only models, and vice versa.
-   This is the remaining half of v0.2.
+   This is what v0.2.2 delivers.
 2. **One upstream, no fallback.** No retry, no health check, no circuit breaker.
 3. **No machine-readable observability.** Human-readable log lines only: no metrics endpoint, no
    structured log mode, no trace export.
-4. **No transformation beyond injection.** No system-prompt rewriting, no tool-call normalisation,
-   no reasoning-field mapping (Anthropic `thinking` ↔ OpenAI `reasoning_effort`).
+4. **The transform registry is a fixed list.** Five in-tree transforms, and no way to load one from a
+   path. Absent: system-prompt rewriting, tool-call normalisation, reasoning-field mapping
+   (Anthropic `thinking` ↔ OpenAI `reasoning_effort`).
 5. **No caching and no cost accounting.** We can make the *upstream's* cache hit; we cannot report
    whether it did.
 
@@ -139,9 +143,9 @@ p99 for the serious gateways, against a mock. Being inside 5 ms p99 puts us in t
 The single highest-value feature on this page. Today a client's protocol decides which models it can
 reach; after v0.2 that stops being true.
 
-**Delivered in stages.** v0.2.0 (ticked below) took the two items that need no new architecture.
-v0.2.1 adds the routing layer that the translators hang off; v0.2.2 delivers the translation itself.
-Split that way because a bidirectional SSE transcoder is the riskiest change on this page, and
+**Delivered in stages.** v0.2.0 took the two items that need no new architecture. v0.2.1 (both items
+below, ticked) added the routing layer that the translators hang off; v0.2.2 delivers the translation
+itself. Split that way because a bidirectional SSE transcoder is the riskiest change on this page, and
 bisecting it apart from routing changes is far easier than bisecting both at once.
 
 - [ ] **Protocol translation:** Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses, both
@@ -150,14 +154,22 @@ bisecting it apart from routing changes is far easier than bisecting both at onc
 - [ ] **Field normalisation inside the translation:** `thinking` ↔ `reasoning_effort`, `max_tokens` ↔
       `max_completion_tokens`, tool-call shapes, `cache_control` handling, stop-sequence types.
       <sub>→ v0.2.2</sub>
-- [ ] **Transformer registry:** named, config-selectable per-upstream transforms (the
-      claude-code-router model), implemented in-tree — no plugin loading from arbitrary paths unless
-      the user explicitly opts in.
-      <sub>→ v0.2.1. It is the host the translators plug into, so it lands first.</sub>
-- [ ] **Router buckets:** `default` / `background` / `think` / `longContext` with a threshold, plus
-      simple rule matching (path, model prefix, body field). Config-only; a user-supplied JS router
-      module may be pointed at explicitly.
-      <sub>→ v0.2.1</sub>
+- [x] **Transformer registry:** named, config-selectable per-upstream transforms (the
+      claude-code-router model), implemented in-tree.
+      <sub>**v0.2.1.** `src/transformers.js` ships five — `noop`, `drop-fields`, `drop-empty-fields`,
+      `rename-fields`, `clamp-max-tokens` — each declaring a `phase` so the response-side translators
+      have a slot to land in for v0.2.2. **The "opt in to plugin loading" sketched here was dropped on
+      purpose:** letting a config file point at code is a disproportionate security surface for a tool
+      whose whole pitch is "zero dependencies, loopback only". An unknown name is a startup error
+      instead of a silent no-op.</sub>
+- [x] **Router buckets:** `default` / `background` / `think` / `longContext` with a threshold, plus
+      rule matching (path prefix, model prefix, body field, request size). Config-only.
+      <sub>**v0.2.1.** `src/router.js`, plus `--router` / `--transformer` / `--no-router` and `Router` /
+      `Transformers` blocks in `--dry-run` and `--doctor`. Thresholds are **bytes, not tokens**: a
+      token estimate would mean shipping a tokenizer, and a byte count is a figure you can actually
+      tune. `router.enabled` defaults to `false` and a config test plus an end-to-end proxy test pin
+      that upgrading changes nothing. **The "user-supplied JS router module" sketched here was dropped
+      for the same reason as the plugin loader.**</sub>
 - [x] **Fix the `model.map` gap:** ship a curated default map for common upstreams, warn loudly when
       a `proxy-`-prefixed alias resolves to nothing, and align the README with the real behaviour.
       <sub>**v0.2.0.** `src/models.js` holds 27 aliases; the warning names the entry to add and fires
@@ -232,7 +244,7 @@ Ranked by (reach × differentiation) ÷ effort.
 | `model.map` default + docs fix | High | Low | Very low | ✅ shipped in v0.2.0 |
 | `/metrics` + JSON logs | High | Low | Low | **P1** |
 | Doctor / dry-run | High | Medium | Low | ✅ shipped in v0.2.0 |
-| Transformer registry + router buckets | High | Medium | Medium | **P0 for v0.2.1** — unblocks translation |
+| Transformer registry + router buckets | High | Medium | Medium | ✅ shipped in v0.2.1 |
 | Session & prompt-cache inspector | Medium | **Very high** | Medium | **P1** |
 | Fallback / retry / breaker | High | Low | Medium | **P2** |
 | Stream idle watchdog | Medium | Medium | Low | **P2** |
@@ -281,8 +293,9 @@ Rules for using it:
 
 - `v0.x` may change the config shape; each release documents what moved.
 - A milestone may span several minor versions when its parts have different risk profiles. v0.2 is
-  the first case: v0.2.0 shipped the map gap and the doctor, v0.2.1 will ship routing, v0.2.2 the
-  protocol translation. Each minor version is independently installable and independently verified.
+  the first case: v0.2.0 shipped the map gap and the doctor, v0.2.1 shipped routing, and v0.2.2 will
+  ship the protocol translation. Each minor version is independently installable and independently
+  verified.
 - From `v1.0`: semver. Breaking config changes require `--migrate-config`.
 - Releases go out through `.github/workflows/publish.yml` on a `v*` tag, with the pack check and the
   end-to-end install verification run first.

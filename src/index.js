@@ -20,6 +20,17 @@ import { getLang, normalizeLang, setLang, t as translate } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
 import { createProxyServer } from './proxy.js';
 import {
+  BUILTIN_BUCKETS,
+  applyBucketModel,
+  composeTransformers,
+  describeBuckets,
+  describeRule,
+  getBucket,
+  hasMatcher,
+  matchRule,
+  resolveRoute,
+} from './router.js';
+import {
   SessionStore,
   contentFingerprint,
   findExplicitSession,
@@ -28,6 +39,7 @@ import {
   resolveSession,
 } from './session.js';
 import { createContext, randomBase36, randomHex, renderDeep, renderTemplate } from './template.js';
+import { applyTransformers, describeTransformers, listTransformers } from './transformers.js';
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(moduleDir, '..', 'package.json'), 'utf8'));
@@ -36,25 +48,36 @@ export const VERSION = pkg.version;
 export const NAME = pkg.name;
 
 export {
+  BUILTIN_BUCKETS,
   DEFAULT_CONFIG,
   DEFAULT_MODEL_MAP,
   Logger,
   SessionStore,
   applyBodyInject,
+  applyBucketModel,
+  applyTransformers,
   buildConfig,
   buildInjectHeaders,
+  composeTransformers,
   contentFingerprint,
   createContext,
   createProxyServer,
   deepMerge,
   defaultLogDir,
+  describeBuckets,
+  describeRule,
+  describeTransformers,
   diagnose,
   explainModel,
   findExplicitSession,
   generateId,
+  getBucket,
   getLang,
+  hasMatcher,
+  listTransformers,
   loadConfigFile,
   logDetail,
+  matchRule,
   normalizeLang,
   normalizeSessionId,
   parseJsonLoose,
@@ -66,6 +89,7 @@ export {
   renderDiagnosis,
   renderTemplate,
   resolveLogFile,
+  resolveRoute,
   resolveSession,
   resolveUpstream,
   rewriteModel,

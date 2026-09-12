@@ -218,6 +218,17 @@ export function parseArgv(argv) {
         setByPath(flags, ['model', 'map', alias], real);
         break;
       }
+      case '--transformer':
+        // 可重复；与 --model-prefix 一样是「整体替换」，不是追加
+        push(['transformers', 'enabled'], takeValue());
+        break;
+      case '--router':
+        // 强制所有请求走指定桶，优先级高于规则与 enabled
+        setByPath(flags, ['router', 'forced'], takeValue());
+        break;
+      case '--no-router':
+        setByPath(flags, ['router', 'enabled'], false);
+        break;
       case '--session-header':
         push(['session', 'headerNames'], takeValue().toLowerCase());
         break;

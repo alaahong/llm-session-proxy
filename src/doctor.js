@@ -7,8 +7,10 @@ import { rewriteModel } from './inject.js';
 import { logDetail } from './logger.js';
 import { t } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
+import { composeTransformers, describeBuckets, describeRule, getBucket, resolveRoute } from './router.js';
 import { generateId } from './session.js';
 import { createContext, renderTemplate } from './template.js';
+import { listTransformers } from './transformers.js';
 
 /**
  * 配置体检与路由预演。
@@ -226,6 +228,69 @@ export function diagnose(config, { model = null, env = process.env, name = 'llm-
   ]);
   sections.push({ title: t('doctor.section.model'), rows: modelRows });
 
+  // ---- 路由分桶与变换 ----
+  // 用样例请求真的跑一遍 resolveRoute：用户最常问的就是「这条请求会落哪个桶」。
+  const samplePath = '/v1/chat/completions';
+  const sampleBody = { model: sample };
+  const route = resolveRoute(
+    {
+      path: samplePath,
+      method: 'POST',
+      body: sampleBody,
+      byteLength: Buffer.byteLength(JSON.stringify(sampleBody), 'utf8'),
+      clientModel: sample,
+      resolvedModel: explanation.resolved,
+    },
+    config.router,
+  );
+  const bucket = getBucket(config.router, route.bucket);
+  const effective = composeTransformers(config.transformers, bucket);
+
+  const routeRows = [];
+  if (config.router.forced) {
+    routeRows.push([t('doctor.label.routerEnabled'), t('doctor.value.forced', { bucket: config.router.forced })]);
+  } else {
+    routeRows.push([
+      t('doctor.label.routerEnabled'),
+      config.router.enabled === false ? t('doctor.value.no') : t('doctor.value.yes'),
+    ]);
+  }
+  routeRows.push([t('doctor.label.defaultBucket'), config.router.defaultBucket || 'default']);
+  for (const entry of describeBuckets(config.router)) {
+    const bits = [];
+    if (entry.model) bits.push(`model=${entry.model}`);
+    if (entry.transformers.length) bits.push(`transformers=${entry.transformers.join(',')}`);
+    routeRows.push([t('doctor.label.bucketRow', { name: entry.name }), bits.join(' ') || t('doctor.value.none')]);
+  }
+  const rules = config.router.rules || [];
+  if (rules.length) {
+    rules.forEach((rule, index) => {
+      routeRows.push([`#${index}`, `${describeRule(rule)} -> ${rule.bucket}`]);
+    });
+  } else {
+    routeRows.push([t('doctor.label.rules'), t('doctor.value.noRules')]);
+  }
+  const routeLabelKey = {
+    rule: 'doctor.value.routeBy',
+    forced: 'doctor.value.routeForced',
+    default: 'doctor.value.routeDefault',
+    disabled: 'doctor.value.disabled',
+  }[route.source];
+  routeRows.push([
+    t('doctor.label.sampleRoute'),
+    t(routeLabelKey, { bucket: route.bucket, index: route.ruleIndex ?? -1, path: samplePath }),
+  ]);
+  sections.push({ title: t('doctor.section.router'), rows: routeRows });
+
+  sections.push({
+    title: t('doctor.section.transformers'),
+    rows: [
+      [t('doctor.label.globalTransformers'), (config.transformers.enabled || []).join(', ') || t('doctor.value.none')],
+      [t('doctor.label.effectiveTransformers'), effective.join(', ') || t('doctor.value.none')],
+      [t('doctor.label.availableTransformers'), listTransformers().join(', ')],
+    ],
+  });
+
   const resolvedLog = resolveLogFile(config.log, { name, env });
   sections.push({
     title: t('doctor.section.log'),
@@ -238,6 +303,13 @@ export function diagnose(config, { model = null, env = process.env, name = 'llm-
   // ---- 静态可判定的警告 ----
   if (!composition.total && (config.model.stripPrefixes || []).length) {
     warnings.push(t('doctor.warn.modelMapEmpty'));
+  }
+  if (config.router.enabled && !config.router.forced) {
+    const configured = describeBuckets(config.router).some((entry) => entry.model || entry.transformers.length);
+    if (!rules.length && !configured) {
+      // 开了 router 却什么都没配，等于白白多一层判定，明说比让人纳闷好
+      warnings.push(t('doctor.warn.routerEmpty'));
+    }
   }
   if (explanation.outcome === 'stripped-unmapped') {
     const message = t('doctor.fail.unresolvedAlias', {

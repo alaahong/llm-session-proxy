@@ -394,3 +394,171 @@ test('别名剥完前缀仍无映射时告警，同一别名只喊一次，且�
     await upstream.close();
   }
 });
+
+// ---------- v0.2.1 路由分桶与命名变换 ----------
+
+/** 起一个只记录上游收到什么的回显服务。 */
+async function captureUpstream(sink) {
+  return startFakeUpstream((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+    });
+    req.on('end', () => {
+      sink.push({ headers: req.headers, body: JSON.parse(raw || '{}'), path: req.url });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+  });
+}
+
+const postJson = (url, body) =>
+  fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then((r) => r.text());
+
+test('路由规则命中时换成桶指定的模型，上游收到的是覆盖后的名字', async () => {
+  const captured = [];
+  const upstream = await captureUpstream(captured);
+  const proxy = await startProxy({
+    upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
+    router: {
+      enabled: true,
+      buckets: { think: { model: 'glm-5.3-think' } },
+      rules: [{ bucket: 'think', modelPrefix: 'proxy-think' }],
+    },
+  });
+
+  try {
+    await postJson(`${proxy.url}/zen/go/v1/chat/completions`, chatBody('hi', { model: 'proxy-think' }));
+    await postJson(`${proxy.url}/zen/go/v1/chat/completions`, chatBody('hi', { model: 'proxy-glm' }));
+
+    assert.equal(captured[0].body.model, 'glm-5.3-think', '规则命中：换成桶模型');
+    assert.equal(captured[1].body.model, 'glm-5.3', '没命中规则：走默认映射');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('注入模板里的 {{model}} 看到的是路由覆盖之后的最终模型名', async () => {
+  const captured = [];
+  const upstream = await captureUpstream(captured);
+  const proxy = await startProxy({
+    upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
+    inject: { headers: { 'x-model-seen': '{{model}}' } },
+    router: {
+      enabled: true,
+      buckets: { longContext: { model: 'glm-5.3-long' } },
+      rules: [{ bucket: 'longContext', minBytes: 200 }],
+    },
+  });
+
+  try {
+    await postJson(`${proxy.url}/zen/go/v1/chat/completions`, chatBody('x'.repeat(400)));
+    await postJson(`${proxy.url}/zen/go/v1/chat/completions`, chatBody('short'));
+
+    assert.equal(captured[0].body.model, 'glm-5.3-long', '超过阈值要走 longContext');
+    assert.equal(captured[0].headers['x-model-seen'], 'glm-5.3-long', '注入头必须看到覆盖后的名字');
+    assert.equal(captured[1].headers['x-model-seen'], 'glm-5.3-flash', '短请求走默认映射');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('全局变换与桶变换叠加，顺序是全局在前', async () => {
+  const captured = [];
+  const upstream = await captureUpstream(captured);
+  const proxy = await startProxy({
+    upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
+    transformers: {
+      enabled: ['rename-fields'],
+      options: { 'rename-fields': { map: { max_tokens: 'max_output_tokens' } } },
+    },
+    router: {
+      enabled: true,
+      buckets: { think: { transformers: ['drop-empty-fields'] } },
+      rules: [{ bucket: 'think', path: '/zen/go/v1/messages' }],
+    },
+  });
+
+  try {
+    const body = chatBody('hi', { max_tokens: 512, tools: [] });
+    await postJson(`${proxy.url}/zen/go/v1/messages`, body);
+    await postJson(`${proxy.url}/zen/go/v1/chat/completions`, body);
+
+    assert.equal(captured[0].body.max_output_tokens, 512, '全局变换：改名');
+    assert.equal('tools' in captured[0].body, false, '桶变换：清掉空数组');
+    assert.equal(captured[1].body.max_output_tokens, 512, '全局变换与 router 无关，照样生效');
+    assert.deepEqual(captured[1].body.tools, [], '没命中桶，空数组留着');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('router 关闭时行为与之前完全一致：桶配了也不生效', async () => {
+  const captured = [];
+  const upstream = await captureUpstream(captured);
+  const proxy = await startProxy({
+    upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
+    // enabled 保持默认的 false，规则与桶都应当被忽略
+    router: {
+      buckets: { think: { model: 'glm-5.3-think', transformers: ['drop-empty-fields'] } },
+      rules: [{ bucket: 'think', path: '/zen/go/v1/chat/completions' }],
+    },
+  });
+
+  try {
+    await postJson(`${proxy.url}/zen/go/v1/chat/completions`, chatBody('hi', { tools: [] }));
+    assert.equal(captured[0].body.model, 'glm-5.3-flash', '模型不受桶影响');
+    assert.deepEqual(captured[0].body.tools, [], '变换不执行');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('forced 桶压过规则，即使 router.enabled 是 false', async () => {
+  const captured = [];
+  const upstream = await captureUpstream(captured);
+  const proxy = await startProxy({
+    upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
+    router: { forced: 'background', buckets: { background: { model: 'glm-5.3-flash' } } },
+  });
+
+  try {
+    await postJson(`${proxy.url}/zen/go/v1/chat/completions`, chatBody('hi'));
+    assert.equal(captured[0].body.model, 'glm-5.3-flash', '强制桶生效');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('bodyField 规则能按请求体内容分流', async () => {
+  const captured = [];
+  const upstream = await captureUpstream(captured);
+  const proxy = await startProxy({
+    upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
+    router: {
+      enabled: true,
+      buckets: { background: { model: 'cheap-model' } },
+      rules: [{ bucket: 'background', bodyField: 'metadata.kind', bodyFieldValue: 'background' }],
+    },
+  });
+
+  try {
+    await postJson(`${proxy.url}/zen/go/v1/chat/completions`, chatBody('hi', { metadata: { kind: 'background' } }));
+    await postJson(`${proxy.url}/zen/go/v1/chat/completions`, chatBody('hi', { metadata: { kind: 'chat' } }));
+
+    assert.equal(captured[0].body.model, 'cheap-model');
+    assert.equal(captured[1].body.model, 'glm-5.3-flash');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
