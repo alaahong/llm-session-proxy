@@ -94,7 +94,7 @@ test('diagnose 对默认配置给出完整分节，且没有问题也没有警�
   assert.deepEqual(diagnosis.warnings, []);
   assert.deepEqual(
     diagnosis.sections.map((section) => section.title),
-    ['Config', 'Upstream', 'Routing', 'Injection', 'Model', 'Router', 'Transformers', 'Log'],
+    ['Config', 'Upstream', 'Routing', 'Injection', 'Model', 'Router', 'Transformers', 'Protocol', 'Log'],
   );
   assert.equal(diagnosis.explanation.outcome, 'mapped');
 });

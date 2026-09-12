@@ -73,6 +73,10 @@ If your client already sends a session header, you do not need this tool (though
   `drop-empty-fields`, `rename-fields`, `clamp-max-tokens`, `noop`) applied globally or per bucket, in
   a fixed order. The registry is a hard-coded list on purpose: **the proxy never loads code from a
   path**, which is what keeps "zero dependencies, loopback only" honest.
+- **Protocol conversion** — let a client that only speaks one protocol reach models that speak
+  another: OpenAI Chat Completions ↔ Anthropic Messages ↔ OpenAI Responses, both for request bodies
+  and for responses (including event-level SSE transcoding). Off by default; routed by model prefix
+  with the same top-down rule semantics as the router.
 - **Request path rewriting** — map the `/v1` your client insists on to whatever path the upstream
   actually serves.
 - **Body parameter injection and removal** — add `temperature` or `metadata` to every request, or
@@ -414,6 +418,50 @@ A bucket's `model` is applied *after* alias rewriting and replaces whatever was 
 a real upstream model ID rather than a `proxy-` alias. Header templates referencing `{{model}}` see the
 bucket's value, because injection runs last.
 
+### `protocol`
+
+Protocol conversion. The proxy detects which protocol the client is speaking from the request path
+(`/chat/completions` → `chat`, `/messages` → `messages`, `/responses` → `responses`), and a route — or
+`forced` — decides which protocol the **upstream** speaks. When the two differ, the request body is
+converted before forwarding and the response is converted back before it reaches the client: JSON
+bodies are rewritten as a whole, SSE streams are transcoded **event by event** so streaming stays
+streaming. `enabled` is `false` by default.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `false` | Master switch. `--no-protocol` forces it off |
+| `forced` | `null` | Convert every request to this protocol, ignoring all routes (`--protocol <target>`). It outranks `enabled: false` as well |
+| `paths` | the three `/zen/go/v1/…` paths | The upstream path used for each target protocol. `paths.<target>` replaces the forwarded path **as a whole** (unlike `request.pathRewrite`, which patches the client's path) |
+| `routes` | `[]` | `{ "model": <prefix, optional>, "target": <protocol>, "path": <upstream path, optional> }`. Top-down, first match wins; a route without `model` matches every request |
+
+Normalizations applied during conversion: `max_tokens` ↔ `max_completion_tokens` ↔
+`max_output_tokens`; `reasoning_effort` ↔ `thinking.budget_tokens` (fixed table
+low=1024 / medium=8192 / high=16384, and back: ≥16384 → high, ≥4096 → medium, else low); tool
+declarations and tool calls are reshaped between the three formats; `stop` ↔ `stop_sequences`;
+chat's system message ↔ Anthropic's top-level `system` ↔ Responses' `instructions`. Fields with no
+equivalent (`cache_control`, `response_format`, …) are dropped **by name**, and the conversion is
+logged as a `protocol:<from>-><to>` tag.
+
+Two deliberate edge cases: Anthropic requires `max_tokens`, so a chat request without either
+`max_tokens` name gets a conservative `4096` (logged as `max_tokens:default(4096)`) instead of a 400
+from the upstream; and **upstream 4xx/5xx bodies are never converted** — the error belongs to the
+upstream protocol and is passed through verbatim, exactly like the non-conversion path.
+
+```json
+"protocol": {
+  "enabled": true,
+  "paths": {
+    "chat": "/zen/go/v1/chat/completions",
+    "messages": "/zen/go/v1/messages",
+    "responses": "/zen/go/v1/responses"
+  },
+  "routes": [
+    { "model": "minimax", "target": "messages" },
+    { "model": "gpt", "target": "responses" }
+  ]
+}
+```
+
 ### Response, UA and logging
 
 | Field | Default | Description |
@@ -480,7 +528,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.2.1 — dry run
+llm-session-proxy v0.2.2 — dry run
 
 Config
   file                (none)
@@ -525,6 +573,12 @@ Transformers
   global              (none)
   effective           (none)
   available           noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens
+
+Protocol
+  enabled             no (pass-through)
+  paths               chat=/zen/go/v1/chat/completions, messages=/zen/go/v1/messages, responses=/zen/go/v1/responses
+  rules               (no rules)
+  sample conversion   no conversion for the sample request
 
 Log
   file                ~/.lsp/logs/llm-session-proxy.log
@@ -592,6 +646,20 @@ default bucket. `--router think` overrides the whole thing and pins the route:
 `--doctor` shows the same blocks — in Chinese output they are titled `路由分桶` and `变换`, deliberately
 distinct from the pre-existing `路由` (path rewriting) section.
 
+The `Protocol` block answers "would this request be converted, and to what". With `--protocol
+messages` it shows the forced target and, on the `sample conversion` row, the direction plus the
+upstream path the converted request will take:
+
+```
+Protocol
+  enabled             yes — forced to "messages"
+  paths               chat=/zen/go/v1/chat/completions, messages=/zen/go/v1/messages, responses=/zen/go/v1/responses
+  rules               (no rules)
+  sample conversion   chat -> messages  /zen/go/v1/messages
+```
+
+In Chinese output the section is titled `协议互转`.
+
 `--doctor` runs the same report and then checks, in addition:
 
 - **DNS** resolution of `upstream.host`
@@ -646,6 +714,8 @@ llm-session-proxy --doctor && llm-session-proxy
 | `--transformer <name>` | Attach a named body transform, repeatable. **Replaces** `transformers.enabled` rather than appending to it, the same way `--model-prefix` replaces `stripPrefixes` |
 | `--router <bucket>` | Force every request through one bucket, ignoring the rules |
 | `--no-router` | Turn router buckets off, even if the config file enables them |
+| `--protocol <target>` | Convert every request to this protocol before forwarding (`chat` / `messages` / `responses`), overriding `protocol.routes` |
+| `--no-protocol` | Turn protocol conversion off, even if the config file enables it |
 | `--session-header <name>` / `--session-field <path>` | Add a session source, repeatable |
 | `--session-id-format <f>` / `--request-id-format <t>` | Session ID format / request-id template |
 | `--no-session` / `--no-stream` | Disable session injection / disable streaming |
@@ -665,7 +735,7 @@ llm-session-proxy --doctor && llm-session-proxy
 Environment variables mirror the config field names in uppercase: `PROXY_PORT`, `UPSTREAM_HOST`,
 `UPSTREAM_PROTO`, `OPENCODE_UA`, `LOG_LEVEL`, `LOG_FILE`, `LOG_DIR`, `LOG_ROTATE`,
 `LOG_KEEP_DAYS`, `MODEL_ALIAS_PREFIX`, `INJECT_HEADERS` (JSON), `TRANSFORMERS` (comma-separated),
-`ROUTER_ENABLED`, and so on.
+`ROUTER_ENABLED`, `PROTOCOL_ENABLED`, and so on.
 
 ### Local status endpoints
 
@@ -692,13 +762,15 @@ client ──▶ llm-session-proxy ──▶ upstream API
               ├─ 3. rewrite the model name: prefix stripping, then the alias table
               ├─ 4. pick a bucket, apply its model override, run the body transforms
               ├─ 5. inject headers and body parameters
-              └─ 6. forward, streaming SSE chunks back as they arrive
+              ├─ 6. convert the protocol if a route targets a different one
+              └─ 7. forward, streaming SSE chunks back as they arrive
 ```
 
-The order of 3–5 is deliberate. Rules see the model name the client sent *and* the resolved one, the
-bucket's model override lands after alias resolution so it can only be a real upstream ID, and
-injection comes last so `{{model}}` in a header reflects the final decision rather than the original
-request.
+The order of 3–6 is deliberate. Rules see the model name the client sent *and* the resolved one, the
+bucket's model override lands after alias resolution so it can only be a real upstream ID, injection
+comes last-but-one so `{{model}}` in a header reflects the final decision rather than the original
+request, and **protocol conversion runs last of all** — transforms and injection operate on the
+client's field names, and only the finished body is translated into the upstream's protocol.
 
 The three-tier session resolution is what keeps IDs stable within a conversation:
 
@@ -732,7 +804,8 @@ await proxy.stop();
 
 You can also take just the parts you need: `createProxyServer` (own the lifecycle),
 `SessionStore` (session table), `renderTemplate` (template engine), `buildConfig` (config merging),
-`resolveRoute` / `getBucket` (bucket selection), `applyTransformers` (the transform registry), and
+`resolveRoute` / `getBucket` (bucket selection), `applyTransformers` (the transform registry),
+`convertRequestBody` / `convertResponseJson` (protocol conversion), and
 `diagnose` (what `--dry-run` and `--doctor` run under the hood).
 
 ---
@@ -792,6 +865,10 @@ On `EADDRINUSE`, pick another port (`--port 9356`) and update the client's base 
 - **The built-in alias table is a snapshot, not a live catalogue.** Upstream renames models; when an
   alias stops resolving you get a warning naming the entry to add, but nothing is fetched
   automatically. Real model IDs are always passed through, so a stale alias is never fatal.
+- **Protocol conversion is deliberately lossy at the edges.** Anthropic `thinking` / `signature`
+  stream deltas have no chat equivalent and are dropped (by name, in the log); `messages ↔ responses`
+  composes through chat rather than a direct converter. What survives is text, tool calls, finish
+  reasons and usage — the parts clients actually act on.
 - The proxy only forwards and patches. It does not cache, meter usage, or modify responses.
 
 ---
@@ -806,7 +883,7 @@ no local `npm login` required:
 3. Tag and push the matching tag:
 
 ```bash
-git tag v0.2.1 && git push origin v0.2.1
+git tag v0.2.2 && git push origin v0.2.2
 ```
 
 The workflow runs the full test suite, verifies the tag matches `package.json`, then publishes to
@@ -826,8 +903,8 @@ start with `npx`. Everything on the roadmap has to fit that shape.
   model class instead of only the endpoints its own protocol supports.
   **Delivered — v0.2.0:** the built-in alias table, the unmatched-alias warning, and
   `--dry-run` / `--doctor`. **Delivered — v0.2.1:** the transformer registry and router buckets.
-  **Next — v0.2.2:** the protocol translation itself, which is the riskiest piece and gets a release
-  of its own.
+  **Delivered — v0.2.2:** the protocol translation itself — request-body, response-body and
+  event-level SSE conversion across chat / messages / responses.
 - **v0.3 — observability and control.** Prometheus-format metrics, structured JSON logs, a
   cost/token accounting endpoint, and a zero-build local dashboard.
 - **v0.4 — reliability under real upstreams.** Circuit breaking, upstream health checks,

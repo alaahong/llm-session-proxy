@@ -8,14 +8,14 @@ below has to fit that shape.
 - **Non-negotiable:** `dependencies` in `package.json` stays empty. Features that would need a
   library get re-implemented on Node built-ins, or they do not ship.
 - **Status:** v0.2.x — the session/header injection core works and is hardened; model aliasing,
-  `--dry-run` / `--doctor`, the transform registry and routing buckets have shipped. Everything else
-  is on this page.
+  `--dry-run` / `--doctor`, the transform registry, routing buckets and protocol conversion have
+  shipped. Everything else is on this page.
 
 ---
 
 ## 1. Where it stands today
 
-### Working (v0.2.1)
+### Working (v0.2.2)
 
 | Area | What ships now |
 | --- | --- |
@@ -24,25 +24,25 @@ below has to fit that shape.
 | Rewriting | Model aliases (exact map + prefix stripping, composable) and request paths (regex rules). A curated OpenCode Go alias table now ships **in the box**, so the `proxy-` prefix the README prescribes resolves without a config file; an alias that strips down to something unmapped is reported by name instead of being forwarded silently. |
 | Routing | Four buckets (`default` / `background` / `think` / `longContext`), each with its own model override and transform list. Rules match on path prefix, model prefix, body field or request size, evaluate **top-down with the first match winning**, and AND the conditions inside one rule. **Off by default**, so upgrading changes nothing. |
 | Transforms | Five named in-tree body transforms (`noop`, `drop-fields`, `drop-empty-fields`, `rename-fields`, `clamp-max-tokens`), attachable globally or per bucket, applied in a fixed order. Selected **by name, never by path**, so a config file cannot make the proxy execute code. |
+| Protocol | Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses: request bodies converted before forwarding, JSON responses rewritten, SSE streams transcoded **event by event** so streaming stays streaming. Off by default, routed by model prefix; upstream 4xx/5xx error bodies are never converted. |
 | Diagnostics | `--dry-run` prints the effective routing, the **rendered** injection table, the model-resolution chain and the bucket/transform decision with no network I/O; `--doctor` adds DNS/TCP/TLS reachability and listen-port checks and exits non-zero on problems. |
 | Streaming | SSE is piped chunk by chunk, never buffered. Upstream 4xx bodies come back verbatim. |
 | Operations | `/__llm_session_proxy__/status` and `/sessions`, **log-to-disk on by default** (`~/.lsp/logs`) with size/date rotation and 30-day archival, four-layer config merge (defaults < file < env < CLI). |
-| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **231 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
+| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **281 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
 | Language | Console output and log messages are **English by default**, switchable to Chinese with `--lang zh` / `PROXY_LANG=zh`. |
 
 ### Known gaps (stated plainly)
 
-1. **No protocol translation.** The client's protocol decides which models are reachable. A client
-   that only speaks Anthropic Messages cannot use `/chat/completions`-only models, and vice versa.
-   This is what v0.2.2 delivers.
-2. **One upstream, no fallback.** No retry, no health check, no circuit breaker.
-3. **No machine-readable observability.** Human-readable log lines only: no metrics endpoint, no
+1. **One upstream, no fallback.** No retry, no health check, no circuit breaker.
+2. **No machine-readable observability.** Human-readable log lines only: no metrics endpoint, no
    structured log mode, no trace export.
-4. **The transform registry is a fixed list.** Five in-tree transforms, and no way to load one from a
-   path. Absent: system-prompt rewriting, tool-call normalisation, reasoning-field mapping
-   (Anthropic `thinking` ↔ OpenAI `reasoning_effort`).
-5. **No caching and no cost accounting.** We can make the *upstream's* cache hit; we cannot report
+3. **The transform registry is a fixed list.** Five in-tree transforms, and no way to load one from a
+   path. Still absent at the transform level: system-prompt *content* rewriting (protocol conversion
+   moves system messages between shapes, it does not rewrite what they say).
+4. **No caching and no cost accounting.** We can make the *upstream's* cache hit; we cannot report
    whether it did.
+5. **Protocol conversion is lossy at the edges, by design.** Anthropic `thinking` / `signature` stream
+   deltas are dropped when converting to chat; `messages ↔ responses` composes through chat.
 
 ---
 
@@ -144,16 +144,24 @@ The single highest-value feature on this page. Today a client's protocol decides
 reach; after v0.2 that stops being true.
 
 **Delivered in stages.** v0.2.0 took the two items that need no new architecture. v0.2.1 (both items
-below, ticked) added the routing layer that the translators hang off; v0.2.2 delivers the translation
+below, ticked) added the routing layer that the translators hang off; v0.2.2 delivered the translation
 itself. Split that way because a bidirectional SSE transcoder is the riskiest change on this page, and
 bisecting it apart from routing changes is far easier than bisecting both at once.
 
-- [ ] **Protocol translation:** Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses, both
+- [x] **Protocol translation:** Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses, both
       directions, streaming included, as three peer endpoints rather than one lucky one.
-      <sub>→ v0.2.2</sub>
-- [ ] **Field normalisation inside the translation:** `thinking` ↔ `reasoning_effort`, `max_tokens` ↔
+      <sub>**v0.2.2.** `src/protocol.js` (detection + routing), `src/converters.js` (request bodies),
+      `src/replies.js` (JSON responses), `src/stream.js` (SSE transcoding). The SSE canonical form is
+      chat's `chat.completion.chunk` — the finest delta granularity of the three — so only one state
+      machine per side is needed. Conversion runs **last** in the pipeline, after transforms and
+      injection; `accept-encoding: identity` is forced upstream when converting, because gzip cannot
+      be parsed on SSE event boundaries.</sub>
+- [x] **Field normalisation inside the translation:** `thinking` ↔ `reasoning_effort`, `max_tokens` ↔
       `max_completion_tokens`, tool-call shapes, `cache_control` handling, stop-sequence types.
-      <sub>→ v0.2.2</sub>
+      <sub>**v0.2.2.** Fixed budget table low=1024 / medium=8192 / high=16384, inverse by threshold.
+      Everything without an equivalent (`cache_control`, `response_format`, …) is dropped **by name**
+      into a `dropped` list; Anthropic's required `max_tokens` defaults to a logged 4096 rather than a
+      400. Error bodies (4xx/5xx) are exempt from conversion by design.</sub>
 - [x] **Transformer registry:** named, config-selectable per-upstream transforms (the
       claude-code-router model), implemented in-tree.
       <sub>**v0.2.1.** `src/transformers.js` ships five — `noop`, `drop-fields`, `drop-empty-fields`,
@@ -240,7 +248,7 @@ Ranked by (reach × differentiation) ÷ effort.
 
 | Item | Reach | Differentiation | Effort | Priority |
 | --- | --- | --- | --- | --- |
-| Protocol translation | Very high | High | High | **P0** — next up, v0.2.2 |
+| Protocol translation | Very high | High | High | ✅ shipped in v0.2.2 |
 | `model.map` default + docs fix | High | Low | Very low | ✅ shipped in v0.2.0 |
 | `/metrics` + JSON logs | High | Low | Low | **P1** |
 | Doctor / dry-run | High | Medium | Low | ✅ shipped in v0.2.0 |
@@ -293,8 +301,8 @@ Rules for using it:
 
 - `v0.x` may change the config shape; each release documents what moved.
 - A milestone may span several minor versions when its parts have different risk profiles. v0.2 is
-  the first case: v0.2.0 shipped the map gap and the doctor, v0.2.1 shipped routing, and v0.2.2 will
-  ship the protocol translation. Each minor version is independently installable and independently
+  the first case: v0.2.0 shipped the map gap and the doctor, v0.2.1 shipped routing, and v0.2.2
+  shipped the protocol translation. Each minor version is independently installable and independently
   verified.
 - From `v1.0`: semver. Breaking config changes require `--migrate-config`.
 - Releases go out through `.github/workflows/publish.yml` on a `v*` tag, with the pack check and the

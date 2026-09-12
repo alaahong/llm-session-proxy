@@ -42,7 +42,8 @@
     <h1>llm-session-proxy</h1>
     <p class="lead">
       可自定义参数的 LLM 本地反向代理。自动补上客户端不会发的会话头，注入任意自定义参数，
-      重写模型名与请求路径，然后把请求（含 SSE 流式响应）原样转发出去。
+      重写模型名与请求路径，还能在 OpenAI、Anthropic 与 Responses 三种协议之间互转——
+      然后把请求（含 SSE 流式响应）转发出去。
     </p>
     <div class="install">
       <code id="install-cmd">npx llm-session-proxy</code>
@@ -96,6 +97,11 @@
         <div class="tag">transform</div>
         <h4>可组合的请求体变换</h4>
         <p>五个内置命名变换（<code>drop-fields</code>、<code>drop-empty-fields</code>、<code>rename-fields</code>、<code>clamp-max-tokens</code>、<code>noop</code>），可全局挂也可按桶挂，按固定顺序执行。注册表是写死的清单：<b>代理绝不从某个路径加载代码</b>。</p>
+      </div>
+      <div class="card">
+        <div class="tag">protocol</div>
+        <h4>协议互转</h4>
+        <p>OpenAI Chat ↔ Anthropic Messages ↔ OpenAI Responses，请求体、JSON 响应与 SSE 逐事件转码全覆盖。只会说一种协议的客户端，也能调到说另一种协议的模型。按模型前缀路由，默认关闭。</p>
       </div>
       <div class="card">
         <div class="tag">path</div>
@@ -400,6 +406,42 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
       <code>{{model}}</code> 的请求头模板看到的是桶覆盖后的值，因为注入是最后一步。
     </p>
 
+    <h3 id="protocol">protocol —— 协议互转</h3>
+    <p class="sub">代理从请求路径推断客户端的协议（<code>/chat/completions</code> → <code>chat</code>、<code>/messages</code> → <code>messages</code>、<code>/responses</code> → <code>responses</code>），再由路由决定<b>上游</b>说哪套。两者不同时：请求体转发前整体转换，响应回来前转换回去——JSON 整包改写，SSE 按事件逐条转码。<code>enabled</code> 默认 <code>false</code>。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>false</code></td><td>总开关。<code>--no-protocol</code> 强制关闭</td></tr>
+          <tr><td><code>forced</code></td><td><code>null</code></td><td>把所有请求强制转成该协议，忽略全部路由（<code>--protocol &lt;target&gt;</code>）。同样压过 <code>enabled: false</code></td></tr>
+          <tr><td><code>paths</code></td><td>三条 <code>/zen/go/v1/…</code> 默认路径</td><td>每种目标协议对应的上游路径。<code>paths.&lt;target&gt;</code> 会<b>整体替换</b>转发路径，注意与 <code>request.pathRewrite</code>「修补客户端路径」的语义不同</td></tr>
+          <tr><td><code>routes</code></td><td><code>[]</code></td><td><code>{ "model": &lt;前缀，可选&gt;, "target": &lt;协议&gt;, "path": &lt;上游路径，可选&gt; }</code>。自上而下、首个命中即止；不带 <code>model</code> 的路由匹配所有请求</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"protocol": {
+  "enabled": true,
+  "paths": {
+    "chat": "/zen/go/v1/chat/completions",
+    "messages": "/zen/go/v1/messages",
+    "responses": "/zen/go/v1/responses"
+  },
+  "routes": [
+    { "model": "minimax", "target": "messages" },
+    { "model": "gpt", "target": "responses" }
+  ]
+}</code></pre>
+    <p>
+      字段归一化是内建的：<code>max_tokens</code> ↔ <code>max_completion_tokens</code> ↔
+      <code>max_output_tokens</code>；<code>reasoning_effort</code> ↔ <code>thinking.budget_tokens</code>
+      （固定表 1024 / 8192 / 16384，反向按阈值反推）；工具声明与工具调用在三种形状间重塑；
+      <code>stop</code> ↔ <code>stop_sequences</code>；chat 的 system 消息 ↔ Anthropic 的顶层
+      <code>system</code> ↔ Responses 的 <code>instructions</code>。没有等价物的字段<b>逐个记名</b>
+      丢进日志里的 <code>dropped</code> 列表。Anthropic 必填 <code>max_tokens</code>，chat 请求两个名字
+      都没带时补一个记入日志的 4096，而不是等上游 400。<b>上游 4xx/5xx 错误体永不转换</b>——
+      错误是上游协议的一部分，原样回传。
+    </p>
+
     <h3>模板变量</h3>
     <div class="table-wrap">
       <table>
@@ -437,6 +479,8 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--transformer &lt;name&gt;</code></td><td>挂一个命名请求体变换，可重复。是<b>整体替换</b> <code>transformers.enabled</code> 而不是追加（与 <code>--model-prefix</code> 替换 <code>stripPrefixes</code> 同理）</td></tr>
           <tr><td><code>--router &lt;bucket&gt;</code></td><td>强制所有请求走指定桶，忽略全部规则</td></tr>
           <tr><td><code>--no-router</code></td><td>关闭路由分桶，即使配置文件里开着</td></tr>
+          <tr><td><code>--protocol &lt;target&gt;</code></td><td>转发前把所有请求转成指定协议（<code>chat</code> / <code>messages</code> / <code>responses</code>），压过 <code>protocol.routes</code></td></tr>
+          <tr><td><code>--no-protocol</code></td><td>关闭协议互转，即使配置文件里开着</td></tr>
           <tr><td><code>--session-header &lt;name&gt;</code> / <code>--session-field &lt;path&gt;</code></td><td>追加会话来源位置，可重复</td></tr>
           <tr><td><code>--session-id-format &lt;f&gt;</code> / <code>--request-id-format &lt;t&gt;</code></td><td>会话 ID 格式 / 请求号模板</td></tr>
           <tr><td><code>--no-session</code> / <code>--no-stream</code></td><td>关闭会话注入 / 关闭流式透传</td></tr>
@@ -489,7 +533,7 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       所以模板写错了会在这里暴露，而不是等上游回一个 400。
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.2.1 —— 试运行
+llm-session-proxy v0.2.2 —— 试运行
 
 模型
   样例            proxy-glm
@@ -512,6 +556,12 @@ llm-session-proxy v0.2.1 —— 试运行
   全局            （无）
   生效            （无）
   可用            noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens
+
+协议互转
+  启用            否（原样透传）
+  路径            chat=/zen/go/v1/chat/completions，messages=/zen/go/v1/messages，responses=/zen/go/v1/responses
+  规则            （无规则）
+  样例转换        样例请求不发生转换
 
 结果
   通过 —— 配置有效。</code></pre>
@@ -554,6 +604,11 @@ llm-session-proxy v0.2.1 —— 试运行
       <code>生效</code> 才是真正会执行的那串——全局列表在前，命中的桶往里追加。
     </p>
     <p>
+      <b>协议互转</b>那段回答「这条请求会不会被转换、转成什么」。加了 <code>--protocol messages</code>
+      之后，强制目标与<b>样例转换</b>行会变成（样例转换同时给出转换后请求要走的上游路径）：
+      <code>chat -&gt; messages  /zen/go/v1/messages</code>。英文输出里这一段叫 <code>Protocol</code>。
+    </p>
+    <p>
       <code>--doctor</code> 在同一份报告之上追加 DNS 解析、TCP 连接与握手耗时、协议为 <code>https</code>
       时的 TLS 握手（证书不受信任会如实报出，但不算硬失败）、监听端口是否空闲，以及一句「代理从不注入凭据」的提醒。
       它<b>不发 HTTP 请求、不带任何凭据</b>——连通性只问到传输层为止——所以跑体检不会消耗你的速率配额。
@@ -587,12 +642,15 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       <div class="arrow">→</div>
       <div class="flow-step"><b>05 注入</b><span>请求头与请求体参数</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>06 转发</b><span>SSE 逐块回传</span></div>
+      <div class="flow-step"><b>06 互转</b><span>翻译成上游的协议</span></div>
+      <div class="arrow">→</div>
+      <div class="flow-step"><b>07 转发</b><span>SSE 逐块回传</span></div>
     </div>
     <p>
-      03～05 的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
-      别名解析之后，所以它只可能是真实 ID；注入放在最后，于是请求头里的 <code>{{model}}</code>
-      反映的是最终决定，而不是客户端最初填的那个。
+      03～06 的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
+      别名解析之后，所以它只可能是真实 ID；注入放在倒数第二步，请求头里的 <code>{{model}}</code>
+      反映的是最终决定；<b>协议互转放在所有步骤之后</b>——变换与注入针对的是客户端协议下的字段名，
+      等请求体定稿了才整体翻译。
     </p>
 
     <h3>会话识别的三级策略</h3>
@@ -632,9 +690,10 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       发真实请求之前先用 <code>--dry-run</code> 看一眼每个别名最终变成了什么。
     </p>
     <p>
-      <b>不做协议转换，变换注册表也是写死的清单。</b>只会说一种协议的客户端，就只能用接受那种协议的
-      模型；内置的五个变换就是全部——代理绝不会从某个路径加载变换。两者都是刻意的，而协议转换正是
-      v0.2.2 的头号目标。
+      <b>协议互转在边缘处刻意有损。</b>Anthropic 的 <code>thinking</code> / <code>signature</code>
+      流增量在 chat 里没有标准位置，会丢弃（日志里记名）；<code>messages ↔ responses</code> 经 chat
+      中转，不做直达转换器。保下来的是文本、工具调用、结束原因与 usage——客户端真正会用的就这些。
+      变换注册表依然是写死的清单：代理绝不会从某个路径加载变换。
     </p>
   </section>
 
@@ -646,7 +705,7 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       <tbody>
         <tr><td><code>v0.2.0</code> ✓</td><td>正确性</td><td>内置精选模型映射表（27 条别名）、以 <code>proxy-</code> 开头的别名解析不出结果时的「同别名只报一次」告警，以及 <code>--dry-run</code> / <code>--doctor</code> 启动前自检。修掉的正是「别名被静默原样转发给上游」这个坑。</td></tr>
         <tr><td><code>v0.2.1</code> ✓</td><td>路由</td><td>五个内置命名变换（<code>noop</code>、<code>drop-fields</code>、<code>drop-empty-fields</code>、<code>rename-fields</code>、<code>clamp-max-tokens</code>），以及路由分桶（<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>）——规则自上而下、首个命中即止，可匹配路径、模型前缀、请求体字段与请求体大小。默认关闭；互转器要挂靠的宿主。原本设想的「从路径加载插件」被有意砍掉了。</td></tr>
-        <tr><td><code>v0.2.2</code></td><td>协议覆盖</td><td>Anthropic ↔ OpenAI ↔ Responses 互转与字段归一化，含流式。从这个版本起，客户端用哪套协议不再决定它能用到哪些模型。<b>下一个就是它。</b></td></tr>
+        <tr><td><code>v0.2.2</code> ✓</td><td>协议覆盖</td><td>Anthropic ↔ OpenAI ↔ Responses 互转与字段归一化，含流式——请求体、JSON 响应与 SSE 逐事件转码。从这个版本起，客户端用哪套协议不再决定它能用到哪些模型。</td></tr>
         <tr><td><code>v0.3</code></td><td>可观测与可控</td><td>Prometheus <code>/metrics</code>、JSON 日志模式、OTLP/JSON 导出、会话与提示词缓存检查器、token 与成本统计、免构建的本地看板。</td></tr>
         <tr><td><code>v0.4</code></td><td>真实上游下的可靠性</td><td>多上游、带抖动重试的兜底、熔断、超时拆分与流空闲看门狗、退出时优雅排空。</td></tr>
         <tr><td><code>v0.5</code></td><td>安全与卫生</td><td>日志脱敏、正则护栏、精确到行的配置 schema 报错、CI 用的 <code>--check-config</code>。</td></tr>

@@ -18,6 +18,9 @@
   //  从 v0.2.1 起还能按请求性质分桶：把长上下文、后台任务、思考型请求分别送到不同
   //  模型（见 model 段下面注释掉的 "router" 段）。不打开就与以前完全一样。
   //
+  //  从 v0.2.2 起支持协议互转：客户端只说一种协议也能调到说另一种协议的模型
+  //  （见下面注释掉的 "protocol" 段）。默认关闭。
+  //
   //  启动：llm-session-proxy -c examples/opencode-go-models.json
   // ════════════════════════════════════════════════════════════════════
 
@@ -145,6 +148,24 @@
   //     { "bucket": "think",       "path": "/zen/go/v1/messages" },
   //     { "bucket": "longContext", "minBytes": 60000 },
   //     { "bucket": "background",  "modelPrefix": "proxy-glm-flash", "maxBytes": 4096 }
+  //   ]
+  // },
+
+  // ── v0.2.2 起可选：协议互转 ────────────────────────────────────────────
+  // 从请求路径推断客户端协议（/chat/completions → chat、/messages → messages、
+  // /responses → responses），路由决定上游说哪套；两者不同时自动转换请求体与响应，
+  // SSE 按事件逐条转码。默认关闭。target 只能是 chat | messages | responses。
+  //
+  // "protocol": {
+  //   "enabled": true,
+  //   "paths": {
+  //     "chat": "/zen/go/v1/chat/completions",
+  //     "messages": "/zen/go/v1/messages",
+  //     "responses": "/zen/go/v1/responses"
+  //   },
+  //   "routes": [
+  //     { "model": "minimax", "target": "messages" },
+  //     { "model": "gpt", "target": "responses" }
   //   ]
   // },
 

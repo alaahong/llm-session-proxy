@@ -229,6 +229,13 @@ export function parseArgv(argv) {
       case '--no-router':
         setByPath(flags, ['router', 'enabled'], false);
         break;
+      case '--protocol':
+        // 强制所有请求转成指定协议再发上游，优先级高于 enabled 与 routes
+        setByPath(flags, ['protocol', 'forced'], takeValue());
+        break;
+      case '--no-protocol':
+        setByPath(flags, ['protocol', 'enabled'], false);
+        break;
       case '--session-header':
         push(['session', 'headerNames'], takeValue().toLowerCase());
         break;

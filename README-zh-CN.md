@@ -58,6 +58,7 @@ x-opencode-session : 会话 ID，同一对话内保持稳定（用于提示词�
 - **模型别名重写**——前缀剥离（`proxy-glm-5.3-flash` → `glm-5.3-flash`）与精确映射（`fast` → `deepseek-chat`）双管齐下。**内置了 OpenCode Go 的别名表**，文档里让你写的 `proxy-` 前缀开箱就能解析；万一某个别名剥完前缀查不到映射，代理会明确告诉你该补哪一条，而不是悄悄把一个不存在的模型名发给上游。
 - **按规则分桶路由**——`default` / `background` / `think` / `longContext` 四个桶，各自可以换模型、挂变换。规则按路径前缀、模型前缀、请求体字段、请求体大小匹配，**自上而下、首个命中即止**，同一条规则内的条件是与关系。默认关闭，升级不会改变现有行为。
 - **可组合的请求体变换**——五个内置命名变换（`drop-fields`、`drop-empty-fields`、`rename-fields`、`clamp-max-tokens`、`noop`），可以全局挂，也可以按桶挂，按固定顺序执行。注册表是**写死的清单**：**代理绝不会从某个路径加载代码**，「零依赖 + 只听回环」这句话才站得住。
+- **协议互转**——让只会说一种协议的客户端调到说另一种协议的模型：OpenAI Chat Completions ↔ Anthropic Messages ↔ OpenAI Responses，请求体与响应体都转，SSE 流按事件逐条转码、流式体验不降级。默认关闭；按模型前缀路由，语义与路由分桶同款。
 - **请求路径重写**——客户端只会填 `/v1` 时，用一条正则把它转到上游真正要的路径。
 - **请求体参数注入 / 删除**——统一给所有请求补 `temperature`、`metadata`，或删掉上游不认的字段。
 - **SSE 流式零缓冲透传**——逐块转发，不攒完再发，流式体验不受影响。
@@ -380,6 +381,36 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 
 桶的 `model` 在别名重写**之后**生效并直接替换结果，所以这里应当写真实的上游模型 ID、而不是 `proxy-` 别名。引用 `{{model}}` 的请求头模板看到的是桶覆盖后的值，因为注入是最后一步。
 
+### `protocol`
+
+协议互转。代理从请求路径推断客户端说的是哪套协议（`/chat/completions` → `chat`、`/messages` → `messages`、`/responses` → `responses`），再由路由（或 `forced`）决定**上游**说哪套。两者不同时：请求体在转发前整体转换，响应在回到客户端前转换回来——JSON 体整包改写，SSE 流**按事件逐条**转码，流式体验不降级。`enabled` 默认 `false`。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `false` | 总开关。`--no-protocol` 强制关闭 |
+| `forced` | `null` | 把所有请求强制转成该协议，忽略全部路由（`--protocol <target>`）。写了同样压过 `enabled: false` |
+| `paths` | 三条 `/zen/go/v1/…` 默认路径 | 每种目标协议对应的上游路径。`paths.<target>` 会**整体替换**转发的路径（注意与 `request.pathRewrite` 的「修补客户端路径」语义不同） |
+| `routes` | `[]` | `{ "model": <前缀，可选>, "target": <协议>, "path": <上游路径，可选> }`。自上而下、首个命中即止；不带 `model` 的路由匹配所有请求 |
+
+转换时做的字段归一化：`max_tokens` ↔ `max_completion_tokens` ↔ `max_output_tokens`；`reasoning_effort` ↔ `thinking.budget_tokens`（固定表 low=1024 / medium=8192 / high=16384，反向 ≥16384 → high、≥4096 → medium、否则 low）；工具声明与工具调用在三种形状间重塑；`stop` ↔ `stop_sequences`；chat 的 system 消息 ↔ Anthropic 的顶层 `system` ↔ Responses 的 `instructions`。没有等价物的字段（`cache_control`、`response_format`…）**逐个记名丢弃**，转换本身以 `protocol:<from>-><to>` 标签进日志。
+
+两个刻意为之的边界：Anthropic 必填 `max_tokens`，chat 请求两个名字都没带时补一个保守的 `4096`（日志记 `max_tokens:default(4096)`），而不是等上游 400；**上游 4xx/5xx 错误体永不转换**——错误是上游协议的一部分，与不走转换时一样原样回传。
+
+```json
+"protocol": {
+  "enabled": true,
+  "paths": {
+    "chat": "/zen/go/v1/chat/completions",
+    "messages": "/zen/go/v1/messages",
+    "responses": "/zen/go/v1/responses"
+  },
+  "routes": [
+    { "model": "minimax", "target": "messages" },
+    { "model": "gpt", "target": "responses" }
+  ]
+}
+```
+
 ### 其他
 
 | 字段 | 默认值 | 说明 |
@@ -444,7 +475,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.2.1 —— 试运行
+llm-session-proxy v0.2.2 —— 试运行
 
 配置
   文件            （无）
@@ -489,6 +520,12 @@ llm-session-proxy v0.2.1 —— 试运行
   全局            （无）
   生效            （无）
   可用            noop, drop-fields, drop-empty-fields, rename-fields, clamp-max-tokens
+
+协议互转
+  启用            否（原样透传）
+  路径            chat=/zen/go/v1/chat/completions，messages=/zen/go/v1/messages，responses=/zen/go/v1/responses
+  规则            （无规则）
+  样例转换        样例请求不发生转换
 
 日志
   文件            ~/.lsp/logs/llm-session-proxy.log
@@ -554,6 +591,19 @@ llm-session-proxy --dry-run --model proxy-not-a-real-alias
 `生效` 才是真正会执行的那串：全局列表在前，命中的桶往里追加。`--doctor` 报的是同样的两段——
 中文标题是 `路由分桶` 与 `变换`，刻意与既有的 `路由`（路径重写）那段区分开。
 
+`协议互转` 那段回答「这条请求会不会被转换、转成什么」。加了 `--protocol messages` 之后，
+强制目标与样例转换行会变成（`样例转换` 同时给出转换后请求要走的上游路径）：
+
+```
+协议互转
+  启用            是——强制转成 "messages"
+  路径            chat=/zen/go/v1/chat/completions，messages=/zen/go/v1/messages，responses=/zen/go/v1/responses
+  规则            （无规则）
+  样例转换        chat -> messages  /zen/go/v1/messages
+```
+
+英文输出里这一段叫 `Protocol`。
+
 `--doctor` 会在这份报告之外再检查：
 
 - `upstream.host` 的 **DNS** 解析
@@ -608,6 +658,8 @@ llm-session-proxy --doctor && llm-session-proxy
 | `--transformer <name>` | 挂一个命名请求体变换，可重复。是**整体替换** `transformers.enabled` 而不是追加（与 `--model-prefix` 替换 `stripPrefixes` 同理） |
 | `--router <bucket>` | 强制所有请求走指定桶，忽略全部规则 |
 | `--no-router` | 关闭路由分桶，即使配置文件里开着 |
+| `--protocol <target>` | 转发前把所有请求转成指定协议（`chat` / `messages` / `responses`），压过 `protocol.routes` |
+| `--no-protocol` | 关闭协议互转，即使配置文件里开着 |
 | `--session-header <name>` | 追加会话来源请求头，可重复 |
 | `--session-field <path>` | 追加会话来源请求体字段，可重复 |
 | `--session-id-format <f>` | 会话 ID 格式 |
@@ -630,7 +682,7 @@ llm-session-proxy --doctor && llm-session-proxy
 环境变量与配置文件同名字段一一对应（大写形式）：`PROXY_PORT`、`UPSTREAM_HOST`、
 `UPSTREAM_PROTO`、`OPENCODE_UA`、`LOG_LEVEL`、`LOG_FILE`、`LOG_DIR`、`LOG_ROTATE`、
 `LOG_KEEP_DAYS`、`MODEL_ALIAS_PREFIX`、`INJECT_HEADERS`（JSON）、`TRANSFORMERS`（逗号分隔）、
-`ROUTER_ENABLED` 等。
+`ROUTER_ENABLED`、`PROTOCOL_ENABLED` 等。
 
 ---
 
@@ -660,12 +712,14 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions
               ├─ 3. 重写模型名：剥前缀，再查别名表
               ├─ 4. 选桶、应用桶的模型覆盖、跑请求体变换
               ├─ 5. 注入请求头与请求体参数
-              └─ 6. 转发，SSE 逐块回传
+              ├─ 6. 路由指定了不同协议时，做协议互转
+              └─ 7. 转发，SSE 逐块回传
 ```
 
-第 3～5 步的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
-别名解析之后，所以它只可能是真实 ID；注入放在最后，于是请求头里的 `{{model}}` 反映的是最终决定，
-而不是客户端最初填的那个。
+第 3～6 步的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
+别名解析之后，所以它只可能是真实 ID；注入放在倒数第二步，请求头里的 `{{model}}` 反映的是最终
+决定；**协议互转放在所有步骤之后**——变换与注入针对的是客户端协议下的字段名，等请求体定稿了，
+才整体翻译成上游的协议。
 
 会话识别的三级策略是关键，它决定了会话 ID 能不能在同一对话内保持稳定：
 
@@ -697,7 +751,8 @@ await proxy.stop();
 
 也可以只取零件：`createProxyServer`（自己控制生命周期）、`SessionStore`（会话表）、
 `renderTemplate`（模板引擎）、`buildConfig`（配置合并）、`resolveRoute` / `getBucket`（选桶）、
-`applyTransformers`（变换注册表）、`diagnose`（`--dry-run` 与 `--doctor` 底层跑的就是它）。
+`applyTransformers`（变换注册表）、`convertRequestBody` / `convertResponseJson`（协议互转）、
+`diagnose`（`--dry-run` 与 `--doctor` 底层跑的就是它）。
 
 ---
 
@@ -748,6 +803,7 @@ Trae 之类客户端会按模型 ID 把流量分流到自己的云通道。
 - **`response.stream: false` 会破坏 SSE**——除非确实需要整体缓冲，否则保持 `true`。
 - **`bufferBody: false` 时无法改写请求体**——模型重写和参数注入会失效，只能注入请求头、也只能靠请求头识别会话。
 - **内置别名表是发布时的快照，不是活的模型目录**——上游改模型名是常态；别名失效时会告警并且告诉你该补哪条，但不会自动去拉取。真实 ID 永远原样放行，所以别名过期不会致命。
+- **协议互转在边缘处刻意有损**——Anthropic 的 `thinking` / `signature` 流增量在 chat 里没有标准位置，会丢弃（日志里记名）；`messages ↔ responses` 经 chat 中转，不做直达转换器。保下来的是文本、工具调用、结束原因与 usage——客户端真正会用的就这些。
 - 本工具只做转发与参数修补，不缓存、不计费、不修改响应内容。
 
 ---
@@ -776,7 +832,7 @@ as the model name. See the Chinese sections above for the full configuration ref
 3. 打一个同名 tag 并推送：
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.2.2 && git push origin v0.2.2
 ```
 
 workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本一致，再用仓库 secrets 里的
@@ -790,7 +846,8 @@ workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本�
   这是唯一能让一个客户端吃满所有模型类的功能——否则它只能用自己那套协议支持的端点。
   **已交付 v0.2.0：** 内置别名表、别名未命中告警、`--dry-run` / `--doctor`。
   **已交付 v0.2.1：** 变换注册表与路由分桶。
-  **接下来 v0.2.2：** 协议转换本体——风险最高的一块，单独占一个版本。
+  **已交付 v0.2.2：** 协议转换本体——chat / messages / responses 三套协议的请求体、响应体与
+  SSE 逐事件转码。
 - **v0.3 — 可观测与可控。** Prometheus 格式指标、结构化 JSON 日志、token/成本统计端点、
   免构建的本地看板。
 - **v0.4 — 真实上游下的可靠性。** 熔断、上游健康检查、带抖动的重试、流空闲看门狗、优雅退出。

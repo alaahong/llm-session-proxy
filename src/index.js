@@ -13,11 +13,14 @@ import {
   resolveLogFile,
   resolveUpstream,
 } from './config.js';
+import { convertRequestBody, describeConverters, isConverter, listConverters } from './converters.js';
 import { diagnose, explainModel, pickSampleModel, renderDiagnosis, runDoctor } from './doctor.js';
 import { applyBodyInject, buildInjectHeaders, rewriteModel, rewritePath } from './inject.js';
 import { Logger, logDetail } from './logger.js';
 import { getLang, normalizeLang, setLang, t as translate } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
+import { convertResponseJson, listResponseConverters } from './replies.js';
+import { PROTOCOLS, detectProtocol, resolveProtocolRoute, upstreamPathFor } from './protocol.js';
 import { createProxyServer } from './proxy.js';
 import {
   BUILTIN_BUCKETS,
@@ -40,6 +43,7 @@ import {
 } from './session.js';
 import { createContext, randomBase36, randomHex, renderDeep, renderTemplate } from './template.js';
 import { applyTransformers, describeTransformers, listTransformers } from './transformers.js';
+import { createSseParser, createStreamTranscoder } from './stream.js';
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(moduleDir, '..', 'package.json'), 'utf8'));
@@ -60,13 +64,19 @@ export {
   buildInjectHeaders,
   composeTransformers,
   contentFingerprint,
-  createContext,
+  convertRequestBody,
+  convertResponseJson,
   createProxyServer,
+  createSseParser,
+  createStreamTranscoder,
+  createContext,
   deepMerge,
   defaultLogDir,
   describeBuckets,
+  describeConverters,
   describeRule,
   describeTransformers,
+  detectProtocol,
   diagnose,
   explainModel,
   findExplicitSession,
@@ -74,6 +84,9 @@ export {
   getBucket,
   getLang,
   hasMatcher,
+  isConverter,
+  listConverters,
+  listResponseConverters,
   listTransformers,
   loadConfigFile,
   logDetail,
@@ -83,12 +96,14 @@ export {
   parseJsonLoose,
   parseUpstream,
   pickSampleModel,
+  PROTOCOLS,
   randomBase36,
   randomHex,
   renderDeep,
   renderDiagnosis,
   renderTemplate,
   resolveLogFile,
+  resolveProtocolRoute,
   resolveRoute,
   resolveSession,
   resolveUpstream,
@@ -97,6 +112,7 @@ export {
   runDoctor,
   setLang,
   translate,
+  upstreamPathFor,
 };
 
 /**

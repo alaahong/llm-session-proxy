@@ -72,6 +72,35 @@ const en = {
   'config.badTransformers': () => 'transformers must be an object with "enabled" and "options"',
   'config.badTransformerEnabled': () => 'transformers.enabled must be an array of transformer names',
 
+  // ---------- protocol.js / converters.js / replies.js / stream.js：协议互转 ----------
+  'config.badProtocolSection': () => 'protocol must be an object with "enabled", "paths" and "routes"',
+  'config.badProtocolEnabled': ({ value }) => `protocol.enabled must be a boolean, got ${value}`,
+  'config.badProtocolForced': ({ target, known }) => `--protocol "${target}" is not a known protocol (available: ${known})`,
+  'config.badProtocolPath': ({ name, value }) => `protocol.paths.${name} must be a path starting with "/", got ${value}`,
+  'config.badProtocolRouteTarget': ({ index, target, known }) =>
+    `protocol.routes[${index}].target must be one of ${known}, got ${target}`,
+  'config.badProtocolRouteModel': ({ index, model }) =>
+    `protocol.routes[${index}].model must be a non-empty model prefix, got ${model}`,
+  'config.badProtocolRoutePath': ({ index, path }) =>
+    `protocol.routes[${index}].path must be a path starting with "/", got ${path}`,
+  'config.badProtocolRouteUnresolved': ({ index, target }) =>
+    `protocol.routes[${index}] (target "${target}") resolves to no upstream path — set routes[${index}].path or protocol.paths.${target}`,
+  'proxy.log.protocolStreamFallback': ({ status }) =>
+    `the client asked for a stream but the upstream returned a JSON body (${status}) — forwarding it converted but not streamed`,
+  'proxy.log.protocolFailed': ({ from, to, message }) =>
+    `protocol conversion ${from}->${to} failed, forwarding the body unchanged: ${message}`,
+  'doctor.section.protocol': () => 'Protocol',
+  'doctor.label.protocolEnabled': () => 'enabled',
+  'doctor.label.protocolPaths': () => 'paths',
+  'doctor.label.protocolSample': () => 'sample conversion',
+  'doctor.value.protocolOff': () => 'no (pass-through)',
+  'doctor.value.protocolForced': ({ target }) => `yes — forced to "${target}"`,
+  'doctor.value.protocolSame': ({ protocol }) => `${protocol} -> ${protocol}  (same protocol, nothing to convert)`,
+  'doctor.value.protocolConvert': ({ from, to, via }) => `${from} -> ${to}${via ? `  (via ${via})` : ''}`,
+  'doctor.value.protocolNone': () => 'no conversion for the sample request',
+  'doctor.warn.protocolEmpty': () =>
+    'protocol is enabled but no route is configured and nothing is forced — the conversion layer costs a lookup and converts nothing',
+
   // ---------- cli.js：帮助与示例配置 ----------
   'cli.help': ({ name, version, defaults }) => `
 ${name} v${version}
@@ -98,6 +127,9 @@ OPTIONS
                                drop-empty-fields | rename-fields | clamp-max-tokens
       --router <bucket>        Force every request through one bucket, ignoring the rules
       --no-router              Disable router buckets
+      --protocol <target>      Convert every request to this protocol before forwarding (chat |
+                               messages | responses), overriding protocol.routes
+      --no-protocol            Disable protocol conversion entirely
       --session-header <name>  Add a request header to read the client session from, repeatable
       --session-field <path>   Add a request body field to read the client session from, repeatable
       --session-id-format <f>  Session ID format: hex26 | hex | uuid | base36 | short
@@ -244,6 +276,24 @@ EXAMPLES
       // { "bucket": "think",       "modelPrefix": "proxy-think" },
       // { "bucket": "background",  "bodyField": "metadata.kind", "bodyFieldValue": "background" },
       // { "bucket": "longContext", "minBytes": 60000 }
+    ]
+  },
+
+  // Protocol conversion: let a client that only speaks one protocol reach
+  // models that speak another (chat | messages | responses). Off by default.
+  // Routes are matched top-down by model prefix; a route without "model"
+  // matches every request. --protocol <target> overrides everything.
+  "protocol": {
+    "enabled": false,
+    "forced": null,               // a protocol name, or null; overrides every route (--protocol)
+    "paths": {
+      "chat": "/zen/go/v1/chat/completions",
+      "messages": "/zen/go/v1/messages",
+      "responses": "/zen/go/v1/responses"
+    },
+    "routes": [
+      // { "model": "minimax", "target": "messages" },
+      // { "model": "gpt", "target": "responses" }
     ]
   },
 
@@ -525,6 +575,35 @@ const zh = {
   'config.badTransformers': () => 'transformers 必须是带 enabled 与 options 的对象',
   'config.badTransformerEnabled': () => 'transformers.enabled 必须是变换名数组',
 
+  // ---------- protocol.js / converters.js / replies.js / stream.js：协议互转 ----------
+  'config.badProtocolSection': () => 'protocol 必须是包含 "enabled"、"paths" 与 "routes" 的对象',
+  'config.badProtocolEnabled': ({ value }) => `protocol.enabled 必须是布尔值，实际是 ${value}`,
+  'config.badProtocolForced': ({ target, known }) => `--protocol "${target}" 不是已知的协议（可选：${known}）`,
+  'config.badProtocolPath': ({ name, value }) => `protocol.paths.${name} 必须是以 "/" 开头的路径，实际是 ${value}`,
+  'config.badProtocolRouteTarget': ({ index, target, known }) =>
+    `protocol.routes[${index}].target 必须是 ${known} 之一，实际是 ${target}`,
+  'config.badProtocolRouteModel': ({ index, model }) =>
+    `protocol.routes[${index}].model 必须是非空的模型前缀，实际是 ${model}`,
+  'config.badProtocolRoutePath': ({ index, path }) =>
+    `protocol.routes[${index}].path 必须是以 "/" 开头的路径，实际是 ${path}`,
+  'config.badProtocolRouteUnresolved': ({ index, target }) =>
+    `protocol.routes[${index}]（target "${target}"）解析不出上游路径——请设置 routes[${index}].path 或 protocol.paths.${target}`,
+  'proxy.log.protocolStreamFallback': ({ status }) =>
+    `客户端要求流式返回，但上游给的是 JSON 响应体（${status}）——已做转换、但无法流式`,
+  'proxy.log.protocolFailed': ({ from, to, message }) =>
+    `协议转换 ${from}->${to} 失败，请求体按原样转发：${message}`,
+  'doctor.section.protocol': () => '协议互转',
+  'doctor.label.protocolEnabled': () => '启用',
+  'doctor.label.protocolPaths': () => '路径',
+  'doctor.label.protocolSample': () => '样例转换',
+  'doctor.value.protocolOff': () => '否（原样透传）',
+  'doctor.value.protocolForced': ({ target }) => `是——强制转成 "${target}"`,
+  'doctor.value.protocolSame': ({ protocol }) => `${protocol} -> ${protocol}（同协议，无需转换）`,
+  'doctor.value.protocolConvert': ({ from, to, via }) => `${from} -> ${to}${via ? `（经 ${via} 中转）` : ''}`,
+  'doctor.value.protocolNone': () => '样例请求不发生转换',
+  'doctor.warn.protocolEmpty': () =>
+    'protocol 已启用但没有任何 route，也没有强制目标——互转层每次都要查一遍表，却什么都不会转换',
+
   // ---------- cli.js ----------
   'cli.help': ({ name, version, defaults }) => `
 ${name} v${version}
@@ -548,6 +627,9 @@ ${name} v${version}
                                可用：noop | drop-fields | drop-empty-fields | rename-fields | clamp-max-tokens
       --router <bucket>        强制所有请求走指定桶，忽略规则
       --no-router              关闭路由分桶
+      --protocol <target>      转发前把所有请求转成指定协议（chat | messages | responses），
+                               优先级高于 protocol.routes
+      --no-protocol            完全关闭协议互转
       --session-header <name>  追加"从哪个请求头读客户端会话"，可重复
       --session-field <path>   追加"从哪个请求体字段读客户端会话"，可重复
       --session-id-format <f>  会话 ID 格式：hex26 | hex | uuid | base36 | short
@@ -693,6 +775,23 @@ ${name} v${version}
       // { "bucket": "think",       "modelPrefix": "proxy-think" },
       // { "bucket": "background",  "bodyField": "metadata.kind", "bodyFieldValue": "background" },
       // { "bucket": "longContext", "minBytes": 60000 }
+    ]
+  },
+
+  // 协议互转：让只会说一种协议的客户端，调到说另一种协议的模型（chat | messages | responses）。
+  // 默认关闭。路由按模型前缀自上而下匹配；不带 "model" 的路由匹配所有请求。
+  // --protocol <target> 写了就压过所有路由。
+  "protocol": {
+    "enabled": false,
+    "forced": null,               // 协议名或 null；写了就压过所有路由（对应 --protocol）
+    "paths": {
+      "chat": "/zen/go/v1/chat/completions",
+      "messages": "/zen/go/v1/messages",
+      "responses": "/zen/go/v1/responses"
+    },
+    "routes": [
+      // { "model": "minimax", "target": "messages" },
+      // { "model": "gpt", "target": "responses" }
     ]
   },
 

@@ -6,7 +6,8 @@
   // （上游本身就是 /v1/... 路径，所以不需要 pathRewrite）
   //
   // 想按请求大小、请求体字段或模型前缀分流到不同模型，见 README 的 router 一节；
-  // 想统一删掉或改写请求体字段，见 transformers 一节。两者默认都关闭。
+  // 想统一删掉或改写请求体字段，见 transformers 一节；
+  // 想把这里接给只说 Anthropic 协议的上游，见 protocol 一节。三者默认都关闭。
 
   "listen": { "host": "127.0.0.1", "port": 8788 },
 

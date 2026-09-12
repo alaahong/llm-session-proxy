@@ -7,6 +7,7 @@ import { SUPPORTED_LANGS, normalizeLang, setLang, t } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
 import { BUILTIN_BUCKETS, emptyBucket, hasMatcher, normalizeRule } from './router.js';
 import { isTransformer, listTransformers } from './transformers.js';
+import { PROTOCOLS } from './protocol.js';
 
 /** 默认日志文件基名（与包名一致），用于拼默认路径与归档匹配。 */
 export const LOG_BASENAME = 'llm-session-proxy';
@@ -116,6 +117,23 @@ export const DEFAULT_CONFIG = {
     // 自上而下匹配，首个命中生效；同一条规则内多条件为 AND
     rules: [],
   },
+  // 协议互转（v0.2.2）：让只说一种协议的客户端也能用上另一种协议的模型。
+  // 默认关闭；开了以后按 routes 里的模型前缀决定把请求转成哪套协议、发哪条路径。
+  protocol: {
+    enabled: false,
+    // --protocol <target> 指定的强制目标：优先级高于 enabled 与所有 routes，
+    // 与 --router 同款语义，主要用于验证与排错。
+    forced: null,
+    // 三种协议各自的上游路径。用别的上游时在这里改。
+    paths: {
+      chat: '/zen/go/v1/chat/completions',
+      messages: '/zen/go/v1/messages',
+      responses: '/zen/go/v1/responses',
+    },
+    // 自上而下匹配，首个命中生效。model 缺省表示命中一切（上游只有一种协议时用）。
+    // target 必须是 chat | messages | responses；route.path 可显式覆盖该路由的上游路径。
+    routes: [],
+  },
   // 控制台与日志文案语言。默认英文，需要中文显式切换（--lang zh / PROXY_LANG=zh）。
   lang: 'en',
   response: {
@@ -173,6 +191,7 @@ const ENV_MAP = {
   // 逗号分隔的变换名列表，整体替换 transformers.enabled（与 --model-prefix 同一套数组语义）
   TRANSFORMERS: ['transformers', 'enabled'],
   ROUTER_ENABLED: ['router', 'enabled'],
+  PROTOCOL_ENABLED: ['protocol', 'enabled'],
 };
 
 function isPlainObject(value) {
@@ -257,7 +276,9 @@ function coerce(keyPath, raw) {
   if (key === 'model.stripPrefixes' || key === 'transformers.enabled') {
     return String(raw).split(',').map((s) => s.trim()).filter(Boolean);
   }
-  if (key === 'router.enabled') return !/^(0|false|no|off|disable[d]?)$/i.test(String(raw).trim());
+  if (key === 'router.enabled' || key === 'protocol.enabled') {
+    return !/^(0|false|no|off|disable[d]?)$/i.test(String(raw).trim());
+  }
   return raw;
 }
 
@@ -320,6 +341,7 @@ function normalize(config) {
   }
   next.router = normalizeRouter(next.router);
   next.transformers = normalizeTransformers(next.transformers);
+  next.protocol = normalizeProtocol(next.protocol);
   return next;
 }
 
@@ -363,6 +385,29 @@ function normalizeTransformers(transformers) {
   };
 }
 
+/** protocol 段归一化：路由字段去空白。类型不对的原样留着，交给校验报。 */
+function normalizeProtocol(protocol) {
+  if (!isPlainObject(protocol)) return protocol;
+  const out = { ...protocol };
+  if (isPlainObject(protocol.paths)) {
+    const paths = {};
+    for (const [name, value] of Object.entries(protocol.paths)) {
+      paths[name] = typeof value === 'string' && value.trim() ? value.trim() : value;
+    }
+    out.paths = paths;
+  }
+  out.routes = (Array.isArray(protocol.routes) ? protocol.routes : []).map((route) => {
+    if (!isPlainObject(route)) return route;
+    const clean = { ...route };
+    if (typeof clean.model === 'string') clean.model = clean.model.trim();
+    if (typeof clean.target === 'string') clean.target = clean.target.trim();
+    if (typeof clean.path === 'string' && !clean.path.trim()) delete clean.path;
+    return clean;
+  });
+  out.forced = typeof protocol.forced === 'string' && protocol.forced.trim() ? protocol.forced.trim() : null;
+  return out;
+}
+
 function validate(config) {
   const errors = [];
   if (!Number.isInteger(config.listen.port) || config.listen.port < 0 || config.listen.port > 65535) {
@@ -384,6 +429,7 @@ function validate(config) {
   validateModel(config.model, errors);
   validateTransformers(config.transformers, errors);
   validateRouter(config.router, errors);
+  validateProtocol(config.protocol, errors);
   validateLog(config.log, errors);
   if (errors.length) throw new Error(t('config.validationFailed', { list: errors.join('\n  - ') }));
   return config;
@@ -480,6 +526,49 @@ function validateRouter(router, errors) {
     }
   }
 }
+
+/**
+ * protocol 段的校验：target 必须是三种协议之一，路径必须有，路由必须能解析出
+ * 上游路径。这里多严一点，运行时就少一类「请求发到半路才发现没地方去」的错。
+ */
+function validateProtocol(protocol, errors) {
+  if (!isPlainObject(protocol)) {
+    errors.push(t('config.badProtocolSection'));
+    return;
+  }
+  if (protocol.enabled !== undefined && typeof protocol.enabled !== 'boolean') {
+    errors.push(t('config.badProtocolEnabled', { value: JSON.stringify(protocol.enabled) }));
+  }
+  if (protocol.forced !== null && protocol.forced !== undefined && !PROTOCOLS.includes(protocol.forced)) {
+    errors.push(t('config.badProtocolForced', { target: protocol.forced, known: PROTOCOLS.join(' | ') }));
+  }
+  const paths = protocol.paths || {};
+  for (const name of PROTOCOLS) {
+    const value = paths[name];
+    if (typeof value !== 'string' || !value.startsWith('/')) {
+      errors.push(t('config.badProtocolPath', { name, value: JSON.stringify(value) }));
+    }
+  }
+  const routes = Array.isArray(protocol.routes) ? protocol.routes : [];
+  routes.forEach((route, index) => {
+    if (!PROTOCOLS.includes(route?.target)) {
+      errors.push(t('config.badProtocolRouteTarget', { index, target: JSON.stringify(route?.target), known: PROTOCOLS.join(' | ') }));
+      return;
+    }
+    if (route.model !== undefined && (typeof route.model !== 'string' || !route.model)) {
+      errors.push(t('config.badProtocolRouteModel', { index, model: JSON.stringify(route.model) }));
+    }
+    if (route.path !== undefined && (typeof route.path !== 'string' || !route.path.startsWith('/'))) {
+      errors.push(t('config.badProtocolRoutePath', { index, path: JSON.stringify(route.path) }));
+      return;
+    }
+    const resolved = route.path || paths[route.target];
+    if (typeof resolved !== 'string' || !resolved.startsWith('/')) {
+      errors.push(t('config.badProtocolRouteUnresolved', { index, target: route.target }));
+    }
+  });
+}
+
 
 /** 模型段的校验。`map` 现在默认非空，用户也常自己写，写错要当场报出来。 */
 function validateModel(model, errors) {

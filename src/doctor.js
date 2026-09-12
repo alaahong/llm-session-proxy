@@ -7,6 +7,7 @@ import { rewriteModel } from './inject.js';
 import { logDetail } from './logger.js';
 import { t } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
+import { describeProtocolRoute, detectProtocol, resolveProtocolRoute } from './protocol.js';
 import { composeTransformers, describeBuckets, describeRule, getBucket, resolveRoute } from './router.js';
 import { generateId } from './session.js';
 import { createContext, renderTemplate } from './template.js';
@@ -291,6 +292,59 @@ export function diagnose(config, { model = null, env = process.env, name = 'llm-
     ],
   });
 
+  // ---- 协议互转 ----
+  // 与路由分桶同一个思路：用样例请求真的跑一遍 resolveProtocolRoute，
+  // 直接告诉用户「这条请求会被转成哪套协议、发哪条路径」。
+  const sampleSource = detectProtocol(samplePath);
+  const protoRoute = resolveProtocolRoute(
+    { clientModel: sample, resolvedModel: explanation.resolved },
+    config.protocol,
+  );
+  const protoRows = [];
+  if (config.protocol?.forced) {
+    protoRows.push([t('doctor.label.protocolEnabled'), t('doctor.value.protocolForced', { target: config.protocol.forced })]);
+  } else {
+    protoRows.push([
+      t('doctor.label.protocolEnabled'),
+      config.protocol?.enabled === false ? t('doctor.value.protocolOff') : t('doctor.value.yes'),
+    ]);
+  }
+  const protoPaths = config.protocol?.paths || {};
+  protoRows.push([
+    t('doctor.label.protocolPaths'),
+    ['chat', 'messages', 'responses']
+      .map((name) => `${name}=${protoPaths[name] || '-'}`)
+      .join(t('log.join')),
+  ]);
+  const protoRoutesList = Array.isArray(config.protocol?.routes) ? config.protocol.routes : [];
+  if (protoRoutesList.length) {
+    protoRoutesList.forEach((rule, index) => {
+      protoRows.push([`#${index}`, describeProtocolRoute(rule)]);
+    });
+  } else {
+    protoRows.push([t('doctor.label.rules'), t('doctor.value.noRules')]);
+  }
+  if (sampleSource && protoRoute.target) {
+    const via =
+      (sampleSource === 'messages' && protoRoute.target === 'responses') ||
+      (sampleSource === 'responses' && protoRoute.target === 'messages')
+        ? 'chat'
+        : null;
+    const sampleValue =
+      protoRoute.target === sampleSource
+        ? t('doctor.value.protocolSame', { protocol: sampleSource })
+        : t('doctor.value.protocolConvert', { from: sampleSource, to: protoRoute.target, via });
+    const hitRoute = protoRoute.index != null ? protoRoutesList[protoRoute.index] : null;
+    const targetPath = hitRoute?.path || protoPaths[protoRoute.target];
+    protoRows.push([
+      t('doctor.label.protocolSample'),
+      targetPath ? `${sampleValue}  ${targetPath}` : sampleValue,
+    ]);
+  } else {
+    protoRows.push([t('doctor.label.protocolSample'), t('doctor.value.protocolNone')]);
+  }
+  sections.push({ title: t('doctor.section.protocol'), rows: protoRows });
+
   const resolvedLog = resolveLogFile(config.log, { name, env });
   sections.push({
     title: t('doctor.section.log'),
@@ -309,6 +363,12 @@ export function diagnose(config, { model = null, env = process.env, name = 'llm-
     if (!rules.length && !configured) {
       // 开了 router 却什么都没配，等于白白多一层判定，明说比让人纳闷好
       warnings.push(t('doctor.warn.routerEmpty'));
+    }
+  }
+  if (config.protocol?.enabled !== false && !config.protocol?.forced) {
+    if (!protoRoutesList.length) {
+      // 互转层开着却没有一条规则，等于每次请求白查一遍表
+      warnings.push(t('doctor.warn.protocolEmpty'));
     }
   }
   if (explanation.outcome === 'stripped-unmapped') {

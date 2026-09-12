@@ -1,9 +1,13 @@
 import http from 'node:http';
 import https from 'node:https';
 import { resolveUpstream, shouldReplaceUserAgent } from './config.js';
+import { convertRequestBody } from './converters.js';
 import { applyBodyInject, buildInjectHeaders, rewriteModel, rewritePath } from './inject.js';
+import { detectProtocol, resolveProtocolRoute, upstreamPathFor } from './protocol.js';
+import { convertResponseJson } from './replies.js';
 import { applyBucketModel, composeTransformers, getBucket, resolveRoute } from './router.js';
 import { resolveSession, SessionStore } from './session.js';
+import { createStreamTranscoder } from './stream.js';
 import { createContext } from './template.js';
 import { applyTransformers } from './transformers.js';
 import { t } from './messages.js';
@@ -347,10 +351,12 @@ export function createProxyServer({ config, logger }) {
           }`;
         }
 
-        // ---- 重写模型名 / 路由分桶 / 变换 / 注入请求体参数 ----
+        // ---- 重写模型名 / 路由分桶 / 变换 / 注入请求体参数 / 协议互转 ----
         let outBuffer = buffer;
         let modelNote = '';
         let routeNote = '';
+        let protocolNote = '';
+        let protocolInfo = null; // 非空 = 请求被转写，响应要按 from -> to 转回来
         const bodyChanges = [];
         if (parsedBody) {
           const modelResult = rewriteModel(parsedBody, config.model, { logger: log });
@@ -410,9 +416,52 @@ export function createProxyServer({ config, logger }) {
 
           const bodyResult = applyBodyInject(parsedBody, config.inject, context);
           if (bodyResult.changed) bodyChanges.push(...bodyResult.changes);
+
+          // ---- 协议互转（v0.2.2）。刻意放在最后：变换与注入针对的是客户端
+          //      协议下的字段，整体转成目标协议必须在所有字段级操作完成之后。
+          //      转换返回全新对象，parsedBody 换成转换结果再统一重算 outBuffer。 ----
+          const sourceProtocol = detectProtocol(url.pathname);
+          if (sourceProtocol && config.protocol && typeof config.protocol === 'object') {
+            const protoRoute = resolveProtocolRoute(
+              {
+                clientModel: modelResult.from,
+                resolvedModel: typeof parsedBody.model === 'string' ? parsedBody.model : '',
+              },
+              config.protocol,
+            );
+            if (protoRoute.target && protoRoute.target !== sourceProtocol) {
+              try {
+                const converted = convertRequestBody(parsedBody, sourceProtocol, protoRoute.target, {});
+                if (converted.changed && converted.body && typeof converted.body === 'object') {
+                  const hitRoute =
+                    protoRoute.index != null ? (config.protocol.routes || [])[protoRoute.index] : null;
+                  const upstreamPath = upstreamPathFor(protoRoute.target, config.protocol, hitRoute?.path);
+                  if (upstreamPath) targetPath = upstreamPath;
+                  bodyChanges.push(`protocol:${sourceProtocol}->${protoRoute.target}`);
+                  parsedBody = converted.body;
+                  // 响应侧要按 target -> source 转回来
+                  protocolInfo = { from: protoRoute.target, to: sourceProtocol };
+                }
+              } catch (error) {
+                // 互转失败就按原样转发：转换层绝不变成新的故障面
+                log.warn(
+                  t('proxy.log.protocolFailed', {
+                    from: sourceProtocol,
+                    to: protoRoute.target,
+                    message: error.message,
+                  }),
+                );
+              }
+            }
+          }
+
           if (modelResult.changed || override.changed || bodyChanges.length) {
             // 改了 body 就必须重算长度，交给 http 模块自动处理
             outBuffer = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+          }
+          if (protocolInfo) {
+            // 转换后上游必须用明文回包：gzip 的 SSE 没法按事件切分
+            protocolNote = ` proto=${protocolInfo.from}->${protocolInfo.to}`;
           }
         }
 
@@ -435,6 +484,9 @@ export function createProxyServer({ config, logger }) {
 
         Object.assign(outHeaders, buildInjectHeaders(config.inject, context, headersLower));
 
+        // 协议互转后上游必须用明文回包：gzip 的 SSE 没法按事件边界切分
+        if (protocolInfo) outHeaders['accept-encoding'] = 'identity';
+
         const hostValue =
           config.upstream.rewriteHost === false ? req.headers.host || upstream.hostHeader : upstream.hostHeader;
         outHeaders.host = hostValue;
@@ -442,7 +494,7 @@ export function createProxyServer({ config, logger }) {
         log.info(
           `[req] ${req.method} ${req.url} | session=${session.id} req=${session.requestId} source=${session.source} ` +
             `sessions=${store.size} auth=${headersLower.has('authorization') ? 'present' : 'MISSING'}` +
-            `${modelNote}${routeNote}${bodyChanges.length ? ` body=${bodyChanges.join('|')}` : ''}`,
+            `${modelNote}${routeNote}${protocolNote}${bodyChanges.length ? ` body=${bodyChanges.join('|')}` : ''}`,
         );
         log.debug(`[req-headers] ${JSON.stringify(outHeaders, null, 0)}`);
 
@@ -460,7 +512,8 @@ export function createProxyServer({ config, logger }) {
               headers: outHeaders,
               agent,
             },
-            (proxyRes) => handleUpstreamResponse({ proxyRes, res, req, session, startedAt, targetPath }),
+            (proxyRes) =>
+              handleUpstreamResponse({ proxyRes, res, req, session, startedAt, targetPath, protocolInfo }),
           );
         } catch (error) {
           // 请求头含非法字符、目标路径未转义等情况会让 transport.request 同步抛错
@@ -539,7 +592,7 @@ export function createProxyServer({ config, logger }) {
   }
 
   /** 上游响应回来之后的处理，单独成函数以便整体兜错。 */
-  function handleUpstreamResponse({ proxyRes, res, req, session, startedAt, targetPath }) {
+  function handleUpstreamResponse({ proxyRes, res, req, session, startedAt, targetPath, protocolInfo = null }) {
     const status = proxyRes.statusCode || 502;
     const rawHeaders = {};
     for (const [key, value] of Object.entries(proxyRes.headers)) {
@@ -578,23 +631,108 @@ export function createProxyServer({ config, logger }) {
       }
     });
 
+    // ---- 响应侧协议互转的判定 ----
+    // 错误体（4xx/5xx）永不转写：上游的错误结构只有它自己能解释，与请求侧约定一致。
+    const proto = protocolInfo && status < 400 ? protocolInfo : null;
+    const contentType = String(proxyRes.headers['content-type'] || '').toLowerCase();
+    const convertJson = Boolean(proto && contentType.includes('json'));
+    const convertSse = Boolean(proto && contentType.includes('text/event-stream'));
+    if (proto && !convertJson && !convertSse) {
+      // 请求被转写了，但上游回的既不是 SSE 也不是 JSON——只能原样透传，留痕
+      log.debug(t('proxy.log.protocolStreamFallback', { status }));
+    }
+
     if (config.response.stream) {
-      if (!writeResponseHead(res, status, proxyRes.statusMessage, resHeaders)) {
-        proxyRes.destroy();
-        return;
+      if (convertSse) {
+        // 流式转码：事件级别边收边转。content-length 不再有意义，交给 chunked。
+        delete resHeaders['content-length'];
+        if (!writeResponseHead(res, status, proxyRes.statusMessage, resHeaders)) {
+          proxyRes.destroy();
+          return;
+        }
+        if (res.socket) res.socket.setNoDelay(true);
+        const transcoder = createStreamTranscoder({
+          from: proto.from,
+          to: proto.to,
+          write: (text) => {
+            try {
+              if (!res.writableEnded && !res.destroyed) res.write(text);
+            } catch {
+              /* 客户端可能已断开，吞掉 */
+            }
+          },
+        });
+        proxyRes.on('data', (chunk) => {
+          capture(chunk);
+          transcoder.push(chunk);
+        });
+        proxyRes.on('end', () => {
+          try {
+            transcoder.end();
+          } catch (error) {
+            log.warn(t('proxy.log.protocolFailed', { from: proto.from, to: proto.to, message: error.message }));
+          }
+          try {
+            if (!res.writableEnded) res.end();
+          } catch {
+            /* ignore */
+          }
+        });
+        res.on('close', () => {
+          if (!res.writableEnded) proxyRes.destroy();
+        });
+      } else if (convertJson) {
+        // JSON 响应的转写只能整包缓冲后再改写
+        const chunks = [];
+        proxyRes.on('data', (chunk) => {
+          capture(chunk);
+          chunks.push(chunk);
+        });
+        proxyRes.on('end', () => {
+          try {
+            let payload = Buffer.concat(chunks);
+            try {
+              const parsed = JSON.parse(payload.toString('utf8'));
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                payload = Buffer.from(
+                  JSON.stringify(convertResponseJson(parsed, proto.from, proto.to).payload),
+                  'utf8',
+                );
+              }
+            } catch {
+              /* 不是合法 JSON 就原样透传 */
+            }
+            resHeaders['content-length'] = String(payload.length);
+            if (!writeResponseHead(res, status, proxyRes.statusMessage, resHeaders)) return;
+            res.end(payload);
+          } catch (error) {
+            stats.errors += 1;
+            log.error(t('proxy.log.bufferWriteFailed', { message: error.message }));
+            try {
+              res.destroy();
+            } catch {
+              /* ignore */
+            }
+          }
+        });
+      } else {
+        if (!writeResponseHead(res, status, proxyRes.statusMessage, resHeaders)) {
+          proxyRes.destroy();
+          return;
+        }
+        if (res.socket) res.socket.setNoDelay(true);
+        proxyRes.on('data', capture);
+        try {
+          proxyRes.pipe(res);
+        } catch (error) {
+          log.warn(t('proxy.log.pipeFailed', { message: error.message }));
+          proxyRes.destroy();
+          res.destroy();
+        }
+        res.on('close', () => {
+          if (!res.writableEnded) proxyRes.destroy();
+        });
       }
-      if (res.socket) res.socket.setNoDelay(true);
-      proxyRes.on('data', capture);
-      try {
-        proxyRes.pipe(res);
-      } catch (error) {
-        log.warn(t('proxy.log.pipeFailed', { message: error.message }));
-        proxyRes.destroy();
-        res.destroy();
-      }
-      res.on('close', () => {
-        if (!res.writableEnded) proxyRes.destroy();
-      });
     } else {
       const chunks = [];
       proxyRes.on('data', (chunk) => {
@@ -603,7 +741,31 @@ export function createProxyServer({ config, logger }) {
       });
       proxyRes.on('end', () => {
         try {
-          const payload = Buffer.concat(chunks);
+          let payload = Buffer.concat(chunks);
+          if (convertSse) {
+            // 非流式模式下也照转：整包喂给转码器，一次吐完
+            const parts = [];
+            const transcoder = createStreamTranscoder({
+              from: proto.from,
+              to: proto.to,
+              write: (text) => parts.push(Buffer.from(text, 'utf8')),
+            });
+            transcoder.push(payload);
+            transcoder.end();
+            payload = Buffer.concat(parts);
+          } else if (convertJson) {
+            try {
+              const parsed = JSON.parse(payload.toString('utf8'));
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                payload = Buffer.from(
+                  JSON.stringify(convertResponseJson(parsed, proto.from, proto.to).payload),
+                  'utf8',
+                );
+              }
+            } catch {
+              /* 原样透传 */
+            }
+          }
           // 读到的就是压缩后的完整字节，所以只修正长度，content-encoding 必须保留
           resHeaders['content-length'] = String(payload.length);
           if (!writeResponseHead(res, status, proxyRes.statusMessage, resHeaders)) return;
@@ -633,7 +795,8 @@ export function createProxyServer({ config, logger }) {
       }
       log.info(
         `[res] ${status} ${req.method} ${req.url} | session=${session.id} ${formatBytes(received)} ` +
-          `${Date.now() - startedAt}ms stream=${config.response.stream}`,
+          `${Date.now() - startedAt}ms stream=${config.response.stream}` +
+          `${proto ? ` proto=${proto.from}->${proto.to}` : ''}`,
       );
     });
   }
