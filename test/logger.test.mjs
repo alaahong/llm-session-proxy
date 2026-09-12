@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { LEVELS, Logger, ROTATE_MODES, dateStamp } from '../src/logger.js';
+import { LEVELS, Logger, ROTATE_MODES, dateStamp, logDetail } from '../src/logger.js';
+import { DEFAULT_LANG, setLang } from '../src/messages.js';
 
 function tempFile(name = 'app.log') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-log-'));
@@ -306,4 +307,33 @@ test('rotation 与 dateStamp 暴露的契约稳定', () => {
   assert.equal(logger.basePath, file);
   assert.deepEqual(ROTATE_MODES, ['size', 'daily', 'off']);
   assert.match(dateStamp(new Date('2026-01-02T03:04:05')), /^2026-01-02$/);
+});
+
+test('logDetail 概括轮转与归档策略，分隔符跟随语言', () => {
+  const log = { rotate: 'size', maxBytes: 1024, backups: 2, keepDays: 30 };
+
+  try {
+    setLang('en');
+    const en = logDetail(log);
+    assert.match(en, /size rotation, max 1024 B, 2 backups, keep 30 days/);
+
+    setLang('zh');
+    const zh = logDetail(log);
+    assert.match(zh, /按大小轮转/);
+    assert.match(zh, /保留 30 天/);
+    assert.ok(!zh.includes(', '), `中文说明不该用半角逗号分隔: ${zh}`);
+    assert.ok(zh.includes('，'), `中文说明应当用全角逗号: ${zh}`);
+  } finally {
+    setLang(DEFAULT_LANG);
+  }
+});
+
+test('logDetail 覆盖关闭轮转与永久保留两种边界', () => {
+  try {
+    setLang('en');
+    assert.match(logDetail({ rotate: 'off', keepDays: 0 }), /no rotation.*keep forever/);
+    assert.match(logDetail({ rotate: 'daily', maxBytes: 512, backups: 0, keepDays: 7 }), /daily rotation/);
+  } finally {
+    setLang(DEFAULT_LANG);
+  }
 });

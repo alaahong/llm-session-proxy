@@ -87,7 +87,7 @@
       <div class="card">
         <div class="tag">model</div>
         <h4>Model alias rewriting</h4>
-        <p>Prefix stripping (<code>proxy-glm</code> → <code>glm-5.3</code>) and exact mapping, and the two compose.</p>
+        <p>Prefix stripping (<code>proxy-glm</code> → <code>glm-5.3</code>) and exact mapping, and the two compose. The OpenCode Go alias table ships built in, so the <code>proxy-</code> prefix the client needs actually resolves — and an alias that strips down to nothing is reported by name instead of being forwarded silently.</p>
       </div>
       <div class="card">
         <div class="tag">path</div>
@@ -103,6 +103,11 @@
         <div class="tag">ops</div>
         <h4>Logs on by default</h4>
         <p><code>~/.lsp/logs/llm-session-proxy.log</code> with size or date rotation and 30-day archival — a vanished process still leaves clues behind.</p>
+      </div>
+      <div class="card">
+        <div class="tag">check</div>
+        <h4>Preflight checks</h4>
+        <p><code>--dry-run</code> prints the effective routing, the <b>rendered</b> injection table and the model-resolution chain with no network I/O. <code>--doctor</code> adds DNS/TCP/TLS reachability and listen-port checks, and exits non-zero on problems.</p>
       </div>
       <div class="card">
         <div class="tag">deps</div>
@@ -190,8 +195,9 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
     <h2>OpenCode Go model cheat sheet</h2>
     <p class="sub">
       The upstream splits models across three endpoints — whether a model is usable depends on the
-      protocol your client speaks, which matters more than the model name. Full config:
-      <a href="https://github.com/alaahong/llm-session-proxy/blob/main/examples/opencode-go-models.json">examples/opencode-go-models.json</a>.
+      protocol your client speaks, which matters more than the model name. Every <b>client model ID</b>
+      below resolves out of the box: the aliases are built into the proxy. Curious what any alias turns
+      into? <code>npx llm-session-proxy --dry-run --model proxy-glm</code>.
     </p>
 
     <h3>① /zen/go/v1/chat/completions · OpenAI-compatible, what most clients use</h3>
@@ -308,8 +314,9 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
         <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
         <tbody>
           <tr><td><code>stripPrefixes</code></td><td><code>["proxy-"]</code></td><td>Prefixes to strip; matched in order, first hit wins</td></tr>
-          <tr><td><code>map</code></td><td><code>{}</code></td><td>Exact mapping. Looked up by original name first, then again after prefix stripping</td></tr>
-          <tr><td><code>default</code></td><td><code>null</code></td><td>Fallback model name</td></tr>
+          <tr><td><code>map</code></td><td>27 built-in aliases</td><td>Alias → real upstream model ID. Merged <b>key by key</b> over the built-in table: a key here overrides the built-in entry of the same name, the rest are kept. Built-in entries cannot be deleted — override them instead</td></tr>
+          <tr><td><code>default</code></td><td><code>null</code></td><td>Fallback model name. Only applies when nothing matched <i>and</i> no prefix was stripped; it deliberately does not rescue <code>proxy-xxx</code> that strips to an unmapped <code>xxx</code></td></tr>
+          <tr><td><code>warnUnmapped</code></td><td><code>true</code></td><td>Warn once per alias that strips to a name with no mapping and no <code>default</code>, naming the entry to add</td></tr>
         </tbody>
       </table>
     </div>
@@ -347,18 +354,22 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--inject &lt;name=value&gt;</code></td><td>Inject a request header, repeatable</td></tr>
           <tr><td><code>--body-inject &lt;k=v&gt;</code></td><td>Inject a body field, dot paths supported, repeatable</td></tr>
           <tr><td><code>--model-prefix &lt;prefix&gt;</code></td><td>Model name prefix to strip, repeatable</td></tr>
-          <tr><td><code>--model-map &lt;a=b&gt;</code></td><td>Exact model name mapping, repeatable</td></tr>
+          <tr><td><code>--model-map &lt;a=b&gt;</code></td><td>Exact model name mapping, repeatable. Merged over the built-in alias table</td></tr>
           <tr><td><code>--session-header &lt;name&gt;</code> / <code>--session-field &lt;path&gt;</code></td><td>Append a session source location, repeatable</td></tr>
           <tr><td><code>--session-id-format &lt;f&gt;</code> / <code>--request-id-format &lt;t&gt;</code></td><td>Session ID format / per-request ID template</td></tr>
           <tr><td><code>--no-session</code> / <code>--no-stream</code></td><td>Disable session injection / disable streaming pass-through</td></tr>
           <tr><td><code>--timeout &lt;ms&gt;</code> / <code>--max-body &lt;bytes&gt;</code></td><td>Upstream timeout / request body limit</td></tr>
           <tr><td><code>--log-level &lt;l&gt;</code></td><td>Log level: <code>silent</code> | <code>error</code> | <code>warn</code> | <code>info</code> | <code>debug</code></td></tr>
+          <tr><td><code>-l, --lang &lt;en|zh&gt;</code></td><td>Language of console and log output (also <code>PROXY_LANG</code>, or the <code>lang</code> config key)</td></tr>
           <tr><td><code>--log-file &lt;f&gt;</code> / <code>--no-log-file</code></td><td>Log file path / turn file logging off (console only)</td></tr>
           <tr><td><code>--log-dir &lt;dir&gt;</code></td><td>Directory of the default log file</td></tr>
           <tr><td><code>--log-rotate &lt;mode&gt;</code></td><td><code>size</code> | <code>daily</code> | <code>off</code></td></tr>
           <tr><td><code>--log-keep-days &lt;n&gt;</code></td><td>Delete logs older than N days (<code>0</code> = keep forever)</td></tr>
           <tr><td><code>--init [file]</code></td><td>Write a sample config</td></tr>
           <tr><td><code>--print-config</code></td><td>Print the merged config and exit</td></tr>
+          <tr><td><code>--dry-run</code></td><td>Validate the config and print routing, injection and model resolution. No network I/O</td></tr>
+          <tr><td><code>--doctor</code></td><td><code>--dry-run</code> plus DNS/TCP/TLS reachability and listen-port checks; exits non-zero on problems</td></tr>
+          <tr><td><code>--model &lt;id&gt;</code></td><td>Sample model name used by <code>--dry-run</code> / <code>--doctor</code></td></tr>
         </tbody>
       </table>
     </div>
@@ -391,6 +402,47 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
     </p>
     <pre><code><span class="cmt"># Where will logs actually land?</span>
 llm-session-proxy --print-config | grep resolvedFile</code></pre>
+
+    <h3 id="preflight">Preflight: --dry-run and --doctor</h3>
+    <p>
+      Both flags validate the config and print what the proxy would actually do, then exit — no server,
+      no log file, no request to the upstream. The injection table is not a description of the
+      templates; it is the <b>rendered</b> result, so a misspelled template shows up here instead of in
+      a 400 from the upstream.
+    </p>
+    <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
+llm-session-proxy v0.2.0 — dry run
+
+Model
+  sample        proxy-glm
+  strip         prefix "proxy-" -&gt; glm
+  mapped        glm -&gt; glm-5.3
+  result        glm-5.3  (mapped)
+  map           27 built-in aliases, 0 overrides
+
+Result
+  OK — the configuration is valid.</code></pre>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th><code>Model / result</code></th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>(mapped)</code></td><td>The alias hit <code>model.map</code>. This is what you want</td></tr>
+          <tr><td><code>(from model.default)</code></td><td>Nothing matched and nothing was stripped, so <code>default</code> applied</td></tr>
+          <tr><td><code>(prefix stripped, NO mapping)</code></td><td>The prefix came off and the remainder is going upstream verbatim — the usual cause of "model not found"</td></tr>
+          <tr><td><code>(no prefix matched, forwarded as-is)</code></td><td>The client sent a real model ID. Normal</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <code>--doctor</code> runs the same report and adds DNS resolution, a TCP connect with handshake
+      time, a TLS handshake when the protocol is <code>https</code> (an untrusted certificate is
+      reported, not treated as a hard failure), a listen-port availability check, and a reminder that
+      the proxy never injects credentials. It sends <b>no HTTP request and no credentials</b> —
+      reachability is answered at the transport layer — so a doctor run cannot burn rate-limit quota.
+      It exits <code>0</code> when everything is fine and <code>1</code> when something needs fixing,
+      which makes it usable as a startup gate:
+    </p>
+    <pre><code>llm-session-proxy --doctor &amp;&amp; llm-session-proxy</code></pre>
 
     <h3>Local status endpoints</h3>
     <pre><code><span class="cmt"># Overview: session count, hit rate, injected headers, upstream target</span>
@@ -463,6 +515,12 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       <b>With <code>bufferBody: false</code> the body cannot be rewritten</b> — model rewriting and
       parameter injection stop working, and only headers can be injected.
     </p>
+    <p>
+      <b>The built-in model map is a snapshot, not a live catalogue.</b> Upstream model IDs change
+      without notice, and this proxy deliberately makes no network call to discover them. If an
+      alias stops resolving, it is a one-line override in your config file — not a bug — and
+      <code>--dry-run</code> shows which alias resolved to what before you send a real request.
+    </p>
   </section>
 
   <section id="roadmap">
@@ -471,7 +529,9 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
     <table>
       <thead><tr><th>Milestone</th><th>Theme</th><th>Highlights</th></tr></thead>
       <tbody>
-        <tr><td><code>v0.2</code></td><td>Correctness and protocol reach</td><td>Anthropic ↔ OpenAI ↔ Responses translation, a transformer registry, router buckets (<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>), and a <code>doctor</code> command. The release that stops a client&rsquo;s protocol from deciding which models it can reach.</td></tr>
+        <tr><td><code>v0.2.0</code> ✓</td><td>Correctness</td><td>A curated built-in model map (27 aliases), a warn-once notice when a <code>proxy-</code>-prefixed alias resolves to nothing, and the <code>--dry-run</code> / <code>--doctor</code> preflight. The release that fixes <em>&ldquo;my alias silently reached the upstream verbatim&rdquo;</em>.</td></tr>
+        <tr><td><code>v0.2.1</code></td><td>Routing</td><td>A config-selectable transformer registry and router buckets (<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>). The host the translators plug into.</td></tr>
+        <tr><td><code>v0.2.2</code></td><td>Protocol reach</td><td>Anthropic ↔ OpenAI ↔ Responses translation with field normalisation, streaming included. The release that stops a client&rsquo;s protocol from deciding which models it can reach.</td></tr>
         <tr><td><code>v0.3</code></td><td>Observability and control</td><td>Prometheus <code>/metrics</code>, JSON log mode, OTLP/JSON export, a session and prompt-cache inspector, token and cost accounting, and a zero-build local dashboard.</td></tr>
         <tr><td><code>v0.4</code></td><td>Reliability under real upstreams</td><td>Multiple upstreams, fallback with jittered retry, circuit breaking, separated timeouts with a stream idle watchdog, graceful drain on shutdown.</td></tr>
         <tr><td><code>v0.5</code></td><td>Safety and hygiene</td><td>Log redaction, regex guardrails, line-precise config schema errors, and <code>--check-config</code> for CI.</td></tr>

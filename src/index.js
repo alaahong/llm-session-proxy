@@ -13,9 +13,11 @@ import {
   resolveLogFile,
   resolveUpstream,
 } from './config.js';
+import { diagnose, explainModel, pickSampleModel, renderDiagnosis, runDoctor } from './doctor.js';
 import { applyBodyInject, buildInjectHeaders, rewriteModel, rewritePath } from './inject.js';
-import { Logger } from './logger.js';
+import { Logger, logDetail } from './logger.js';
 import { getLang, normalizeLang, setLang, t as translate } from './messages.js';
+import { DEFAULT_MODEL_MAP } from './models.js';
 import { createProxyServer } from './proxy.js';
 import {
   SessionStore,
@@ -35,6 +37,7 @@ export const NAME = pkg.name;
 
 export {
   DEFAULT_CONFIG,
+  DEFAULT_MODEL_MAP,
   Logger,
   SessionStore,
   applyBodyInject,
@@ -45,23 +48,29 @@ export {
   createProxyServer,
   deepMerge,
   defaultLogDir,
+  diagnose,
+  explainModel,
   findExplicitSession,
   generateId,
   getLang,
   loadConfigFile,
+  logDetail,
   normalizeLang,
   normalizeSessionId,
   parseJsonLoose,
   parseUpstream,
+  pickSampleModel,
   randomBase36,
   randomHex,
   renderDeep,
+  renderDiagnosis,
   renderTemplate,
   resolveLogFile,
   resolveSession,
   resolveUpstream,
   rewriteModel,
   rewritePath,
+  runDoctor,
   setLang,
   translate,
 };
@@ -83,7 +92,7 @@ export async function startProxy(options = {}) {
   } = options;
 
   const config = providedConfig
-    ? deepMerge(DEFAULT_CONFIG, providedConfig)
+    ? deepMerge(structuredClone(DEFAULT_CONFIG), providedConfig)
     : buildConfig({ file: configFile, env, flags });
 
   // 让内嵌使用时的日志/报错语言也跟随配置（默认英文）

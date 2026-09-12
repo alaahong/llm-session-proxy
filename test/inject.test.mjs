@@ -226,3 +226,45 @@ test('buildInjectHeaders 对空配置返回空对象', () => {
   assert.deepEqual(buildInjectHeaders({}, ctx), {});
   assert.deepEqual(buildInjectHeaders(undefined, ctx), {});
 });
+
+test('rewriteModel 回报解析过程，供上层决定要不要告警', () => {
+  const mapped = rewriteModel({ model: 'proxy-fast' }, modelConfig({ map: { fast: 'glm-5.3-flash' } }));
+  assert.equal(mapped.mapped, true);
+  assert.equal(mapped.strippedPrefix, 'proxy-');
+  assert.equal(mapped.usedDefault, false);
+  assert.equal(mapped.unmappedAlias, false);
+
+  const direct = rewriteModel({ model: 'fast' }, modelConfig({ map: { fast: 'glm-5.3-flash' } }));
+  assert.equal(direct.mapped, true);
+  assert.equal(direct.strippedPrefix, null, '原始名直接命中时没有剥任何前缀');
+  assert.equal(direct.unmappedAlias, false);
+
+  const unmapped = rewriteModel({ model: 'proxy-nope' }, modelConfig());
+  assert.equal(unmapped.changed, true);
+  assert.equal(unmapped.mapped, false);
+  assert.equal(unmapped.strippedPrefix, 'proxy-');
+  assert.equal(unmapped.usedDefault, false);
+  assert.equal(unmapped.unmappedAlias, true, '剥了前缀但没命中映射 —— 这才是要告警的情况');
+
+  const passthrough = rewriteModel({ model: 'glm-5.3' }, modelConfig());
+  assert.equal(passthrough.changed, false);
+  assert.equal(passthrough.unmappedAlias, false, '客户端直接填真实 ID 属于正常透传，不该告警');
+
+  const fallback = rewriteModel({ model: 'unknown' }, modelConfig({ default: 'fallback' }));
+  assert.equal(fallback.usedDefault, true);
+  assert.equal(fallback.unmappedAlias, false, '有兜底就不算未命中');
+});
+
+test('model.default 不兜底「剥完前缀仍无映射」的名字，仍会告警', () => {
+  const result = rewriteModel({ model: 'proxy-nope' }, modelConfig({ default: 'fallback' }));
+
+  assert.equal(result.usedDefault, false);
+  assert.equal(result.unmappedAlias, true);
+  assert.equal(result.to, 'nope', '结果是剥完前缀的名字，而不是 default');
+});
+
+test('rewriteModel 关闭时不做任何回报', () => {
+  const result = rewriteModel({ model: 'proxy-x' }, modelConfig({ enabled: false }));
+  assert.equal(result.changed, false);
+  assert.equal(result.unmappedAlias, undefined);
+});

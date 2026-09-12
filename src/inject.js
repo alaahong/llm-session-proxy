@@ -38,6 +38,9 @@ export function rewritePath(originalPath, rules = []) {
  *   2. stripPrefixes 逐条剥离（Trae 等客户端必须用 proxy- 前缀避开内置通道时使用）
  *   3. default 兜底
  * 返回 { changed, from, to }，未变化时 changed=false。
+ *
+ * 除结果之外还回报**过程**：mapped / strippedPrefix / usedDefault / unmappedAlias。
+ * 调用方据此决定要不要告警——本函数刻意不碰 i18n，文案由上层拼。
  */
 export function rewriteModel(body, modelConfig, { logger } = {}) {
   if (!modelConfig?.enabled || !isPlainObject(body)) return { changed: false };
@@ -49,25 +52,45 @@ export function rewriteModel(body, modelConfig, { logger } = {}) {
   const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 
   let next = original;
+  let mapped = false;
+  let strippedPrefix = null;
+
   if (hasOwn(map, original)) {
     // 1. 原始名直接命中映射，优先级最高
     next = map[original];
+    mapped = true;
   } else {
     for (const prefix of modelConfig.stripPrefixes || []) {
       if (prefix && next.startsWith(prefix)) {
         next = next.slice(prefix.length);
+        strippedPrefix = prefix;
         break;
       }
     }
     // 2. 剥掉前缀后再查一次 map，让客户端可以"加 proxy- 前缀 + 用短别名"同时成立
-    if (next !== original && hasOwn(map, next)) next = map[next];
+    if (strippedPrefix !== null && hasOwn(map, next)) {
+      next = map[next];
+      mapped = true;
+    }
   }
-  if ((!next || next === original) && modelConfig.default) next = modelConfig.default;
-  if (!next || next === original) return { changed: false, from: original, to: original };
+
+  let usedDefault = false;
+  if (!mapped && (!next || next === original) && modelConfig.default) {
+    next = modelConfig.default;
+    usedDefault = true;
+  }
+
+  // 前缀剥掉了、映射没命中、也没兜底 —— 剥完的名字会被原样发给上游。
+  // 这是「上游报模型不存在」的典型成因，值得让上层喊一声。
+  const unmappedAlias = strippedPrefix !== null && !mapped && !usedDefault;
+
+  if (!next || next === original) {
+    return { changed: false, from: original, to: original, mapped, strippedPrefix, usedDefault, unmappedAlias };
+  }
 
   body[field] = next;
   logger?.debug(`[model] ${original} -> ${next}`);
-  return { changed: true, from: original, to: next };
+  return { changed: true, from: original, to: next, mapped, strippedPrefix, usedDefault, unmappedAlias };
 }
 
 /** 按配置往请求体里补字段 / 删字段。 */

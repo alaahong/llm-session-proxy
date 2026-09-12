@@ -316,3 +316,81 @@ test('上游不可达时返回 502 而不是崩溃', async () => {
     await proxy.close();
   }
 });
+
+test('别名剥完前缀仍无映射时告警，同一别名只喊一次，且可按配置关闭', async () => {
+  const upstream = await startFakeUpstream((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+  });
+
+  /** 起一个把 warn 收集起来的代理：warn 是这里唯一关心的输出。 */
+  const startCollecting = async (modelConfig) => {
+    const warnings = [];
+    const logger = {
+      error: () => {},
+      info: () => {},
+      debug: () => {},
+      warn: (...args) => warnings.push(args.join(' ')),
+      close: () => {},
+    };
+    const config = deepMerge(DEFAULT_CONFIG, {
+      listen: { host: '127.0.0.1', port: 0 },
+      log: { level: 'silent' },
+      upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
+      model: modelConfig,
+    });
+    const proxy = createProxyServer({ config, logger });
+    await proxy.listen();
+    return { proxy, warnings, url: `http://127.0.0.1:${proxy.server.address().port}` };
+  };
+
+  const send = (url, model) =>
+    fetch(`${url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }] }),
+    }).then((r) => r.text());
+
+  try {
+    const on = await startCollecting({ map: {}, warnUnmapped: true });
+    await send(on.url, 'proxy-mystery');
+    await send(on.url, 'proxy-mystery');
+    await send(on.url, 'proxy-other');
+
+    assert.equal(
+      on.warnings.filter((line) => line.includes('proxy-mystery')).length,
+      1,
+      '同一个错别名被打多次，只该告警一次',
+    );
+    assert.equal(on.warnings.filter((line) => line.includes('proxy-other')).length, 1, '不同别名各喊一次');
+    assert.ok(
+      on.warnings.some((line) => line.startsWith('[model]')),
+      `告警要沿用 ASCII 标签，便于 grep: ${on.warnings.join(' | ')}`,
+    );
+    assert.ok(
+      on.warnings.some((line) => line.includes('mystery')),
+      '告警要说清剥完前缀后实际发出去的名字',
+    );
+    await on.proxy.close();
+
+    const off = await startCollecting({ map: {}, warnUnmapped: false });
+    await send(off.url, 'proxy-mystery');
+    assert.equal(off.warnings.length, 0, 'warnUnmapped=false 时不该告警');
+    await off.proxy.close();
+
+    const mapped = await startCollecting({ map: { known: 'real-model' } });
+    await send(mapped.url, 'proxy-known');
+    assert.equal(mapped.warnings.length, 0, '命中映射不该告警');
+    await mapped.proxy.close();
+
+    const realId = await startCollecting({ map: {} });
+    await send(realId.url, 'glm-5.3');
+    assert.equal(realId.warnings.length, 0, '客户端直接填真实 ID 属于正常透传，不该告警');
+    await realId.proxy.close();
+  } finally {
+    await upstream.close();
+  }
+});

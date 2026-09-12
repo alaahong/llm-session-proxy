@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -309,4 +310,101 @@ test('CLI 对非法配置以退出码 2 结束', () => {
     () => execFileSync(process.execPath, [bin, '--print-config', '-c', bad], { encoding: 'utf8', stdio: 'pipe' }),
     (error) => error.status === 2,
   );
+});
+
+// ---------- --dry-run / --doctor ----------
+
+/** 体检类开关都要落在临时目录里，别碰真实家目录。 */
+function doctorEnv() {
+  return { ...process.env, LSP_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-doctor-cli-')) };
+}
+
+test('parseArgv 识别 --dry-run / --doctor / --model，且都不进配置对象', () => {
+  assert.equal(parseArgv(['--dry-run']).dryRun, true);
+  assert.equal(parseArgv(['--dry-run']).doctor, false);
+
+  assert.equal(parseArgv(['--doctor']).doctor, true);
+  assert.equal(parseArgv(['--doctor']).dryRun, false);
+
+  assert.equal(parseArgv(['--dry-run', '--model', 'proxy-glm']).model, 'proxy-glm');
+  assert.equal(parseArgv(['--dry-run']).model, null, '没给 --model 时应当是 null');
+
+  assert.deepEqual(parseArgv(['--dry-run', '--model', 'proxy-glm']).flags, {}, '这三个开关不该写进配置');
+  assert.deepEqual(parseArgv(['--dry-run']).flags, {});
+});
+
+test('CLI --dry-run 打印路由与注入表，以退出码 0 结束且不写日志文件', () => {
+  const env = doctorEnv();
+  const out = execFileSync(process.execPath, [bin, '--dry-run'], { encoding: 'utf8', env });
+
+  for (const expected of ['— dry run', 'Upstream', 'Routing', 'Injection', 'Model', 'OK — the configuration is valid.']) {
+    assert.ok(out.includes(expected), `dry-run 输出里应当有 ${expected}:\n${out}`);
+  }
+  assert.ok(out.includes('mapped'), '默认样例必须走的是「剥前缀 + 查映射」这条路');
+  assert.ok(!fs.existsSync(path.join(env.LSP_HOME, 'logs')), 'dry-run 不该创建日志目录');
+});
+
+test('CLI --dry-run 对解析不出来的别名以退出码 1 结束', () => {
+  const env = doctorEnv();
+  assert.throws(
+    () => execFileSync(process.execPath, [bin, '--dry-run', '--model', 'proxy-nope'], { encoding: 'utf8', stdio: 'pipe', env }),
+    (error) => {
+      assert.equal(error.status, 1, '显式点名的别名解析不出来，应当以失败退出');
+      assert.match(String(error.stdout), /FAILED/);
+      assert.match(String(error.stdout), /proxy-nope/);
+      return true;
+    },
+  );
+});
+
+test('CLI --doctor 探测上游失败时以退出码 1 结束并说明原因', async () => {
+  // 拿一个刚被释放的端口当上游：能确定会连不上，又不依赖外网
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+
+  const env = doctorEnv();
+  assert.throws(
+    () =>
+      execFileSync(process.execPath, [bin, '--doctor', '-u', `http://127.0.0.1:${port}`], {
+        encoding: 'utf8',
+        stdio: 'pipe',
+        env,
+      }),
+    (error) => {
+      assert.equal(error.status, 1);
+      assert.match(String(error.stdout), /FAILED/);
+      assert.match(String(error.stdout), new RegExp(`cannot connect to 127\\.0\\.0\\.1:${port}`));
+      return true;
+    },
+  );
+});
+
+test('CLI --doctor 对可达上游以退出码 0 结束，并列出检查项', async () => {
+  const server = net.createServer((socket) => socket.end());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  const env = doctorEnv();
+  const out = execFileSync(
+    process.execPath,
+    [bin, '--doctor', '-u', `http://127.0.0.1:${port}`, '-p', '0'],
+    { encoding: 'utf8', env },
+  );
+  await new Promise((resolve) => server.close(resolve));
+
+  assert.ok(out.includes('Checks'), `doctor 输出里应当有检查小节:\n${out}`);
+  assert.match(out, /tcp ok/);
+  assert.match(out, /the proxy never injects credentials/);
+  assert.ok(out.includes('OK — the configuration is valid and every check passed.'));
+});
+
+test('CLI --dry-run / --doctor 跟随 --lang 输出中文', () => {
+  const env = doctorEnv();
+  const out = execFileSync(process.execPath, [bin, '--dry-run', '--lang', 'zh'], { encoding: 'utf8', env });
+
+  assert.ok(out.includes('试运行'), out.slice(0, 120));
+  assert.ok(out.includes('映射表'));
+  assert.ok(out.includes('通过 —— 配置有效。'));
 });

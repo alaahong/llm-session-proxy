@@ -17,6 +17,7 @@ import {
   resolveUpstream,
   shouldReplaceUserAgent,
 } from '../src/config.js';
+import { DEFAULT_MODEL_MAP } from '../src/models.js';
 
 function writeTempConfig(content) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-config-'));
@@ -314,4 +315,46 @@ test('日志配置的字符串空值会被归一化成默认值', () => {
   assert.equal(config.log.file, null);
   assert.equal(config.log.dir, null);
   assert.equal(config.log.rotate, 'daily');
+});
+
+test('内置模型映射表默认就生效（堵上 proxy- 别名被原样转发的缺口）', () => {
+  const config = buildConfig({ env: {}, flags: {} });
+  const builtinCount = Object.keys(DEFAULT_MODEL_MAP).length;
+
+  assert.ok(builtinCount > 0, '内置表不能是空的');
+  assert.equal(Object.keys(config.model.map).length, builtinCount);
+  assert.equal(config.model.map.glm, DEFAULT_MODEL_MAP.glm);
+  assert.equal(config.model.warnUnmapped, true, '未命中告警默认开启');
+});
+
+test('返回的配置不与 DEFAULT_CONFIG 共享引用，改动互不污染', () => {
+  const config = buildConfig({ env: {}, flags: {} });
+  assert.notEqual(config.model, DEFAULT_CONFIG.model);
+  assert.notEqual(config.model.map, DEFAULT_CONFIG.model.map);
+
+  // 用户改动自己拿到的配置，不该影响同一进程里后续的 buildConfig
+  config.model.map.injected = 'boom';
+  config.model.stripPrefixes.push('mine-');
+  config.log.maxBytes = 1;
+
+  const fresh = buildConfig({ env: {}, flags: {} });
+  assert.equal(fresh.model.map.injected, undefined, '不该污染默认映射表');
+  assert.ok(!fresh.model.stripPrefixes.includes('mine-'), '不该污染默认前缀');
+  assert.equal(fresh.log.maxBytes, DEFAULT_CONFIG.log.maxBytes, '不该污染默认日志配置');
+});
+
+test('model.map 深合并：同名键覆盖、其余内置项保留', () => {
+  const config = buildConfig({ env: {}, flags: { model: { map: { glm: 'glm-custom', mine: 'my-model' } } } });
+
+  assert.equal(config.model.map.glm, 'glm-custom', '同名键应当被覆盖');
+  assert.equal(config.model.map.mine, 'my-model', '新键应当被加入');
+  assert.equal(config.model.map.deepseek, DEFAULT_MODEL_MAP.deepseek, '其余内置项必须保留');
+});
+
+test('model 段写错会被配置校验当场拦下', () => {
+  assert.throws(() => buildConfig({ env: {}, flags: { model: { map: ['nope'] } } }), /model\.map/);
+  assert.throws(() => buildConfig({ env: {}, flags: { model: { map: { glm: '' } } } }), /model\.map\["glm"\]/);
+  assert.throws(() => buildConfig({ env: {}, flags: { model: { map: { glm: 42 } } } }), /model\.map\["glm"\]/);
+  assert.throws(() => buildConfig({ env: {}, flags: { model: { field: '  ' } } }), /model\.field/);
+  assert.throws(() => buildConfig({ env: {}, flags: { model: null } }), /model must be an object/);
 });

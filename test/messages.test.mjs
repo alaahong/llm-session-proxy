@@ -194,6 +194,9 @@ test('两种语言的帮助文本都能生成，且都覆盖全部选项', () =>
       '--inject',
       '--init',
       '--print-config',
+      '--dry-run',
+      '--doctor',
+      '--model',
       '--log-file',
       '--no-log-file',
       '--log-dir',
@@ -279,4 +282,24 @@ test('横幅里的日志行会带出轮转与归档策略（两种语言都完�
   printBanner(off, buildConfig({ env: {}, flags: { log: { file: false } } }), proxy, url);
   setLang(DEFAULT_LANG);
   assert.match(off.text(), /console only/);
+});
+
+test('横幅只报别名条数，不把整张内置映射表打出来', () => {
+  const proxy = { upstream: { protocol: 'https', hostHeader: 'opencode.ai', basePath: '' } };
+  const config = buildConfig({ env: {}, flags: {} });
+  const count = Object.keys(config.model.map).length;
+
+  setLang('en');
+  const en = collector();
+  printBanner(en, config, proxy, 'http://127.0.0.1:9355');
+
+  setLang('zh');
+  const zh = collector();
+  printBanner(zh, buildConfig({ env: {}, flags: { lang: 'zh' } }), proxy, 'http://127.0.0.1:9355');
+  setLang(DEFAULT_LANG);
+
+  assert.ok(count > 0, '内置映射表不该为空');
+  assert.ok(en.text().includes(`${count} mapped aliases`), en.text());
+  assert.ok(zh.text().includes(`已映射 ${count} 个别名`), zh.text());
+  assert.ok(!en.text().includes('glm-5.3'), '横幅里不该出现映射表的内容，那行会变得很长');
 });

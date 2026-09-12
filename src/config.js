@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { LEVELS, ROTATE_MODES } from './logger.js';
 import { SUPPORTED_LANGS, normalizeLang, setLang, t } from './messages.js';
+import { DEFAULT_MODEL_MAP } from './models.js';
 
 /** 默认日志文件基名（与包名一致），用于拼默认路径与归档匹配。 */
 export const LOG_BASENAME = 'llm-session-proxy';
@@ -82,8 +83,14 @@ export const DEFAULT_CONFIG = {
     enabled: true,
     field: 'model',
     stripPrefixes: ['proxy-'],
-    map: {},
+    // 内置的 OpenCode Go / Zen 别名表（见 src/models.js）。刻意非空：
+    // 文档教客户端用 proxy- 前缀，而空映射表会让 proxy-deepseek 被剥成
+    // deepseek 后原样发给上游 —— 那是「模型不存在」的由来。
+    map: { ...DEFAULT_MODEL_MAP },
     default: null,
+    // 剥了前缀却查不到映射（也没有兜底）时，打一条 warn 说明该补哪一条。
+    // 只对「带前缀的别名」告警；客户端直接填真实 ID 是正常透传，不吵人。
+    warnUnmapped: true,
   },
   userAgent: 'opencode/1.18.29 cli',
   // keep：完全保留客户端 UA；replace：始终用上面的 UA；
@@ -308,9 +315,30 @@ function validate(config) {
   if (!SUPPORTED_LANGS.includes(config.lang)) {
     errors.push(t('config.badLang', { lang: config.lang }));
   }
+  validateModel(config.model, errors);
   validateLog(config.log, errors);
   if (errors.length) throw new Error(t('config.validationFailed', { list: errors.join('\n  - ') }));
   return config;
+}
+
+/** 模型段的校验。`map` 现在默认非空，用户也常自己写，写错要当场报出来。 */
+function validateModel(model, errors) {
+  if (!isPlainObject(model)) {
+    errors.push(t('config.badModel'));
+    return;
+  }
+  if (!isPlainObject(model.map)) {
+    errors.push(t('config.badModelMap', { value: JSON.stringify(model.map) }));
+    return;
+  }
+  for (const [alias, real] of Object.entries(model.map)) {
+    if (typeof real !== 'string' || !real.trim()) {
+      errors.push(t('config.badModelMapEntry', { alias, value: JSON.stringify(real) }));
+    }
+  }
+  if (typeof model.field !== 'string' || !model.field.trim()) {
+    errors.push(t('config.badModelField', { field: JSON.stringify(model.field) }));
+  }
 }
 
 /** 日志配置的校验：宁可启动即报错，也不要静默退化成"不写日志"。 */
@@ -361,7 +389,10 @@ export function defaultLogDir(env = process.env) {
  * 三者都是同一套字段，优先级从低到高。
  */
 export function buildConfig({ file = null, env = process.env, flags = {} } = {}) {
-  let merged = deepMerge(DEFAULT_CONFIG, {});
+  // 必须深拷贝：deepMerge 只做浅拷贝，默认配置里的嵌套对象会与 DEFAULT_CONFIG
+  // 共享引用。normalize() 是就地改这些子对象的，用户若再动一下自己拿到的 config，
+  // 就会污染这个进程里的全局默认值（同一进程内的后续 buildConfig 全被带偏）。
+  let merged = structuredClone(DEFAULT_CONFIG);
   let configPath = file || env.CONFIG_FILE || null;
 
   if (configPath) {

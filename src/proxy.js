@@ -114,6 +114,9 @@ export function createProxyServer({ config, logger }) {
   const store = new SessionStore(config.session);
   const upstream = resolveUpstream(config);
   const stats = { startedAt: Date.now(), requests: 0, errors: 0, handledErrors: 0, bytesIn: 0, bytesOut: 0 };
+  // 未命中的模型别名只喊一次：同一个错别名可能被打上千次，逐条告警会把日志淹掉。
+  const warnedModels = new Set();
+  const WARNED_MODELS_MAX = 256;
 
   const agent =
     upstream.protocol === 'https'
@@ -351,6 +354,19 @@ export function createProxyServer({ config, logger }) {
           if (modelResult.changed) {
             modelNote = ` model=${modelResult.from}->${modelResult.to}`;
             context.model = modelResult.to;
+          }
+          if (modelResult.unmappedAlias && config.model.warnUnmapped !== false) {
+            if (warnedModels.size >= WARNED_MODELS_MAX) warnedModels.clear();
+            if (!warnedModels.has(modelResult.from)) {
+              warnedModels.add(modelResult.from);
+              log.warn(
+                t('proxy.log.unmappedModelAlias', {
+                  alias: modelResult.from,
+                  prefix: modelResult.strippedPrefix,
+                  resolved: modelResult.to,
+                }),
+              );
+            }
           }
           const bodyResult = applyBodyInject(parsedBody, config.inject, context);
           if (bodyResult.changed) bodyChanges.push(...bodyResult.changes);

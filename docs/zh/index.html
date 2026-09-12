@@ -85,7 +85,7 @@
       <div class="card">
         <div class="tag">model</div>
         <h4>模型别名重写</h4>
-        <p>前缀剥离（<code>proxy-glm</code> → <code>glm-5.3</code>）与精确映射双管齐下，两种写法可以叠加。</p>
+        <p>前缀剥离（<code>proxy-glm</code> → <code>glm-5.3</code>）与精确映射双管齐下，两种写法可以叠加。OpenCode Go 的别名表已内置，客户端必须带的 <code>proxy-</code> 前缀真能解析出结果；别名剥完却对不上任何条目时，会<b>按名字报出来</b>，而不是静默转发。</p>
       </div>
       <div class="card">
         <div class="tag">path</div>
@@ -101,6 +101,11 @@
         <div class="tag">ops</div>
         <h4>日志默认落盘</h4>
         <p><code>~/.lsp/logs/llm-session-proxy.log</code>，支持按大小 / 按日期轮转与 30 天归档——进程消失也留得下线索。</p>
+      </div>
+      <div class="card">
+        <div class="tag">check</div>
+        <h4>启动前自检</h4>
+        <p><code>--dry-run</code> 在<b>不走网络</b>的前提下打印生效的路由、<b>渲染后</b>的注入表与模型解析链路；<code>--doctor</code> 再加 DNS/TCP/TLS 连通性与监听端口检查，有问题时退出码非零。</p>
       </div>
       <div class="card">
         <div class="tag">deps</div>
@@ -186,7 +191,9 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
     <h2>OpenCode Go 常见模型速查表</h2>
     <p class="sub">
       上游把模型分在三类端点上——能不能用取决于客户端发什么协议，这比模型名更关键。
-      完整配置见 <a href="https://github.com/alaahong/llm-session-proxy/blob/main/examples/opencode-go-models.json">examples/opencode-go-models.json</a>。
+      下表每一行的<b>客户端模型 ID 都能开箱解析</b>：别名已内置在代理里，
+      想确认某个别名最终会变成什么，跑一次
+      <code>npx llm-session-proxy --dry-run --model proxy-glm</code> 即可。
     </p>
 
     <h3>① /zen/go/v1/chat/completions · OpenAI 兼容，绝大多数客户端走这条</h3>
@@ -301,8 +308,9 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
         <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
         <tbody>
           <tr><td><code>stripPrefixes</code></td><td><code>["proxy-"]</code></td><td>需要剥离的前缀，按顺序匹配，命中一个即停</td></tr>
-          <tr><td><code>map</code></td><td><code>{}</code></td><td>精确映射。先按原始名查，未命中则剥前缀后再查一次</td></tr>
-          <tr><td><code>default</code></td><td><code>null</code></td><td>兜底模型名</td></tr>
+          <tr><td><code>map</code></td><td>27 条内置别名</td><td>别名 → 上游真实模型 ID。<b>逐键合并</b>到内置表之上：同名的键覆盖内置条目，其余保留。内置条目无法删除，要改就覆盖它</td></tr>
+          <tr><td><code>default</code></td><td><code>null</code></td><td>兜底模型名。仅在「什么都没命中<b>且</b>没有剥掉任何前缀」时生效；它刻意不救那些剥完前缀却对不上映射的 <code>proxy-xxx</code></td></tr>
+          <tr><td><code>warnUnmapped</code></td><td><code>true</code></td><td>别名剥前缀后既无映射也无 <code>default</code> 时告警，同一别名只报一次，并指明该补哪条配置</td></tr>
         </tbody>
       </table>
     </div>
@@ -340,18 +348,22 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--inject &lt;name=value&gt;</code></td><td>注入请求头，可重复</td></tr>
           <tr><td><code>--body-inject &lt;k=v&gt;</code></td><td>注入请求体字段，支持点路径，可重复</td></tr>
           <tr><td><code>--model-prefix &lt;prefix&gt;</code></td><td>要剥离的模型名前缀，可重复</td></tr>
-          <tr><td><code>--model-map &lt;a=b&gt;</code></td><td>模型名精确映射，可重复</td></tr>
+          <tr><td><code>--model-map &lt;a=b&gt;</code></td><td>模型名精确映射，可重复；合并到内置别名表之上</td></tr>
           <tr><td><code>--session-header &lt;name&gt;</code> / <code>--session-field &lt;path&gt;</code></td><td>追加会话来源位置，可重复</td></tr>
           <tr><td><code>--session-id-format &lt;f&gt;</code> / <code>--request-id-format &lt;t&gt;</code></td><td>会话 ID 格式 / 请求号模板</td></tr>
           <tr><td><code>--no-session</code> / <code>--no-stream</code></td><td>关闭会话注入 / 关闭流式透传</td></tr>
           <tr><td><code>--timeout &lt;ms&gt;</code> / <code>--max-body &lt;bytes&gt;</code></td><td>上游超时 / 请求体上限</td></tr>
           <tr><td><code>--log-level &lt;l&gt;</code></td><td>日志级别：<code>silent</code> | <code>error</code> | <code>warn</code> | <code>info</code> | <code>debug</code></td></tr>
+          <tr><td><code>-l, --lang &lt;en|zh&gt;</code></td><td>控制台与日志文案语言（也可用 <code>PROXY_LANG</code> 或配置项 <code>lang</code>）</td></tr>
           <tr><td><code>--log-file &lt;f&gt;</code> / <code>--no-log-file</code></td><td>日志文件路径 / 关闭文件输出（只出控制台）</td></tr>
           <tr><td><code>--log-dir &lt;dir&gt;</code></td><td>默认日志文件所在目录</td></tr>
           <tr><td><code>--log-rotate &lt;mode&gt;</code></td><td><code>size</code> | <code>daily</code> | <code>off</code></td></tr>
           <tr><td><code>--log-keep-days &lt;n&gt;</code></td><td>自动删除超过 N 天的历史日志（<code>0</code> 为永久保留）</td></tr>
           <tr><td><code>--init [file]</code></td><td>生成示例配置</td></tr>
           <tr><td><code>--print-config</code></td><td>打印合并后的最终配置并退出</td></tr>
+          <tr><td><code>--dry-run</code></td><td>校验配置并打印路由、注入与模型解析结果，不走任何网络</td></tr>
+          <tr><td><code>--doctor</code></td><td>在 <code>--dry-run</code> 基础上追加 DNS/TCP/TLS 连通性与监听端口检查；有问题时退出码非零</td></tr>
+          <tr><td><code>--model &lt;id&gt;</code></td><td><code>--dry-run</code> / <code>--doctor</code> 用于演示的样例模型名</td></tr>
         </tbody>
       </table>
     </div>
@@ -381,6 +393,43 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
     </p>
     <pre><code><span class="cmt"># 日志实际会落在哪儿？</span>
 llm-session-proxy --print-config | grep resolvedFile</code></pre>
+
+    <h3 id="preflight">启动前自检：--dry-run 与 --doctor</h3>
+    <p>
+      两个参数都会校验配置、把代理接下来<b>实际会做的事</b>打印出来，然后退出——不起服务、不写日志文件、
+      不向上游发任何请求。注入那张表打印的不是模板原文，而是<b>渲染后的结果</b>，
+      所以模板写错了会在这里暴露，而不是等上游回一个 400。
+    </p>
+    <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
+llm-session-proxy v0.2.0 —— 试运行
+
+模型
+  样例       proxy-glm
+  剥离       前缀 "proxy-" -&gt; glm
+  映射       glm -&gt; glm-5.3
+  结果       glm-5.3  （命中映射）
+  映射表     内置 27 条，覆盖 0 条
+
+结果
+  通过 —— 配置有效。</code></pre>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th><code>结果</code></th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>（命中映射）</code></td><td>别名命中了 <code>model.map</code>。这就是你要的结果</td></tr>
+          <tr><td><code>（来自 model.default）</code></td><td>什么都没命中、也没剥掉前缀，于是套用了 <code>default</code></td></tr>
+          <tr><td><code>（剥了前缀却没有映射，原样发上游）</code></td><td>前缀剥掉了，剩下的名字原样发给了上游——「模型不存在」报错的常见成因</td></tr>
+          <tr><td><code>（未匹配任何前缀，原样转发）</code></td><td>客户端填的是真实模型 ID，正常情况</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <code>--doctor</code> 在同一份报告之上追加 DNS 解析、TCP 连接与握手耗时、协议为 <code>https</code>
+      时的 TLS 握手（证书不受信任会如实报出，但不算硬失败）、监听端口是否空闲，以及一句「代理从不注入凭据」的提醒。
+      它<b>不发 HTTP 请求、不带任何凭据</b>——连通性只问到传输层为止——所以跑体检不会消耗你的速率配额。
+      一切正常退出码为 <code>0</code>，有问题为 <code>1</code>，可以直接当启动闸门用：
+    </p>
+    <pre><code>llm-session-proxy --doctor &amp;&amp; llm-session-proxy</code></pre>
 
     <h3>本地状态端点</h3>
     <pre><code><span class="cmt"># 运行概览：会话数、命中率、注入的头、上游地址</span>
@@ -440,6 +489,11 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
     <p>
       <b><code>bufferBody: false</code> 时无法改写请求体。</b>模型重写和参数注入会失效，只能注入请求头。
     </p>
+    <p>
+      <b>内置映射表是某个时间点的快照，不是实时目录。</b>上游的模型 ID 会不作通知地变更，
+      而本代理刻意不通过网络去发现它们。某个别名哪天解析不出来了，那是配置里改一行的事，不是 bug——
+      发真实请求之前先用 <code>--dry-run</code> 看一眼每个别名最终变成了什么。
+    </p>
   </section>
 
   <section id="roadmap">
@@ -448,7 +502,9 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
     <table>
       <thead><tr><th>里程碑</th><th>主题</th><th>要点</th></tr></thead>
       <tbody>
-        <tr><td><code>v0.2</code></td><td>正确性与协议覆盖</td><td>Anthropic ↔ OpenAI ↔ Responses 互转、transformer 注册表、路由分桶（<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>）、<code>doctor</code> 命令。从这个版本起，客户端用哪套协议不再决定它能用到哪些模型。</td></tr>
+        <tr><td><code>v0.2.0</code> ✓</td><td>正确性</td><td>内置精选模型映射表（27 条别名）、以 <code>proxy-</code> 开头的别名解析不出结果时的「同别名只报一次」告警，以及 <code>--dry-run</code> / <code>--doctor</code> 启动前自检。修掉的正是「别名被静默原样转发给上游」这个坑。</td></tr>
+        <tr><td><code>v0.2.1</code></td><td>路由</td><td>配置可选的 transformer 注册表，以及路由分桶（<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>）。互转器要挂靠的宿主。</td></tr>
+        <tr><td><code>v0.2.2</code></td><td>协议覆盖</td><td>Anthropic ↔ OpenAI ↔ Responses 互转与字段归一化，含流式。从这个版本起，客户端用哪套协议不再决定它能用到哪些模型。</td></tr>
         <tr><td><code>v0.3</code></td><td>可观测与可控</td><td>Prometheus <code>/metrics</code>、JSON 日志模式、OTLP/JSON 导出、会话与提示词缓存检查器、token 与成本统计、免构建的本地看板。</td></tr>
         <tr><td><code>v0.4</code></td><td>真实上游下的可靠性</td><td>多上游、带抖动重试的兜底、熔断、超时拆分与流空闲看门狗、退出时优雅排空。</td></tr>
         <tr><td><code>v0.5</code></td><td>安全与卫生</td><td>日志脱敏、正则护栏、精确到行的配置 schema 报错、CI 用的 <code>--check-config</code>。</td></tr>

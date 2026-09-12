@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { DEFAULT_CONFIG, buildConfig, parseUpstream, resolveLogFile } from './config.js';
+import { renderDiagnosis, runDoctor } from './doctor.js';
 import { NAME, VERSION } from './index.js';
-import { Logger } from './logger.js';
+import { Logger, logDetail } from './logger.js';
 import { MESSAGES, getLang, normalizeLang, setLang, t } from './messages.js';
 import { createProxyServer } from './proxy.js';
 
@@ -117,6 +118,9 @@ export function parseArgv(argv) {
   let printConfig = false;
   let initFile = null;
   let initRequested = false;
+  let dryRun = false;
+  let doctor = false;
+  let doctorModel = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const raw = argv[i];
@@ -145,6 +149,16 @@ export function parseArgv(argv) {
         break;
       case '--print-config':
         printConfig = true;
+        break;
+      case '--dry-run':
+        dryRun = true;
+        break;
+      case '--doctor':
+        doctor = true;
+        break;
+      case '--model':
+        // 只服务于 --dry-run / --doctor：指定一个样例模型名来演示解析结果
+        doctorModel = takeValue();
         break;
       case '--init': {
         initRequested = true;
@@ -252,22 +266,12 @@ export function parseArgv(argv) {
     }
   }
 
-  return { flags, configFile, printConfig, initRequested, initFile };
+  return { flags, configFile, printConfig, initRequested, initFile, dryRun, doctor, model: doctorModel };
 }
 
 
-/** 把轮转与归档参数拼成一行可读说明，供启动横幅展示。 */
-export function logDetail(log = {}) {
-  const bits = [];
-  if (log.rotate === 'off') {
-    bits.push(t('log.rotateOff'));
-  } else {
-    bits.push(t('log.rotateMode', { mode: t(`log.rotate.${log.rotate}`) }));
-    bits.push(t('log.sizeLimit', { maxBytes: log.maxBytes, backups: log.backups }));
-  }
-  bits.push(log.keepDays > 0 ? t('log.keepDays', { days: log.keepDays }) : t('log.keepForever'));
-  return bits.join(', ');
-}
+/** 轮转与归档的一行说明已移到 logger.js（doctor 也要用），这里保持既有导出名。 */
+export { logDetail };
 
 export function printBanner(logger, config, proxy, url) {
   const injected = Object.keys(config.inject.headers || {});
@@ -281,7 +285,7 @@ export function printBanner(logger, config, proxy, url) {
         ? t('cli.banner.stripPrefixes', { list: config.model.stripPrefixes.join(', ') })
         : t('cli.banner.stripDisabled'),
       map: Object.keys(config.model.map || {}).length
-        ? t('cli.banner.mapSuffix', { json: JSON.stringify(config.model.map) })
+        ? t('cli.banner.mapSuffix', { count: Object.keys(config.model.map).length })
         : '',
     }),
   );
@@ -405,6 +409,18 @@ export async function runCli(argv = process.argv.slice(2)) {
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 2;
+    return;
+  }
+
+  // --dry-run / --doctor：只体检。不起服务、不建日志文件、不发任何请求。
+  if (parsed.dryRun || parsed.doctor) {
+    const diagnosis = await runDoctor(config, {
+      mode: parsed.doctor ? 'doctor' : 'dryRun',
+      model: parsed.model,
+      name: NAME,
+    });
+    process.stdout.write(renderDiagnosis(diagnosis, { name: NAME, version: VERSION }));
+    if (!diagnosis.ok) process.exitCode = 1;
     return;
   }
 

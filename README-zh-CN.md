@@ -55,11 +55,12 @@ x-opencode-session : 会话 ID，同一对话内保持稳定（用于提示词�
 
 - **自动生成会话 ID**——三级策略：客户端显式会话标识 → 内容指纹（system + 首条用户消息）→ 一次性随机。同一对话稳定复用，提示词缓存才有效。
 - **任意请求头注入**——值支持模板（`{{session.id}}`、`{{uuid}}`、`{{env.HOME}}`…），想注什么注什么。
-- **模型别名重写**——前缀剥离（`proxy-glm-5.3-flash` → `glm-5.3-flash`）与精确映射（`fast` → `deepseek-chat`）双管齐下。
+- **模型别名重写**——前缀剥离（`proxy-glm-5.3-flash` → `glm-5.3-flash`）与精确映射（`fast` → `deepseek-chat`）双管齐下。**内置了 OpenCode Go 的别名表**，文档里让你写的 `proxy-` 前缀开箱就能解析；万一某个别名剥完前缀查不到映射，代理会明确告诉你该补哪一条，而不是悄悄把一个不存在的模型名发给上游。
 - **请求路径重写**——客户端只会填 `/v1` 时，用一条正则把它转到上游真正要的路径。
 - **请求体参数注入 / 删除**——统一给所有请求补 `temperature`、`metadata`，或删掉上游不认的字段。
 - **SSE 流式零缓冲透传**——逐块转发，不攒完再发，流式体验不受影响。
 - **日志默认落盘**——`~/.lsp/logs/llm-session-proxy.log`，支持按大小 / 按日期轮转与 30 天归档，进程消失也留得下线索。
+- **启动前体检**——`--dry-run` 打印一次请求会怎么被路由、注入了哪些头、模型名解析成什么，全程不发任何请求；`--doctor` 再加上 DNS/TCP/TLS 可达性与监听端口检查，有问题时退出码非 0。
 - **零依赖**——只用 Node 内置模块，不引入任何第三方包，`npx` 启动无安装负担。
 - **本地状态端点**——随时查看会话数、命中率、注入配置和会话明细。
 
@@ -113,8 +114,11 @@ npx llm-session-proxy --path-rewrite "^/v1/=>/zen/go/v1/"
 
 ### OpenCode Go 常见模型速查表
 
-完整可直接用的配置见 [`examples/opencode-go-models.json`](examples/opencode-go-models.json)——
-它预置了下面所有别名的 `model.map`，启动即可用。
+完整可直接用的配置见 [`examples/opencode-go-models.json`](examples/opencode-go-models.json)。
+
+下面表格里的**客户端模型 ID 全部开箱即用**——这些别名已经内置在 `model.map` 里（见 `src/models.js`），
+不加 `-c` 配置文件也能生效。想知道某个别名最终会变成什么，跑
+`--dry-run --model proxy-glm` 即可。
 
 上游把模型分在三类端点上，**能不能用取决于你的客户端发什么协议**，这点比模型名更关键：
 
@@ -163,9 +167,12 @@ npx llm-session-proxy --path-rewrite "^/v1/=>/zen/go/v1/"
 
 > 本代理**不做协议转换**。客户端发 OpenAI 格式的请求体时，②③ 两类模型用不了——
 > 它只负责补头、改名、换路径，不会把 Chat Completions 的 body 翻译成 Messages 的 body。
+> （这条正是 [Roadmap](ROADMAP.zh-CN.md) 里 v0.2 的头号目标。）
 >
 > 直接写上游真实 ID（不加别名、不加前缀）也能用，代理会原样放行。
 > 模型清单随时可能变，以[上游文档](https://opencode.ai/docs/go/)和 `https://opencode.ai/zen/go/v1/models` 为准。
+> 换到别的上游时，内置别名对不上它的模型名——请你提供自己的 `model.map`，
+> 并留意下面提到的「别名未命中」告警。
 
 ### 场景二：接任意 OpenAI 兼容上游
 
@@ -276,8 +283,27 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 | `enabled` | `true` | 是否启用模型名重写 |
 | `field` | `model` | 模型名所在的请求体字段 |
 | `stripPrefixes` | `["proxy-"]` | 需要剥离的前缀列表，按顺序匹配，命中一个即停 |
-| `map` | `{}` | 精确映射。先按客户端原始名查（优先），未命中则剥掉前缀后再查一次，所以 `proxy-glm` 与 `glm` 都能命中同一条 |
-| `default` | `null` | 兜底模型名 |
+| `map` | 内置 27 条别名 | 别名 → 上游真实模型 ID。与内置表**逐键深合并**：同名键以你的为准，其余保留。内置项删不掉，想改就覆盖同名的键 |
+| `default` | `null` | 兜底模型名。只在「名字完全没被动过、也什么都没命中」时生效；`proxy-xxx` 被剥成 `xxx` 后查不到映射的情况**不兜底** |
+| `warnUnmapped` | `true` | 别名剥完前缀既无映射也无 `default` 时，每个别名告警一次 |
+
+客户端送来的模型名，解析顺序是：
+
+1. 先按**原始名**查 `map`——命中即定，不再剥前缀。
+2. 否则剥掉第一个命中的 `stripPrefixes`，再拿剥完的名字查一次 `map`。所以 `proxy-glm` 和 `glm` 都能命中同一条。
+3. 名字没被动过且什么都没命中时，用 `default`。
+4. 其余情况原样转发。
+
+第 4 步就是「模型不存在」报错的来源：客户端送 `proxy-<某个不在表里的名字>`，前缀被剥掉，剩下的原样发给上游。
+除非它恰好是个真实 ID，否则上游会直接拒绝。现在代理会明确告诉你缺哪一条：
+
+```
+[model] 别名 "proxy-mystery" 剥掉前缀 "proxy-" 后没有命中任何映射 —— 会把 "mystery" 原样发给上游。
+        请补 model.map["mystery"]，或让客户端直接填真实模型 ID。
+```
+
+每个别名在一个进程里最多喊一次，客户端狂发也不会把日志刷爆；`"warnUnmapped": false` 可关掉。
+不带前缀的名字永远不告警——直接填真实 ID 是正常用法，不该吵。
 
 ### 其他
 
@@ -333,6 +359,95 @@ llm-session-proxy --print-config | grep resolvedFile
 
 ---
 
+## 启动前体检：`--dry-run` 与 `--doctor`
+
+两个开关都会校验配置、把「代理到底会怎么做」打印出来，然后退出——不起服务、不建日志文件、
+不向上游发任何请求。
+
+```bash
+llm-session-proxy --dry-run
+```
+
+```
+llm-session-proxy v0.2.0 —— 试运行
+
+配置
+  文件       （无）
+  语言       en
+  监听       127.0.0.1:9355
+
+上游
+  地址       https://opencode.ai
+  Host 头    opencode.ai
+  路径前缀   （无）
+  改写 Host  是
+  UA         opencode/1.18.29 cli（模式 replace-generic）
+
+路由
+  路径重写   （无，原样透传）
+  会话来源   请求头 x-opencode-session, x-session-id, …；请求体 session_id, sessionId, …
+  会话 ID    hex26 | msg_{{session.count}}
+
+注入
+  请求头     x-opencode-session = {{session.id}}  ->  ses_378f3582ae608b101b83606614
+  请求头     x-opencode-request = {{session.requestId}}  ->  msg_1
+  …
+
+模型
+  样例       proxy-glm
+  剥离       前缀 "proxy-" -> glm
+  映射       glm -> glm-5.3
+  结果       glm-5.3  （命中映射）
+  映射表     内置 27 条，覆盖 0 条
+
+日志
+  文件       ~/.lsp/logs/llm-session-proxy.log
+  轮转       按大小轮转，单文件 5242880 字节，保留 2 份，保留 30 天
+
+结果
+  通过 —— 配置有效。
+```
+
+注入那张表不是「模板的说明」，而是**渲染后的真实结果**（用一份样例会话）。模板写错了在这一步就能看见，
+不用等上游回一个 400。
+
+`模型` 这一段最有用。它默认挑 `proxy-<映射表第一条>`，就是为了走「剥前缀 + 查映射」这条最容易出错的路径，
+并给出四种结果之一：
+
+| `结果` | 含义 |
+| --- | --- |
+| `（命中映射）` | 别名命中了 `model.map`，这正是你要的 |
+| `（来自 model.default）` | 什么都没命中、也没剥过前缀，于是用了 `default` |
+| `（剥了前缀却没有映射…）` | 前缀剥掉了，剩下的会原样发给上游——「模型不存在」多半就是这么来的 |
+| `（未匹配任何前缀，原样转发…）` | 客户端填的是真实模型 ID，正常 |
+
+想查具体某个名字，用 `--model`：
+
+```bash
+# 0 = 配置没问题，别名也解析得出来
+llm-session-proxy --dry-run --model proxy-deepseek
+
+# 1 = 你明确点名了这个别名，但它解析不出来
+llm-session-proxy --dry-run --model proxy-not-a-real-alias
+```
+
+`--doctor` 会在这份报告之外再检查：
+
+- `upstream.host` 的 **DNS** 解析
+- 到 `upstream.host:upstream.port` 的 **TCP** 连接与握手耗时
+- 协议是 `https` 时的 **TLS** 握手——证书不受信任会如实报出来，而不是直接判失败
+- `listen.port` 是否空闲（只算警告，因为「已经跑着一个实例」看起来是一样的）
+- 一句提醒：代理从不注入凭据
+
+它**不发任何 HTTP 请求、不带任何凭据**：可达性在传输层就回答了，所以体检不会消耗上游的速率配额。
+一切正常退出码为 `0`，有问题为 `1`，因此可以直接拿来当启动闸门：
+
+```bash
+llm-session-proxy --doctor && llm-session-proxy
+```
+
+---
+
 ## 模板变量
 
 `inject.headers` 和 `inject.body` 的值都是模板，可用变量如下：
@@ -366,7 +481,7 @@ llm-session-proxy --print-config | grep resolvedFile
 | `--inject <name=value>` | 注入请求头，可重复 |
 | `--body-inject <k=v>` | 注入请求体字段，可重复 |
 | `--model-prefix <prefix>` | 要剥离的模型名前缀，可重复 |
-| `--model-map <a=b>` | 模型名精确映射，可重复 |
+| `--model-map <a=b>` | 模型名精确映射，可重复。与内置别名表逐键合并 |
 | `--session-header <name>` | 追加会话来源请求头，可重复 |
 | `--session-field <path>` | 追加会话来源请求体字段，可重复 |
 | `--session-id-format <f>` | 会话 ID 格式 |
@@ -382,6 +497,9 @@ llm-session-proxy --print-config | grep resolvedFile
 | `-l, --lang <en\|zh>` | 控制台与日志文案语言（默认 `en`）|
 | `--init [file]` | 生成示例配置 |
 | `--print-config` | 打印合并后的最终配置并退出 |
+| `--dry-run` | 校验配置并打印路由、注入与模型解析结果，不产生任何网络请求 |
+| `--doctor` | 同 `--dry-run`，再加 DNS/TCP/TLS 可达性与监听端口检查；有问题时退出码非 0 |
+| `--model <id>` | `--dry-run` / `--doctor` 演示用的样例模型名 |
 
 环境变量与配置文件同名字段一一对应（大写形式）：`PROXY_PORT`、`UPSTREAM_HOST`、
 `UPSTREAM_PROTO`、`OPENCODE_UA`、`LOG_LEVEL`、`LOG_FILE`、`LOG_DIR`、`LOG_ROTATE`、
@@ -496,6 +614,7 @@ Trae 之类客户端会按模型 ID 把流量分流到自己的云通道。
 - **只监听本机（127.0.0.1）**——代理会带上你的 API Key 转发请求，不要把监听地址改成 `0.0.0.0`。
 - **`response.stream: false` 会破坏 SSE**——除非确实需要整体缓冲，否则保持 `true`。
 - **`bufferBody: false` 时无法改写请求体**——模型重写和参数注入会失效，只能注入请求头、也只能靠请求头识别会话。
+- **内置别名表是发布时的快照，不是活的模型目录**——上游改模型名是常态；别名失效时会告警并且告诉你该补哪条，但不会自动去拉取。真实 ID 永远原样放行，所以别名过期不会致命。
 - 本工具只做转发与参数修补，不缓存、不计费、不修改响应内容。
 
 ---
@@ -524,7 +643,7 @@ as the model name. See the Chinese sections above for the full configuration ref
 3. 打一个同名 tag 并推送：
 
 ```bash
-git tag v0.1.3 && git push origin v0.1.3
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本一致，再用仓库 secrets 里的
@@ -534,8 +653,10 @@ workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本�
 
 这个项目刻意保持窄：**零依赖、本地、单进程**，`npx` 直接起。路线图上的每一项都必须符合这个形状。
 
-- **v0.2 — 协议转换与路由。** Anthropic ↔ OpenAI ↔ Responses 互转、按请求规则路由、上游兜底。
+- **v0.2 — 协议转换与路由。** Anthropic ↔ OpenAI ↔ Responses 互转、按请求规则路由。
   这是唯一能让一个客户端吃满所有模型类的功能——否则它只能用自己那套协议支持的端点。
+  **已交付 v0.2.0：** 内置别名表、别名未命中告警、`--dry-run` / `--doctor`。
+  **接下来：** v0.2.1（转换器注册表、路由分桶），然后是 v0.2.2（协议转换本体）。
 - **v0.3 — 可观测与可控。** Prometheus 格式指标、结构化 JSON 日志、token/成本统计端点、
   免构建的本地看板。
 - **v0.4 — 真实上游下的可靠性。** 熔断、上游健康检查、带抖动的重试、流空闲看门狗、优雅退出。

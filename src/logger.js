@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { t } from './messages.js';
+
 const LEVELS = { silent: 0, error: 1, warn: 2, info: 3, debug: 4 };
 const COLORS = { error: 31, warn: 33, info: 36, debug: 90 };
 
@@ -265,6 +267,25 @@ export class Logger {
   close() {
     /* 无缓冲需要排空 */
   }
+}
+
+/**
+ * 把轮转与归档参数拼成一行可读说明。
+ *
+ * 归属在这里而不是 CLI：这是「日志配置长什么样」的描述，
+ * 启动横幅和 `--dry-run` / `--doctor` 的体检报告都要用，放 CLI 会让
+ * doctor 反向依赖 CLI。
+ */
+export function logDetail(log = {}) {
+  const bits = [];
+  if (log.rotate === 'off') {
+    bits.push(t('log.rotateOff'));
+  } else {
+    bits.push(t('log.rotateMode', { mode: t(`log.rotate.${log.rotate}`) }));
+    bits.push(t('log.sizeLimit', { maxBytes: log.maxBytes, backups: log.backups }));
+  }
+  bits.push(log.keepDays > 0 ? t('log.keepDays', { days: log.keepDays }) : t('log.keepForever'));
+  return bits.join(t('log.join'));
 }
 
 export { LEVELS };

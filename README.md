@@ -62,7 +62,9 @@ If your client already sends a session header, you do not need this tool (though
 - **Arbitrary header and body injection** — values are templates (`{{session.id}}`, `{{uuid}}`,
   `{{env.HOME}}`, …).
 - **Model alias rewriting** — prefix stripping (`proxy-glm` → `glm-5.3`) plus exact mapping, and the
-  two compose.
+  two compose. A curated alias table for OpenCode Go ships in the box, so the `proxy-` prefix the
+  docs tell you to use actually resolves out of the box; when an alias strips down to something
+  unmapped, the proxy says so instead of quietly forwarding a model name that does not exist.
 - **Request path rewriting** — map the `/v1` your client insists on to whatever path the upstream
   actually serves.
 - **Body parameter injection and removal** — add `temperature` or `metadata` to every request, or
@@ -71,6 +73,9 @@ If your client already sends a session header, you do not need this tool (though
   Upstream 4xx bodies are returned verbatim.
 - **Log file on by default** — `~/.lsp/logs/llm-session-proxy.log` with size or date rotation and
   30-day archival, so a vanished process still leaves clues behind.
+- **Preflight checks** — `--dry-run` prints how a request would be routed, which headers get
+  injected, and how a model name resolves, without sending anything; `--doctor` adds DNS/TCP/TLS
+  reachability and listen-port checks and exits non-zero on problems.
 - **Zero dependencies** — Node built-ins only, so `npx` starts instantly.
 - **Local status endpoint** — inspect session count, cache hit rate, and injected headers at runtime.
 
@@ -178,6 +183,10 @@ Ready-made configs: [`examples/opencode-go.json`](examples/opencode-go.json),
 Upstream splits models across three endpoints. **What your client can speak matters more than the
 model name**, because this proxy does not translate between protocols.
 
+Every `Client model ID` below resolves out of the box: these aliases ship in the built-in
+`model.map` table (`src/models.js`). `--dry-run --model proxy-glm` shows you exactly what any given
+alias turns into.
+
 **① `/zen/go/v1/chat/completions` — OpenAI-compatible; what most clients use**
 
 | Model | Client model ID | Upstream model ID |
@@ -215,11 +224,14 @@ model name**, because this proxy does not translate between protocols.
 
 > This proxy performs **no protocol translation**. If your client sends OpenAI-shaped bodies,
 > categories ② and ③ are unusable: the proxy fills headers, rewrites the model name, and reroutes
-> the path, but it will not turn a Chat Completions body into a Messages body.
+> the path, but it will not turn a Chat Completions body into a Messages body. (This is the headline
+> item on the [roadmap](ROADMAP.md) for v0.2.)
 >
 > Writing the real upstream ID directly (no alias, no prefix) also works — it is passed through.
 > The model list changes over time; treat the
-> [upstream docs](https://opencode.ai/docs/go/) as the source of truth.
+> [upstream docs](https://opencode.ai/docs/go/) as the source of truth. If you point the proxy at a
+> different upstream, the built-in aliases will not match its model names — supply your own
+> `model.map` and watch for the unmatched-alias warning described below.
 
 ---
 
@@ -287,8 +299,30 @@ Priority: **defaults < config file < environment variables < CLI flags**.
 | `enabled` | `true` | Enable model rewriting |
 | `field` | `model` | Body field holding the model name |
 | `stripPrefixes` | `["proxy-"]` | Prefixes to strip, first match wins |
-| `map` | `{}` | Exact mapping. Looked up by original name first, then again after prefix stripping |
-| `default` | `null` | Fallback model |
+| `map` | 27 built-in aliases | Alias → real upstream model ID. Merged **key by key** over the built-in table: a key here overrides the built-in entry of the same name and the rest are kept. Built-in entries cannot be deleted from a config file — override them instead |
+| `default` | `null` | Fallback model. Only applies to a name that matched nothing *and* had no prefix stripped; it deliberately does not rescue `proxy-xxx` that strips to an unmapped `xxx` |
+| `warnUnmapped` | `true` | Warn once per alias that strips to a name with no mapping and no `default` |
+
+How a client-supplied name is resolved:
+
+1. `map` hit on the **original** name — wins outright, no stripping.
+2. Otherwise strip the first matching `stripPrefixes` entry, then look the stripped name up in `map`.
+   This is what makes both `proxy-glm` and `glm` work.
+3. If the name was untouched and nothing matched, use `default`.
+4. Otherwise forward as-is.
+
+Step 4 is where "model not found" errors come from: a client sends `proxy-<something>` that is not in
+the table, the prefix is stripped, and the remainder goes upstream verbatim. Unless it happens to be
+a real upstream ID, the upstream rejects it. The proxy now says which entry is missing:
+
+```
+[model] alias "proxy-mystery" matched no mapping after stripping "proxy-" — forwarding "mystery"
+        to the upstream as-is. Add model.map["mystery"], or have the client send the real model id.
+```
+
+It fires at most once per alias per process, so a chatty client cannot flood the log. Set
+`"warnUnmapped": false` to silence it. Names sent without a matching prefix are never warned about —
+forwarding a real upstream ID is normal and expected.
 
 ### Response, UA and logging
 
@@ -346,6 +380,97 @@ llm-session-proxy --print-config | grep resolvedFile
 
 ---
 
+## Preflight: `--dry-run` and `--doctor`
+
+Both flags validate the config and print what the proxy would actually do, then exit — no server, no
+log file, no request to the upstream.
+
+```bash
+llm-session-proxy --dry-run
+```
+
+```
+llm-session-proxy v0.2.0 — dry run
+
+Config
+  file          (none)
+  language      en
+  listen        127.0.0.1:9355
+
+Upstream
+  url           https://opencode.ai
+  host header   opencode.ai
+  base path     (none)
+  rewrite host  yes
+  user agent    opencode/1.18.29 cli (mode replace-generic)
+
+Routing
+  path rewrite  (none, passed through as-is)
+  session from  header x-opencode-session, x-session-id, … ; body session_id, sessionId, …
+  session id    hex26 | msg_{{session.count}}
+
+Injection
+  header        x-opencode-session = {{session.id}}  ->  ses_378f3582ae608b101b83606614
+  header        x-opencode-request = {{session.requestId}}  ->  msg_1
+  …
+
+Model
+  sample        proxy-glm
+  strip         prefix "proxy-" -> glm
+  mapped        glm -> glm-5.3
+  result        glm-5.3  (mapped)
+  map           27 built-in aliases, 0 overrides
+
+Log
+  file          ~/.lsp/logs/llm-session-proxy.log
+  rotation      size rotation, max 5242880 B, 2 backups, keep 30 days
+
+Result
+  OK — the configuration is valid.
+```
+
+The injection table is not a description of the templates — it is the **rendered** result, using a
+sample session. If a template is misspelled you see it here rather than in a 400 from the upstream.
+
+The `Model` block is the interesting one. It picks `proxy-<first alias>` by default precisely because
+that exercises the strip-then-map path, and reports which of the four outcomes applies:
+
+| `result` | Meaning |
+| --- | --- |
+| `(mapped)` | The alias hit `model.map`. This is what you want |
+| `(from model.default)` | Nothing matched and nothing was stripped, so `default` applied |
+| `(prefix stripped, NO mapping …)` | The prefix came off and the remainder is going upstream verbatim — the usual cause of "model not found" |
+| `(no prefix matched, forwarded as-is …)` | The client sent a real model ID. Normal |
+
+Pass `--model` to check a specific name:
+
+```bash
+# 0 = the config is fine and the alias resolves
+llm-session-proxy --dry-run --model proxy-deepseek
+
+# 1 = you named this alias explicitly and it resolves to nothing
+llm-session-proxy --dry-run --model proxy-not-a-real-alias
+```
+
+`--doctor` runs the same report and then checks, in addition:
+
+- **DNS** resolution of `upstream.host`
+- **TCP** connect to `upstream.host:upstream.port`, with handshake time
+- **TLS** handshake when the protocol is `https` — the certificate is reported if it is not trusted,
+  rather than treated as a hard failure
+- whether `listen.port` is free (reported as a warning, since a running instance looks the same)
+- a reminder that the proxy never injects credentials
+
+It sends **no HTTP request** and no credentials: reachability is answered at the transport layer, so
+a doctor run never burns rate-limit quota. It exits `0` when everything is fine and `1` when
+something needs fixing, which makes it usable as a startup gate:
+
+```bash
+llm-session-proxy --doctor && llm-session-proxy
+```
+
+---
+
 ## Template variables
 
 | Variable | Meaning |
@@ -377,7 +502,7 @@ llm-session-proxy --print-config | grep resolvedFile
 | `--inject <name=value>` | Inject a header, repeatable |
 | `--body-inject <k=v>` | Inject a body field (dot paths), repeatable |
 | `--model-prefix <prefix>` | Prefix to strip, repeatable |
-| `--model-map <a=b>` | Exact model mapping, repeatable |
+| `--model-map <a=b>` | Exact model mapping, repeatable. Merged over the built-in alias table |
 | `--session-header <name>` / `--session-field <path>` | Add a session source, repeatable |
 | `--session-id-format <f>` / `--request-id-format <t>` | Session ID format / request-id template |
 | `--no-session` / `--no-stream` | Disable session injection / disable streaming |
@@ -390,6 +515,9 @@ llm-session-proxy --print-config | grep resolvedFile
 | `-l, --lang <en\|zh>` | Language of console output and log messages (default `en`) |
 | `--init [file]` | Write a sample config |
 | `--print-config` | Print the merged config and exit |
+| `--dry-run` | Validate the config and print routing, injection and model resolution. No network I/O |
+| `--doctor` | `--dry-run` plus DNS/TCP/TLS reachability and listen-port checks; exits non-zero on problems |
+| `--model <id>` | Sample model name used by `--dry-run` / `--doctor` |
 
 Environment variables mirror the config field names in uppercase: `PROXY_PORT`, `UPSTREAM_HOST`,
 `UPSTREAM_PROTO`, `OPENCODE_UA`, `LOG_LEVEL`, `LOG_FILE`, `LOG_DIR`, `LOG_ROTATE`,
@@ -509,6 +637,9 @@ On `EADDRINUSE`, pick another port (`--port 9356`) and update the client's base 
 - **`response.stream: false` breaks SSE.** Keep it `true` unless you genuinely need full buffering.
 - **`bufferBody: false` disables body rewriting.** Model rewriting and parameter injection stop
   working; only header injection and header-based session detection remain.
+- **The built-in alias table is a snapshot, not a live catalogue.** Upstream renames models; when an
+  alias stops resolving you get a warning naming the entry to add, but nothing is fetched
+  automatically. Real model IDs are always passed through, so a stale alias is never fatal.
 - The proxy only forwards and patches. It does not cache, meter usage, or modify responses.
 
 ---
@@ -523,7 +654,7 @@ no local `npm login` required:
 3. Tag and push the matching tag:
 
 ```bash
-git tag v0.1.3 && git push origin v0.1.3
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 The workflow runs the full test suite, verifies the tag matches `package.json`, then publishes to
@@ -539,8 +670,11 @@ The project is deliberately narrow: a **zero-dependency, local, single-process**
 start with `npx`. Everything on the roadmap has to fit that shape.
 
 - **v0.2 — protocol translation and routing.** Anthropic ↔ OpenAI ↔ Responses conversion,
-  rule-based routing per request, upstream fallback. This is the one feature that lets a single
-  client reach every model class instead of only the endpoints its own protocol supports.
+  rule-based routing per request. This is the one feature that lets a single client reach every
+  model class instead of only the endpoints its own protocol supports.
+  **Delivered so far — v0.2.0:** the built-in alias table, the unmatched-alias warning, and
+  `--dry-run` / `--doctor`. **Next:** v0.2.1 (transformer registry, router buckets), then v0.2.2
+  (the protocol translation itself).
 - **v0.3 — observability and control.** Prometheus-format metrics, structured JSON logs, a
   cost/token accounting endpoint, and a zero-build local dashboard.
 - **v0.4 — reliability under real upstreams.** Circuit breaking, upstream health checks,
