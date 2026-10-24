@@ -207,6 +207,70 @@ test('provider 的 auth 没说明凭据从哪来时启动即报错', () => {
   );
 });
 
+test('Copilot provider 可以不写 auth —— 凭据走内置 GitHub token 链', () => {
+  const config = build({
+    upstreams: {
+      providers: { c: { type: 'copilot', baseUrl: 'https://api.githubcopilot.com' } },
+    },
+  });
+  assert.equal(config.upstreams.providers.c.type, 'copilot');
+  assert.equal(config.upstreams.providers.c.auth, null);
+});
+
+test('Copilot provider 的 tokenMode 只认 direct / session', () => {
+  const direct = build({
+    upstreams: {
+      providers: {
+        c: { type: 'copilot', baseUrl: 'https://api.githubcopilot.com', auth: { tokenMode: 'DIRECT' } },
+      },
+    },
+  });
+  assert.equal(direct.upstreams.providers.c.auth.tokenMode, 'direct');
+
+  const session = build({
+    upstreams: {
+      providers: {
+        c: { type: 'copilot', baseUrl: 'https://api.githubcopilot.com', auth: { tokenMode: 'session' } },
+      },
+    },
+  });
+  assert.equal(session.upstreams.providers.c.auth.tokenMode, 'session');
+
+  assertRejects(
+    {
+      upstreams: {
+        providers: {
+          c: { type: 'copilot', baseUrl: 'https://api.githubcopilot.com', auth: { tokenMode: 'exchange' } },
+        },
+      },
+    },
+    /auth\.tokenMode must be one of direct \| session, got "exchange"/,
+  );
+  assertRejects(
+    {
+      upstreams: {
+        providers: {
+          c: { type: 'copilot', baseUrl: 'https://api.githubcopilot.com', auth: { tokenMode: 123 } },
+        },
+      },
+    },
+    /auth\.tokenMode must be one of direct \| session, got 123/,
+  );
+});
+
+test('非 Copilot provider 写 tokenMode 时启动即报错', () => {
+  assertRejects(
+    {
+      upstreams: {
+        providers: {
+          a: { type: 'openai', baseUrl: 'https://a.example', auth: { env: 'K', tokenMode: 'direct' } },
+        },
+      },
+    },
+    /auth\.tokenMode is only valid for type "copilot"/,
+  );
+});
+
 test('上游路由没指向上游时启动即报错', () => {
   assertRejects(
     {

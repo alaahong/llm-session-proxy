@@ -96,7 +96,8 @@ If your client already sends a session header, you do not need this tool (though
   30-day archival, so a vanished process still leaves clues behind.
 - **Preflight checks** — `--dry-run` prints how a request would be routed, which headers get
   injected, and how a model name resolves, without sending anything; `--doctor` adds DNS/TCP/TLS
-  reachability and listen-port checks and exits non-zero on problems.
+  reachability, listen-port checks and a real Copilot credential probe, and exits non-zero on
+  problems.
 - **Zero dependencies** — Node built-ins only, so `npx` starts instantly.
 - **Local status endpoint** — inspect session count, cache hit rate, and injected headers at runtime.
 
@@ -542,6 +543,8 @@ A provider looks like this:
 | `auth.command` | A command whose **stdout** is the API key. Run with `execFile`, so it never goes through a shell |
 | `auth.header` / `auth.prefix` | Override the credential header name and prefix |
 | `auth.allowCommand` | `false` forbids running any command to fetch a credential |
+| `auth.tokenMode` | Copilot only: `direct` (default, send the GitHub token as-is) or `session` (exchange it for a ~30-minute token first) |
+| `auth.deviceFlow` | Copilot only: `true` allows the OAuth device flow as the last credential fallback (needs a human, so it is off by default) |
 
 **Credentials are never read from the config file and never logged.** The config only says *where* the
 key comes from; the value is fetched at request time and goes straight into the header. Only the
@@ -552,11 +555,11 @@ providers, `x-goog-api-key` for Gemini, `x-api-key` for Anthropic.
 
 #### GitHub Copilot as an upstream
 
-A `copilot` provider talks to `api.githubcopilot.com` using a **session token**, which is obtained by
-exchanging a GitHub token:
+A `copilot` provider talks to `api.githubcopilot.com` with a GitHub token **directly** — the same
+approach the official Copilot SDK, OpenCode and OMP use:
 
 ```
-GitHub token  →  GET api.github.com/copilot_internal/v2/token  →  session token (~30 min)
+GitHub token  →  Authorization: Bearer <token>  →  api.githubcopilot.com
 ```
 
 The GitHub token is looked up in the order the official Copilot SDK uses:
@@ -571,22 +574,41 @@ The GitHub token is looked up in the order the official Copilot SDK uses:
 
 A provider may override the variable names with `auth.env` and the command with `auth.command`.
 
-The device flow is the official GitHub OAuth 2.0 Device Authorization Grant: the proxy asks GitHub
-for a short code, prints it with the verification URL, and waits for you to confirm in the browser.
-The resulting token is archived to the credential file, so this happens **once**, not on every
-request. It is off by default — a login that needs a human must never start behind your back.
+Run the device-flow login once and the token is archived, so you don't need an environment variable
+or an authenticated `gh`:
+
+```bash
+npx llm-session-proxy --login-copilot
+```
+
+If a credential environment variable is already set, the CLI says so: environment variables take
+precedence over the saved file.
+
+`auth.tokenMode` selects how the token is used:
+
+- `direct` (default) — the GitHub token goes into `Authorization: Bearer` unchanged. GitHub now
+  accepts `gho_`, `ghu_` and `github_pat_` tokens this way.
+- `session` — the token is first exchanged at `api.github.com/copilot_internal/v2/token` for a
+  ~30-minute session token, cached **in memory only** and refreshed five minutes before expiry.
+  This is the legacy flow; some OAuth tokens (notably `gh auth token`) are rejected by that endpoint
+  with `403`, so only opt in when your deployment requires short-lived tokens.
 
 > **`ghp_` tokens are not supported.** The official SDK marks the classic PAT as deprecated; use a
 > fine-grained PAT (`github_pat_`) with the **Copilot Requests** permission, or an OAuth token.
 
-The session token is cached **in memory only** and refreshed five minutes before it expires. It is
-never written to disk. If no session token can be obtained, the request fails with a `502` and a clear
-message rather than reaching the upstream without a credential.
+If no credential can be obtained, the request fails with a `502` and a clear message rather than
+reaching the upstream without one.
 
 The provider picks its endpoint by model: `gpt-5*`, `codex*` and `o1`–`o4` go to `/responses`, every
 other model goes to `/chat/completions`. Copilot also needs the fixed headers
 `Copilot-Integration-Id: copilot-developer-cli`, `Editor-Version`, `Editor-Plugin-Version`,
-`User-Agent` and `X-GitHub-Api-Version` — the proxy sets those for you.
+`User-Agent` and `X-GitHub-Api-Version: 2026-08-01` — the proxy sets those for you, and `headers` can
+override any of them. (`2026-08-01` is the Copilot API version; the `2022-11-28` value belongs to
+`api.github.com` and is rejected by `api.githubcopilot.com` with `400 invalid apiVersion`.)
+
+`--doctor` verifies the credential for every `copilot` provider with a read-only `GET /models` call
+and reports the source, the mode and the number of visible models. The token itself never appears in
+the output. A `401`/`403` is reported as a problem and makes the command exit non-zero.
 
 > **On BYOK.** Copilot's "bring your own key" mode is a *client* feature: the key lives in the
 > client's keychain and traffic goes straight to the provider, billed by that provider. The proxy
@@ -710,7 +732,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.3.0 — dry run
+llm-session-proxy v0.3.1 — dry run
 
 Config
   file                (none)
@@ -857,7 +879,7 @@ Upstream pool
   pool                2 provider(s)
   default             own
   own                 type=openai wire=chat|responses credential=env:OPENAI_API_KEY
-  copilot             type=copilot wire=chat|responses
+  copilot             type=copilot wire=chat|responses mode=direct
   #0                  gpt-5 -> copilot
   sample              own  (default)
 ```
@@ -873,10 +895,14 @@ In Chinese output the section is titled `上游池`, deliberately distinct from 
   rather than treated as a hard failure
 - whether `listen.port` is free (reported as a warning, since a running instance looks the same)
 - whether `listen.port` is on the WHATWG forbidden-port list (a warning — see below)
-- a reminder that the proxy never injects credentials
+- for every `copilot` provider, a real credential check: resolve the GitHub token, call
+  `GET {baseUrl}/models`, and report the source, the token mode and how many models are visible
+- a reminder that only upstream-pool providers get credentials injected; the main upstream must
+  receive its `authorization` header from the client
 
-It sends **no HTTP request** and no credentials: reachability is answered at the transport layer, so
-a doctor run never burns rate-limit quota. It exits `0` when everything is fine and `1` when
+Apart from that single read-only Copilot `/models` call, it sends **no HTTP request** and consumes no
+chat quota: reachability is answered at the transport layer. The Copilot token is only ever placed in
+the request header, never in the report. It exits `0` when everything is fine and `1` when
 something needs fixing, which makes it usable as a startup gate:
 
 ```bash
@@ -950,9 +976,10 @@ The warning names the port and the reason; pick another port and update the clie
 | `--log-keep-days <n>` | Delete logs older than N days (`0` = keep forever) |
 | `-l, --lang <en\|zh>` | Language of console output and log messages (default `en`) |
 | `--init [file]` | Write a sample config |
+| `--login-copilot` | Sign in to GitHub Copilot with the OAuth device flow and save the credential |
 | `--print-config` | Print the merged config and exit |
 | `--dry-run` | Validate the config and print routing, buckets, injection and model resolution. No network I/O |
-| `--doctor` | `--dry-run` plus DNS/TCP/TLS reachability and listen-port checks; exits non-zero on problems |
+| `--doctor` | `--dry-run` plus DNS/TCP/TLS reachability, listen-port and Copilot credential checks; exits non-zero on problems |
 | `--model <id>` | Sample model name used by `--dry-run` / `--doctor` |
 
 Environment variables mirror the config field names in uppercase: `PROXY_PORT`, `UPSTREAM_HOST`,
@@ -1102,8 +1129,9 @@ On `EADDRINUSE`, pick another port (`--port 9356`) and update the client's base 
   short message. Use it as a cheap, explainable heuristic — and keep the byte-size and model-prefix
   matchers for the cases where you know better.
 - **Copilot credentials come from your existing GitHub login.** The proxy reads a GitHub token
-  (environment variable, `gh` CLI, or the credential file) and exchanges it for a session token. It
-  cannot use a `ghp_` classic PAT, and Copilot's "bring your own key" mode stays a client-side
+  (environment variable, `gh` CLI, or the credential file) and sends it directly to
+  `api.githubcopilot.com`; `auth.tokenMode: "session"` opts into the older short-lived-token exchange.
+  It cannot use a `ghp_` classic PAT, and Copilot's "bring your own key" mode stays a client-side
   feature — the proxy's part is routing some requests through your subscription and others through
   your own provider keys.
 - The proxy only forwards and patches. It does not cache, meter usage, or modify responses.
@@ -1120,7 +1148,7 @@ no local `npm login` required:
 3. Tag and push the matching tag:
 
 ```bash
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.3.1 && git push origin v0.3.1
 ```
 
 The workflow runs the full test suite, verifies the tag matches `package.json`, then publishes to
@@ -1147,7 +1175,9 @@ start with `npx`. Everything on the roadmap has to fit that shape.
   `{ "bucket": "think", "difficulty": "hard" }`. On the other axis, a pool of upstreams lets some
   models go through your GitHub Copilot subscription and others through your own provider keys.
   **Delivered — v0.3.0:** the scorer and the bands, the upstream pool with per-provider
-  credentials, and Google Gemini as a fourth wire protocol.
+  credentials, and Google Gemini as a fourth wire protocol. **Delivered — v0.3.1:** Copilot takes
+  the direct route — the GitHub token itself is the Bearer credential, no session exchange — plus
+  `--login-copilot` and a real credential probe in `--doctor`.
 - **v0.4 — observability and control.** Prometheus-format metrics, structured JSON logs, a
   cost/token accounting endpoint, and a zero-build local dashboard.
 - **v0.5 — reliability under real upstreams.** Circuit breaking, upstream health checks,

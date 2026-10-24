@@ -18,14 +18,23 @@ function requestFor(url, options) {
 }
 
 /**
- * GitHub Copilot 凭据与 session token 管理（v0.3.0）。
+ * GitHub Copilot 凭据与 token 管理（v0.3.0）。
  *
- * 调用链是两级，官方文档写得很清楚：
+ * 默认直接把 GitHub token 发给 Copilot API（与 OMP / Hermes 一致）：
  *
  *   GitHub token（gho_ / ghu_ / github_pat_）
+ *     ↓  Authorization: Bearer <GitHub token>
+ *   POST https://api.githubcopilot.com/{chat/completions | responses}
+ *
+ * 也保留旧的两级调用链，供需要短命 token 的部署选择（auth.tokenMode: "session"）：
+ *
+ *   GitHub token
  *     ↓  GET https://api.github.com/copilot_internal/v2/token
  *   session token（约 30 分钟过期）
  *     ↓  POST https://api.githubcopilot.com/{chat/completions | responses}
+ *
+ * 直连是默认值：GitHub 现在接受 gho_ / ghu_ / github_pat_ 直连，而
+ * copilot_internal/v2/token 对 gh CLI 的 OAuth token 会返回 403。
  *
  * 凭据来源按 GitHub Copilot SDK 官方的优先级顺序取：
  *   COPILOT_GITHUB_TOKEN → GH_TOKEN → GITHUB_TOKEN → gh CLI → 设备流登录
@@ -58,6 +67,31 @@ export const DEVICE_TOKEN_ENDPOINT = 'https://github.com/login/oauth/access_toke
 /** 过期前多久刷新。session token 约 30 分钟过期，留 5 分钟余量。 */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
+/**
+ * GitHub token 的两种用法：
+ *   direct   直接作为 Bearer 发给 api.githubcopilot.com（OMP / Hermes 的做法）
+ *   session  先换一个约 30 分钟有效期的 session token（旧版做法）
+ *
+ * direct 是默认值：GitHub 现在接受 gho_ / ghu_ / github_pat_ 直连，
+ * 而 copilot_internal/v2/token 对 gh CLI 的 OAuth token 会返回 403。
+ */
+export const COPILOT_TOKEN_MODES = ['direct', 'session'];
+export const DEFAULT_COPILOT_TOKEN_MODE = 'direct';
+
+/**
+ * 直连 token 的缓存时间。
+ *
+ * GitHub token 本身长命，但凭据文件可能刚被 `--login-copilot` 改写；
+ * 缓存 5 分钟既避免每条请求都去执行 gh CLI，也能较快感知凭据替换。
+ */
+const DIRECT_TOKEN_TTL_MS = 5 * 60 * 1000;
+
+/** 归一化 token 模式；未知值退回 fallback。 */
+export function normalizeCopilotTokenMode(value, fallback = DEFAULT_COPILOT_TOKEN_MODE) {
+  const mode = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return COPILOT_TOKEN_MODES.includes(mode) ? mode : fallback;
+}
+
 /** 凭据文件在 LSP_HOME 下的位置。 */
 export const COPILOT_CREDENTIAL_FILE = 'copilot-credentials.json';
 
@@ -84,6 +118,13 @@ export function classifyToken(token) {
   if (value.startsWith('gho_')) return { kind: 'oauth-user', supported: true };
   if (value.startsWith('ghs_')) return { kind: 'actions', supported: true };
   return { kind: 'unknown', supported: true };
+}
+
+/** classic PAT 在发请求前就报清楚，别让上游回一个语焉不详的 401。 */
+function assertSupportedToken(token) {
+  if (classifyToken(token).kind === 'classic-pat') {
+    throw new Error(t('copilot.err.classicPat'));
+  }
 }
 
 /** 读取环境变量里的 GitHub token。 */
@@ -269,12 +310,15 @@ export async function runDeviceFlow({
   }
   const result = await pollDevice(device.device_code, { intervalMs, timeoutMs });
   const token = result.token;
+  let stored = false;
   try {
     writeStoredCredential(token, env);
+    stored = true;
   } catch {
     // 存档失败不影响这一次登录——token 已经在手里了，只是下次要再登录一次。
+    // 但调用方（--login-copilot）要靠 stored 如实报告是否真的存下来了。
   }
-  return { token, source: 'device-flow', envName: null };
+  return { token, source: 'device-flow', envName: null, stored };
 }
 
 /** 用 GitHub token 换 Copilot session token。 */
@@ -332,43 +376,58 @@ export function exchangeSessionToken(githubToken, { timeoutMs = 15000, endpoint 
 }
 
 /**
- * session token 管理器：内存缓存 + 到期前自动刷新。
+ * Copilot token 管理器：内存缓存 + 到期前自动刷新。
+ *
+ * 两种模式（见 COPILOT_TOKEN_MODES）：
+ *   direct   缓存 GitHub token 本身，直接发给 Copilot API
+ *   session  缓存交换出来的 session token（约 30 分钟）
  *
  * 刻意不落盘：session token 有效期只有半小时，落盘收益极小而泄露面明显变大。
  * 长期凭据（GitHub token）落盘，短的这一级不落。
  *
- * 缓存按「凭据来源」分桶：不同的 provider 可能用不同的环境变量或命令取
- * GitHub token，混在一份缓存里会让 A 的 token 被发给 B。
+ * 缓存按「凭据来源 + 模式」分桶：不同的 provider 可能用不同的环境变量或命令取
+ * GitHub token，混在一份缓存里会让 A 的 token 被发给 B；两种模式的 token 形态
+ * 也不同，不能共用一条缓存。
  */
 export function createCopilotSessionManager({
   env = process.env,
   allowCommand = true,
   command = null,
+  tokenMode = DEFAULT_COPILOT_TOKEN_MODE,
+  directTtlMs = DIRECT_TOKEN_TTL_MS,
   now = () => Date.now(),
   // 换 session token 的那一步做成可注入的：单测要能验证缓存与刷新逻辑，
   // 而不该真的去打 api.github.com。
   exchangeSession = exchangeSessionToken,
 } = {}) {
-  // key -> { token, expiresAt, source }
+  // key -> { token, expiresAt, source, mode }
   const cache = new Map();
   // key -> Promise（并发去重）
   const pending = new Map();
 
-  const isFresh = (entry) =>
-    Boolean(entry?.token) && (entry.expiresAt || 0) - REFRESH_MARGIN_MS > now();
+  const isFresh = (entry) => {
+    if (!entry?.token) return false;
+    const expiresAt = entry.expiresAt || 0;
+    // session token 提前 5 分钟刷新；direct 的过期时间是我们自己的缓存 TTL，
+    // 不能套用这个余量，否则 5 分钟 TTL 会永远被判成「快过期」。
+    const margin = entry.mode === 'session' ? REFRESH_MARGIN_MS : 0;
+    return expiresAt - margin > now();
+  };
 
-  /** 把凭据来源压成一个稳定的缓存键。 */
+  /** 把凭据来源与模式压成一个稳定的缓存键。 */
   const cacheKey = (options = {}) => {
     const envNames = Array.isArray(options.envNames) ? options.envNames.join(',') : '';
     const cmd = typeof options.command === 'string' ? options.command : '';
     const allow = options.allowCommand === false ? '0' : '1';
     const device = options.allowDeviceFlow ? '1' : '0';
-    return `${envNames}|${cmd}|${allow}|${device}`;
+    const mode = normalizeCopilotTokenMode(options.tokenMode, tokenMode);
+    return `${envNames}|${cmd}|${allow}|${device}|${mode}`;
   };
 
-  /** 拿一个可用的 session token，必要时换新的。 */
+  /** 拿一个可用的 Copilot token，必要时刷新。 */
   const get = async (options = {}) => {
-    const key = cacheKey(options);
+    const mode = normalizeCopilotTokenMode(options.tokenMode, tokenMode);
+    const key = cacheKey({ ...options, tokenMode: mode });
     const cached = cache.get(key);
     if (isFresh(cached)) return cached;
     // 并发请求同时触发时只换一次
@@ -387,8 +446,14 @@ export function createCopilotSessionManager({
         if (!github) {
           throw new Error(t('copilot.err.noGitHubToken', { envs: COPILOT_TOKEN_ENV.join(' | ') }));
         }
-        const session = await exchangeSession(github.token);
-        const entry = { token: session.token, expiresAt: session.expiresAt, source: github.source };
+        assertSupportedToken(github.token);
+        let entry;
+        if (mode === 'session') {
+          const session = await exchangeSession(github.token);
+          entry = { token: session.token, expiresAt: session.expiresAt, source: github.source, mode };
+        } else {
+          entry = { token: github.token, expiresAt: now() + directTtlMs, source: github.source, mode };
+        }
         cache.set(key, entry);
         // 只记来源名，不记 token 本身
         return entry;

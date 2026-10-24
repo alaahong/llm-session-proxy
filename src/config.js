@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { COPILOT_TOKEN_MODES } from './copilot.js';
 import { LEVELS, ROTATE_MODES } from './logger.js';
 import { SUPPORTED_LANGS, normalizeLang, setLang, t } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
@@ -674,8 +675,25 @@ function validateUpstreams(upstreams, errors) {
     } else {
       const hasEnv = typeof auth.env === 'string' && auth.env.trim();
       const hasCommand = typeof auth.command === 'string' && auth.command.trim();
-      if (!hasEnv && !hasCommand && auth.deviceFlow !== true) {
+      // Copilot 的凭据走内置链（环境变量 → gh CLI → 凭据文件 → 设备流），
+      // 所以 auth 可以只写 tokenMode，甚至完全不写。
+      if (provider.type !== 'copilot' && !hasEnv && !hasCommand && auth.deviceFlow !== true) {
         errors.push(t('config.badUpstreamAuthSource', { name }));
+      }
+      if (provider.type !== 'copilot' && auth.tokenMode !== undefined) {
+        errors.push(t('config.tokenModeOnlyCopilot', { name }));
+      } else if (
+        provider.type === 'copilot' &&
+        auth.tokenMode !== undefined &&
+        !COPILOT_TOKEN_MODES.includes(auth.tokenMode)
+      ) {
+        errors.push(
+          t('config.badCopilotTokenMode', {
+            name,
+            mode: JSON.stringify(auth.tokenMode),
+            known: COPILOT_TOKEN_MODES.join(' | '),
+          }),
+        );
       }
     }
   }

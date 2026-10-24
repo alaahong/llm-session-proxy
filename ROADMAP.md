@@ -7,7 +7,7 @@ below has to fit that shape.
 - **Scope:** one developer machine, one process. One upstream by default; a pool of upstreams since v0.3.0.
 - **Non-negotiable:** `dependencies` in `package.json` stays empty. Features that would need a
   library get re-implemented on Node built-ins, or they do not ship.
-- **Status:** v0.3.0 — the session/header injection core works and is hardened; model aliasing,
+- **Status:** v0.3.1 — the session/header injection core works and is hardened; model aliasing,
   `--dry-run` / `--doctor`, the transform registry, routing buckets, protocol conversion, difficulty
   scoring and the multi-upstream pool have shipped. Everything else is on this page.
 
@@ -25,13 +25,13 @@ below has to fit that shape.
 | Routing | Four buckets (`default` / `background` / `think` / `longContext`), each with its own model override and transform list. Rules match on path prefix, model prefix, body field, request size or **difficulty band**, evaluate **top-down with the first match winning**, and AND the conditions inside one rule. **Off by default**, so upgrading changes nothing. |
 | Difficulty | A named in-tree **scorer registry** (`builtin-complexity`) turns the request's shape into a 0–100 score and a band (`easy` / `medium` / `hard`), which the router can match on. Nine weighted signals, deterministic, no network, no model call. Measures the *shape* of a request, not its semantic difficulty. |
 | Upstreams | A **pool** of upstreams (`openai` / `anthropic` / `gemini` / `copilot` / `custom`), each with its own base URL, endpoint paths, wire protocol and credential source. The bucket picks the upstream explicitly, otherwise the model name picks it by prefix, otherwise the pool default does. Request bodies are converted to whichever **wire protocol** the chosen upstream speaks. |
-| Copilot | GitHub Copilot as a first-class upstream: GitHub login → short-lived Copilot session token → `api.githubcopilot.com`, with the official `Copilot-Integration-Id` header and per-model endpoint selection. Credentials are read from the environment, the `gh` CLI or a device-flow login, and **never written to config or to logs**. |
+| Copilot | GitHub Copilot as a first-class upstream: the GitHub token goes **straight** to `api.githubcopilot.com` as the Bearer credential (OMP-style; the `copilot_internal/v2/token` exchange is opt-in via `auth.tokenMode: "session"`), with the official `Copilot-Integration-Id` and API-version headers and per-model endpoint selection. Credentials are read from the environment, the `gh` CLI, an archived file or a device-flow login, and **never written to config or to logs**. |
 | Transforms | Five named in-tree body transforms (`noop`, `drop-fields`, `drop-empty-fields`, `rename-fields`, `clamp-max-tokens`), attachable globally or per bucket, applied in a fixed order. Selected **by name, never by path**, so a config file cannot make the proxy execute code. |
 | Protocol | Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses ↔ **Google Gemini**: request bodies converted before forwarding, JSON responses rewritten, SSE streams transcoded **event by event** so streaming stays streaming. Off by default, routed by model prefix; upstream 4xx/5xx error bodies are never converted. |
 | Diagnostics | `--dry-run` prints the effective routing, the **rendered** injection table, the model-resolution chain, the bucket/transform decision, the difficulty score and the upstream pool with no network I/O; `--doctor` adds DNS/TCP/TLS reachability, listen-port checks (free? on the WHATWG forbidden-port list?) and exits non-zero on problems. |
 | Streaming | SSE is piped chunk by chunk, never buffered. Upstream 4xx bodies come back verbatim. |
 | Operations | `/__llm_session_proxy__/status` and `/sessions`, **log-to-disk on by default** (`~/.lsp/logs`) with size/date rotation and 30-day archival, four-layer config merge (defaults < file < env < CLI). Auto-assigned listen ports (`listen.port: 0`) never land on a WHATWG forbidden port; a port you configure explicitly is respected and reported by `--doctor` instead. |
-| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **906 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
+| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **925 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
 | Language | Console output and log messages are **English by default**, switchable to Chinese with `--lang zh` / `PROXY_LANG=zh`. |
 
 ### Known gaps (stated plainly)
@@ -228,18 +228,21 @@ Two orthogonal axes. The first decides **which model** a request should use; the
       `proxy-` prefix. Credentials are resolved per provider (env → command → stored file) and the
       resolved value never reaches the log.</sub>
 - [x] **GitHub Copilot as an upstream:** Copilot-hosted models, authenticated the official way.
-      <sub>**v0.3.0.** `src/copilot.js` — GitHub token → `copilot_internal/v2/token` → short-lived
-      session token → `api.githubcopilot.com`. The GitHub token comes from `COPILOT_GITHUB_TOKEN` →
+      <sub>**v0.3.0, direct by default since v0.3.1.** `src/copilot.js` — by default the GitHub token is sent **directly** to
+      `api.githubcopilot.com` as the Bearer credential, the same shortcut OMP takes; the exchange at
+      `copilot_internal/v2/token` (which returns 403 for `gh` CLI OAuth tokens) is opt-in via
+      `auth.tokenMode: "session"`, and that session token then lives in memory only and refreshes
+      five minutes before expiry. The GitHub token comes from `COPILOT_GITHUB_TOKEN` →
       `GH_TOKEN` → `GITHUB_TOKEN` → the `gh` CLI → the archived credential file → the device flow,
       i.e. the official chain rather than a private scrape. The device flow (GitHub's OAuth 2.0
       Device Authorization Grant) is **off by default** and only runs when the provider sets
       `auth.deviceFlow` — a login that needs a human must never start behind your back; the code and
       the verification URL are printed, and the resulting token is archived to
-      `~/.lsp/copilot-credentials.json` (mode 0600) so it happens once. `ghp_` classic PATs are
-      explicitly **not** supported (GitHub deprecated them for Copilot); `github_pat_` / `ghu_` /
-      `gho_` / `ghs_` are. The session token lives in memory only and refreshes five minutes before
-      expiry. `Copilot-Integration-Id` is pinned to `copilot-developer-cli`, the value GitHub accepts
-      for both OAuth tokens and PATs.</sub>
+      `~/.lsp/copilot-credentials.json` (mode 0600) so it happens once. `--login-copilot` runs that
+      flow standalone. `ghp_` classic PATs are explicitly **not** supported (GitHub deprecated them
+      for Copilot); `github_pat_` / `ghu_` / `gho_` / `ghs_` are. `Copilot-Integration-Id` is pinned
+      to `copilot-developer-cli` and `X-GitHub-Api-Version` to `2026-08-01`; `--doctor` verifies a
+      Copilot provider with one read-only `GET /models`.</sub>
 - [x] **Gemini as a fourth wire protocol:** the native `generateContent` shape, not an OpenAI-shaped
       imitation.
       <sub>**v0.3.0.** `src/converters.js`, `src/replies.js` and `src/stream.js` grow from six

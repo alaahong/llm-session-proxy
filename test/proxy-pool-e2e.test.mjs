@@ -250,7 +250,7 @@ test('上游池：Copilot 的固定头自动带上', async () => {
   process.env.LSP_HOME = emptyHome;
 
   try {
-    // Copilot 的凭据走 session token 交换，没有 token 时会 502 ——
+    // Copilot 的凭据走内置 GitHub token 链，没有 token 时会 502 ——
     // 但固定头在组装请求时就装好了，所以这里只看头。
     await fetch(`${proxy.url}/v1/chat/completions`, {
       method: 'POST',
@@ -258,7 +258,7 @@ test('上游池：Copilot 的固定头自动带上', async () => {
       body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: 'x' }] }),
     }).then((r) => r.text());
 
-    // 没配凭据 → Copilot 拿不到 session token → 请求不会到上游
+    // 没配凭据 → Copilot 拿不到 token → 请求不会到上游
     assert.equal(captured.length, 0);
   } finally {
     for (const [name, value] of Object.entries(saved)) {

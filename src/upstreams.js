@@ -53,6 +53,14 @@ const DEFAULT_PATHS = {
  */
 const COPILOT_RESPONSES_ONLY = /^(gpt-5|codex|o[134])/i;
 
+/**
+ * api.githubcopilot.com 的 API 版本。
+ *
+ * 2022-11-28 是 api.github.com REST 的版本词汇，发给 Copilot API 会得到
+ * `400 invalid apiVersion`。2026-08-01 是 Copilot 当前接受的版本。
+ */
+export const COPILOT_API_VERSION = '2026-08-01';
+
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -107,6 +115,10 @@ export function normalizeProvider(name, provider) {
     // Copilot 默认会兜底去问 gh CLI，用户想彻底关掉就写这个开关。
     if (typeof auth.allowCommand === 'boolean') auth.allowCommand = auth.allowCommand;
     else delete auth.allowCommand;
+    // Copilot 专有：direct（默认）直连 GitHub token，session 换短命 session token。
+    // 非字符串原样留下，交给 config 校验报错——不能静默退回 direct。
+    if (typeof auth.tokenMode === 'string') auth.tokenMode = auth.tokenMode.trim().toLowerCase();
+    else if (auth.tokenMode === null) delete auth.tokenMode;
     out.auth = auth;
   } else if (provider.auth === undefined || provider.auth === null) {
     // 没写凭据是允许的：本地 Ollama / LM Studio 这类端点不需要 key
@@ -309,7 +321,7 @@ export function providerHeaders(provider) {
     if (!out['editor-version']) out['editor-version'] = 'vscode/1.95.0';
     if (!out['editor-plugin-version']) out['editor-plugin-version'] = 'copilot-chat/0.26.7';
     if (!out['user-agent']) out['user-agent'] = 'GitHubCopilotChat/0.26.7';
-    if (!out['x-github-api-version']) out['x-github-api-version'] = '2022-11-28';
+    if (!out['x-github-api-version']) out['x-github-api-version'] = COPILOT_API_VERSION;
   }
 
   return out;
@@ -317,7 +329,7 @@ export function providerHeaders(provider) {
 
 /** provider 的人类可读摘要，给 doctor 用。 */
 export function describeProvider(provider) {
-  if (!isPlainObject(provider)) return { name: null, type: null, baseUrl: null, wire: [], credential: null };
+  if (!isPlainObject(provider)) return { name: null, type: null, baseUrl: null, wire: [], credential: null, tokenMode: null };
   const sources = credentialSources(provider);
   const auth = isPlainObject(provider.auth) ? provider.auth : {};
   let credential = null;
@@ -331,6 +343,7 @@ export function describeProvider(provider) {
     baseUrl: provider.baseUrl || null,
     wire: Array.isArray(provider.wire) ? provider.wire : [],
     credential,
+    tokenMode: provider.type === 'copilot' ? auth.tokenMode || 'direct' : null,
     paths: Object.keys(provider.paths || {}),
   };
 }

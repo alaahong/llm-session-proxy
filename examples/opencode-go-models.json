@@ -204,7 +204,9 @@
   // auth.command 的 stdout 就是 key（不经 shell 展开），auth.deviceFlow 允许设备流登录。
   // 凭据值运行时现取，绝不写进配置文件、绝不进日志。
   //
-  // Copilot 侧走官方链路：GitHub token → copilot_internal/v2/token → 短期 session token。
+  // Copilot 侧默认直连：GitHub token 直接作为 Bearer 发给 api.githubcopilot.com（与 OMP 一致）。
+  // 需要短命 token 时给 auth 加 "tokenMode": "session"，代理会先去
+  // copilot_internal/v2/token 交换一个约 30 分钟的 session token。
   // GitHub token 的查找顺序是 COPILOT_GITHUB_TOKEN → GH_TOKEN → GITHUB_TOKEN →
   // gh CLI → 设备流登录。注意 ghp_ 传统 PAT 不被 GitHub 支持用于 Copilot，
   // github_pat_ / ghu_ / gho_ / ghs_ 才支持。

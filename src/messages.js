@@ -106,6 +106,10 @@ const en = {
     `upstreams.routes[${index}] points at upstream "${name}", which is not declared in upstreams.providers`,
   'config.badUpstreamDefault': ({ name }) =>
     `upstreams.default "${name}" is not declared in upstreams.providers`,
+  'config.tokenModeOnlyCopilot': ({ name }) =>
+    `upstreams.providers["${name}"].auth.tokenMode is only valid for type "copilot"`,
+  'config.badCopilotTokenMode': ({ name, mode, known }) =>
+    `upstreams.providers["${name}"].auth.tokenMode must be one of ${known}, got ${mode}`,
 
   // ---------- protocol.js / converters.js / replies.js / stream.js：协议互转 ----------
   'config.badProtocolSection': () => 'protocol must be an object with "enabled", "paths" and "routes"',
@@ -184,9 +188,11 @@ OPTIONS
 LOCAL TOOLS
       --print-config           Print the merged config and exit
       --dry-run                Check the config and show how a request would be routed, without any network I/O
-      --doctor                 Like --dry-run, plus upstream reachability and listen-port checks; exits non-zero on problems
+      --doctor                 Like --dry-run, plus upstream reachability, listen-port and Copilot
+                               credential checks; exits non-zero on problems
       --model <id>             Sample model name used by --dry-run / --doctor (default: derived from the model map)
       --init [file]            Write an annotated sample config (default ./${name}.config.json)
+      --login-copilot          Sign in to GitHub Copilot with the OAuth device flow and save the credential
   -h, --help                   Show this help
   -v, --version                Show the version
 
@@ -207,7 +213,7 @@ EXAMPLES
   # Check the setup before starting: config, routing, injection and model resolution
   ${name} --dry-run
 
-  # Same, plus a reachability probe of the upstream (never sends credentials)
+  # Same, plus upstream reachability and Copilot credential probes
   ${name} --doctor
 `,
 
@@ -501,7 +507,11 @@ EXAMPLES
   'doctor.check.portBusy': ({ port }) =>
     `port ${port} is already in use — is another instance already running?`,
   'doctor.check.credentials': ({ header }) =>
-    `the proxy never injects credentials; ${header} must come from the client`,
+    `the proxy only injects credentials for upstream-pool providers; requests to the main upstream ` +
+    `must carry their own ${header} header`,
+  'doctor.check.copilotOk': ({ name, source, mode, models }) =>
+    `copilot "${name}" auth ok (${source}, mode ${mode}${models === null ? '' : `, ${models} models`})`,
+  'doctor.check.copilotFail': ({ name, message }) => `copilot "${name}" auth FAILED (${message})`,
   'doctor.check.skipped': () => 'not checked in dry-run mode (use --doctor)',
   'doctor.result.ok': () => 'OK — the configuration is valid.',
   'doctor.result.okDoctor': () => 'OK — the configuration is valid and every check passed.',
@@ -522,6 +532,9 @@ EXAMPLES
   'doctor.fail.unresolvedAlias': ({ alias, resolved }) =>
     `alias "${alias}" strips to "${resolved}", which matches no model.map entry and no model.default — ` +
     `the upstream will most likely reject it as an unknown model`,
+  'doctor.fail.copilot': ({ name }) =>
+    `Copilot upstream "${name}" rejected the resolved credential — check the GitHub token and ` +
+    `whether the account has Copilot access`,
 
   // ---------- router.js：路由分桶 ----------
   'router.ruleNoMatch': () => '(no matcher — this rule never applies)',
@@ -544,6 +557,17 @@ EXAMPLES
   'cli.init.exists': ({ target }) => `File already exists, not overwritten: ${target}`,
   'cli.init.created': ({ target, name }) =>
     `Sample config written: ${target}\nEdit it as needed, then start with: ${name} --config "${target}"\n`,
+  'cli.copilotLogin.start': () => 'Signing in to GitHub Copilot with the OAuth device flow…',
+  'cli.copilotLogin.code': ({ code, url }) => `Open ${url} and enter the code: ${code}`,
+  'cli.copilotLogin.waiting': () => 'Waiting for authorization in the browser…',
+  'cli.copilotLogin.ok': ({ file, kind }) =>
+    `Signed in. Credential saved to ${file} (token kind: ${kind}); the proxy picks it up automatically.`,
+  'cli.copilotLogin.notSaved': ({ file }) =>
+    `Signed in, but the credential could not be saved to ${file} — check directory permissions ` +
+    `or use an environment variable instead.`,
+  'cli.copilotLogin.envOverride': ({ names }) =>
+    `Note: ${names} is set in the environment and takes precedence over the saved credential.`,
+  'cli.copilotLogin.fail': ({ message }) => `Sign-in failed: ${message}`,
   'cli.startFailed': ({ message }) => `Failed to start: ${message}`,
   'cli.portInUse': ({ port, name, nextPort }) =>
     `Port ${port} is already in use, try another: ${name} --port ${nextPort}`,
@@ -608,6 +632,9 @@ EXAMPLES
   'copilot.err.noGitHubToken': ({ envs }) =>
     `No GitHub token found (checked ${envs}, then the credential file, then the gh CLI) — ` +
     `set one of them, or run the device-flow login`,
+  'copilot.err.classicPat': () =>
+    'GitHub Copilot does not accept classic PATs (ghp_) — use an OAuth token (gho_ / ghu_) ' +
+    'or a fine-grained PAT (github_pat_) with the Copilot Requests permission',
   'copilot.err.tokenExchangeFailed': ({ status }) =>
     `The Copilot token endpoint returned ${status}`,
   'copilot.err.tokenNotJson': () => 'The Copilot token endpoint did not return JSON',
@@ -701,6 +728,10 @@ const zh = {
     `upstreams.routes[${index}] 指向的上游「${name}」未在 upstreams.providers 里声明`,
   'config.badUpstreamDefault': ({ name }) =>
     `upstreams.default「${name}」未在 upstreams.providers 里声明`,
+  'config.tokenModeOnlyCopilot': ({ name }) =>
+    `upstreams.providers["${name}"].auth.tokenMode 只能用于 type "copilot"`,
+  'config.badCopilotTokenMode': ({ name, mode, known }) =>
+    `upstreams.providers["${name}"].auth.tokenMode 只能是 ${known}，收到 ${mode}`,
 
   // ---------- protocol.js / converters.js / replies.js / stream.js：协议互转 ----------
   'config.badProtocolSection': () => 'protocol 必须是包含 "enabled"、"paths" 与 "routes" 的对象',
@@ -776,9 +807,10 @@ ${name} v${version}
 本地工具
       --print-config           打印合并后的最终配置并退出
       --dry-run                检查配置并预演一次请求会怎么走，不产生任何网络请求
-      --doctor                 同 --dry-run，另加上游可达性与监听端口检查；有问题时退出码非 0
+      --doctor                 同 --dry-run，另加上游可达性、监听端口与 Copilot 凭据检查；有问题时退出码非 0
       --model <id>             --dry-run / --doctor 演示用的样例模型名（默认从映射表推导）
       --init [file]            生成一份带注释的示例配置（默认 ./${name}.config.json）
+      --login-copilot          用 OAuth 设备流登录 GitHub Copilot 并保存凭据
   -h, --help                   显示帮助
   -v, --version                显示版本
 
@@ -799,7 +831,7 @@ ${name} v${version}
   # 启动前先体检：配置、路由、注入与模型解析
   ${name} --dry-run
 
-  # 同上，另外探一次上游可达性（不会发送任何凭据）
+  # 同上，另外探测上游可达性与 Copilot 凭据
   ${name} --doctor
 `,
 
@@ -1089,7 +1121,11 @@ ${name} v${version}
   'doctor.check.tlsUnverified': () => '，证书未通过系统 CA 校验',
   'doctor.check.portFree': ({ port }) => `端口 ${port} 空闲`,
   'doctor.check.portBusy': ({ port }) => `端口 ${port} 已被占用 —— 是不是已经跑着一个实例了？`,
-  'doctor.check.credentials': ({ header }) => `代理从不注入凭据；${header} 需要客户端自己带`,
+  'doctor.check.credentials': ({ header }) =>
+    `代理只为上游池里的 provider 注入凭据；主上游的请求仍需客户端自己带 ${header} 头`,
+  'doctor.check.copilotOk': ({ name, source, mode, models }) =>
+    `Copilot「${name}」鉴权正常（${source}，模式 ${mode}${models === null ? '' : `，${models} 个模型`}）`,
+  'doctor.check.copilotFail': ({ name, message }) => `Copilot「${name}」鉴权失败（${message}）`,
   'doctor.check.skipped': () => '试运行模式不检查（用 --doctor）',
   'doctor.result.ok': () => '通过 —— 配置有效。',
   'doctor.result.okDoctor': () => '通过 —— 配置有效，检查全部通过。',
@@ -1109,6 +1145,8 @@ ${name} v${version}
   'doctor.fail.unresolvedAlias': ({ alias, resolved }) =>
     `别名 "${alias}" 剥完前缀是 "${resolved}"，既没命中 model.map 也没有 model.default —— ` +
     `上游极可能直接以「未知模型」拒绝`,
+  'doctor.fail.copilot': ({ name }) =>
+    `Copilot 上游「${name}」拒绝了取到的凭据 —— 检查 GitHub token 以及账号是否有 Copilot 权限`,
 
   // ---------- cli.js：进程级兜底 ----------
   // ---------- router.js：路由分桶 ----------
@@ -1131,6 +1169,16 @@ ${name} v${version}
   // ---------- cli.js：--init 与生命周期 ----------
   'cli.init.exists': ({ target }) => `文件已存在，未覆盖: ${target}`,
   'cli.init.created': ({ target, name }) => `已生成示例配置: ${target}\n按需修改后用 ${name} --config "${target}" 启动。\n`,
+  'cli.copilotLogin.start': () => '正在通过 OAuth 设备流登录 GitHub Copilot…',
+  'cli.copilotLogin.code': ({ code, url }) => `打开 ${url}，输入代码：${code}`,
+  'cli.copilotLogin.waiting': () => '等待浏览器里完成授权…',
+  'cli.copilotLogin.ok': ({ file, kind }) =>
+    `登录成功。凭据已保存到 ${file}（token 形态：${kind}），代理会自动使用。`,
+  'cli.copilotLogin.notSaved': ({ file }) =>
+    `登录成功，但凭据未能保存到 ${file} —— 检查目录权限，或改用环境变量。`,
+  'cli.copilotLogin.envOverride': ({ names }) =>
+    `注意：环境变量 ${names} 已设置，它的优先级高于刚保存的凭据。`,
+  'cli.copilotLogin.fail': ({ message }) => `登录失败：${message}`,
   'cli.startFailed': ({ message }) => `启动失败: ${message}`,
   'cli.portInUse': ({ port, name, nextPort }) => `端口 ${port} 已被占用，换一个：${name} --port ${nextPort}`,
   'cli.shutdown.signal': ({ signal }) => `收到 ${signal}，正在关闭…`,
@@ -1191,6 +1239,9 @@ ${name} v${version}
   'copilot.err.noGitHubToken': ({ envs }) =>
     `没找到 GitHub token（已查 ${envs}，再查凭据文件，再问 gh CLI）—— ` +
     `请设置其中之一，或走设备流登录`,
+  'copilot.err.classicPat': () =>
+    'GitHub Copilot 不接受 classic PAT（ghp_）—— 请用 OAuth token（gho_ / ghu_），' +
+    '或带 Copilot Requests 权限的 fine-grained PAT（github_pat_）',
   'copilot.err.tokenExchangeFailed': ({ status }) => `Copilot token 端点返回 ${status}`,
   'copilot.err.tokenNotJson': () => 'Copilot token 端点返回的不是 JSON',
   'copilot.err.tokenMissing': () => 'Copilot token 端点返回里没有 token 字段',

@@ -6,7 +6,7 @@
 - **范围**：一台开发机、一个进程。默认一个上游；v0.3.0 起支持上游池。
 - **不可妥协**：`package.json` 里的 `dependencies` 永远为空。需要第三方库的功能，要么用 Node 内置模块
   重新实现，要么不上。
-- **当前状态**：v0.3.0 —— 会话与请求头注入的核心已可用且做过加固；模型别名、`--dry-run` / `--doctor`、
+- **当前状态**：v0.3.1 —— 会话与请求头注入的核心已可用且做过加固；模型别名、`--dry-run` / `--doctor`、
   变换注册表、路由分桶、协议互转、难度打分与多上游池都已交付。其余都在这一页上。
 
 ---
@@ -23,13 +23,13 @@
 | 路由 | 四个桶（`default` / `background` / `think` / `longContext`），各自可以换模型、挂变换。规则按路径前缀、模型前缀、请求体字段、请求体大小或**难度档位**匹配，**自上而下、首个命中即止**，同一条规则内条件是与。**默认关闭**，升级不会改变现有行为。 |
 | 难度 | 一个具名的内置**打分器注册表**（`builtin-complexity`）把请求的**形态**换算成 0–100 分与档位（`easy` / `medium` / `hard`），路由器可以按档位匹配。九个加权信号，确定性，不发网络请求，不调模型。衡量的是请求的**形态**，不是语义难度。 |
 | 上游 | 一个**上游池**（`openai` / `anthropic` / `gemini` / `copilot` / `custom`），每个上游各有自己的 base URL、端点路径、线协议与凭据来源。桶可以显式指定上游，否则按模型名前缀挑，再否则用池子的默认项。请求体会按选中上游说的**线协议**转换。 |
-| Copilot | GitHub Copilot 作为一等公民上游：GitHub 登录 → 短期 Copilot session token → `api.githubcopilot.com`，带上官方要求的 `Copilot-Integration-Id` 头，并按模型选端点。凭据从环境变量、`gh` CLI 或设备流登录取得，**绝不写进配置、绝不进日志**。 |
+| Copilot | GitHub Copilot 作为一等公民上游：GitHub token **直接**作为 Bearer 发给 `api.githubcopilot.com`（与 OMP 一致；`copilot_internal/v2/token` 交换改为 `auth.tokenMode: "session"` 显式启用），带上官方要求的 `Copilot-Integration-Id` 与 API 版本头，并按模型选端点。凭据从环境变量、`gh` CLI、存档文件或设备流登录取得，**绝不写进配置、绝不进日志**。 |
 | 变换 | 五个内置命名变换（`noop`、`drop-fields`、`drop-empty-fields`、`rename-fields`、`clamp-max-tokens`），可全局挂也可按桶挂，按固定顺序执行。**按名字选，绝不按路径选**，所以配置文件无法让代理执行代码。 |
 | 协议 | Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses ↔ **Google Gemini**：请求体转发前整体转换，JSON 响应整包改写，SSE 流**按事件逐条**转码、流式体验不降级。默认关闭，按模型前缀路由；上游 4xx/5xx 错误体永不转换。 |
 | 体检 | `--dry-run` 打印生效的路由、**渲染后**的注入表、模型解析链路、分桶/变换决定、难度分数与上游池，不产生任何网络请求；`--doctor` 另加 DNS/TCP/TLS 可达性与监听端口检查（是否空闲、是否落在 WHATWG 禁用端口清单里），有问题时退出码非 0。 |
 | 流式 | SSE 逐块管道转发，从不整体缓冲。上游 4xx 响应体原样回传。 |
 | 运维 | `/__llm_session_proxy__/status` 与 `/sessions` 本地端点、**默认落盘**的日志（`~/.lsp/logs`，支持按大小/按日期轮转与 30 天归档）、四层配置合并（默认值 < 配置文件 < 环境变量 < 命令行）。`listen.port: 0` 自动分配的端口永远不会落在 WHATWG 禁用端口上；用户显式写下的端口原样尊重，由 `--doctor` 负责提醒。 |
-| 稳定性 | 单个畸形请求打不死进程；未捕获异常会落进日志文件；**906 个测试**，其中 9 条专攻畸形输入与半开连接（非法 `Host`、上游 reason phrase 与响应头里的控制字符、畸形请求行、超大请求头、请求体没读完就断开、上游掐掉空闲 keep-alive）。 |
+| 稳定性 | 单个畸形请求打不死进程；未捕获异常会落进日志文件；**925 个测试**，其中 9 条专攻畸形输入与半开连接（非法 `Host`、上游 reason phrase 与响应头里的控制字符、畸形请求行、超大请求头、请求体没读完就断开、上游掐掉空闲 keep-alive）。 |
 | 语言 | 控制台与日志文案**默认英文**，`--lang zh` / `PROXY_LANG=zh` 切中文。 |
 
 ### 已知缺口（直说）
@@ -194,16 +194,18 @@ v0.2.2 交付协议转换本身。这样切分的理由：双向 SSE 转码是�
       单 `upstream` 配置。匹配时**同时**用客户端看到的模型名和解析后的真实名，因为别名改写会剥掉
       `proxy-` 前缀。凭据按供应商各自解析（环境变量 → 命令 → 存好的文件），解析出来的值绝不进日志。</sub>
 - [x] **GitHub Copilot 作为上游：** 用官方方式认证的 Copilot 托管模型。
-      <sub>**v0.3.0 已完成。** 见 `src/copilot.js`——GitHub token → `copilot_internal/v2/token` →
-      短期 session token → `api.githubcopilot.com`。GitHub token 依次取自 `COPILOT_GITHUB_TOKEN` →
+      <sub>**v0.3.0 已完成，v0.3.1 起默认直连。** 见 `src/copilot.js`——默认把 GitHub token **直接**作为 Bearer 发给
+      `api.githubcopilot.com`，也就是 OMP 走的那条捷径；`copilot_internal/v2/token` 交换（对 `gh`
+      CLI 的 OAuth token 会返回 403）改为 `auth.tokenMode: "session"` 显式启用，换来的 session
+      token 只存在内存里、到期前 5 分钟刷新。GitHub token 依次取自 `COPILOT_GITHUB_TOKEN` →
       `GH_TOKEN` → `GITHUB_TOKEN` → `gh` CLI → 存档的凭据文件 → 设备流登录，走的是官方链路而不是
       私有抓取。设备流（GitHub 官方的 OAuth 2.0 Device Authorization Grant）**默认关闭**，只有
       上游写了 `auth.deviceFlow` 才会走——需要人参与的登录绝不该在你背后悄悄启动；代理会把设备码与
       验证地址打印出来，登录成功后把 token 存档进 `~/.lsp/copilot-credentials.json`（权限 0600），
-      所以这件事只发生一次。`ghp_` 传统 PAT 明确**不支持**（GitHub 已把它从 Copilot 里弃用）；
-      `github_pat_` / `ghu_` / `gho_` / `ghs_` 支持。session token 只存在内存里，到期前 5 分钟刷新。
-      `Copilot-Integration-Id` 固定为 `copilot-developer-cli`——这是 GitHub 对 OAuth token 与 PAT
-      都接受的那个值。</sub>
+      所以这件事只发生一次。`--login-copilot` 可以单独跑这条流程。`ghp_` 传统 PAT 明确**不支持**
+      （GitHub 已把它从 Copilot 里弃用）；`github_pat_` / `ghu_` / `gho_` / `ghs_` 支持。
+      `Copilot-Integration-Id` 固定为 `copilot-developer-cli`，`X-GitHub-Api-Version` 固定为
+      `2026-08-01`；`--doctor` 会用一次只读的 `GET /models` 验证 Copilot 上游。</sub>
 - [x] **Gemini 作为第四种线协议：** 用原生 `generateContent` 形状，而不是 OpenAI 形状的仿制品。
       <sub>**v0.3.0 已完成。** `src/converters.js`、`src/replies.js` 与 `src/stream.js` 的转换方向从 6 个
       扩到 12 个（6 个直达 + 6 个经 chat 中转）。Gemini 把模型名与流式标志放在**路径**里

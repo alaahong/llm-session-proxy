@@ -111,7 +111,7 @@
       <div class="card">
         <div class="tag">copilot</div>
         <h4>把 GitHub Copilot 当成一个上游</h4>
-        <p>你的 GitHub 登录态会换成一张短期的 Copilot session token，于是 Copilot 托管的模型和你自己付费的模型能待在同一个池子里。凭据来自环境变量、<code>gh</code> CLI 或设备流登录——绝不来自配置文件，绝不进日志。</p>
+        <p>你的 GitHub token 会直接发给 Copilot，于是 Copilot 托管的模型和你自己付费的模型能待在同一个池子里。凭据来自环境变量、<code>gh</code> CLI 或 <code>--login-copilot</code> 设备流登录——绝不来自配置文件，绝不进日志。<code>--doctor</code> 会用一次只读的 <code>/models</code> 调用验证凭据。</p>
       </div>
       <div class="card">
         <div class="tag">protocol</div>
@@ -499,7 +499,7 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>wire</code></td><td>这个上游说哪套协议。请求体转发前会转成它</td></tr>
           <tr><td><code>modelWire</code></td><td>按模型名前缀覆盖线协议。Copilot 用它让 <code>gpt-5</code> 家族走 <code>/responses</code>，其余走 <code>/chat/completions</code></td></tr>
           <tr><td><code>headers</code></td><td>要带的静态请求头。Copilot 必需的那几个会自动补齐</td></tr>
-          <tr><td><code>auth</code></td><td>凭据从哪来：<code>env</code>（逗号分隔的变量名）、<code>command</code>（stdout 就是 key）、<code>header</code> / <code>prefix</code>（改凭据头）、<code>allowCommand</code>（<code>false</code> 表示不许执行任何命令）、<code>deviceFlow</code>（允许设备流登录）。<b>凭据值本身绝不进配置、绝不进日志</b></td></tr>
+          <tr><td><code>auth</code></td><td>凭据从哪来：<code>env</code>（逗号分隔的变量名）、<code>command</code>（stdout 就是 key）、<code>header</code> / <code>prefix</code>（改凭据头）、<code>allowCommand</code>（<code>false</code> 表示不许执行任何命令）、<code>deviceFlow</code>（允许设备流登录），以及仅 Copilot 可用的 <code>tokenMode</code>（<code>direct</code>，默认，或 <code>session</code>）。<b>凭据值本身绝不进配置、绝不进日志</b></td></tr>
         </tbody>
       </table>
     </div>
@@ -527,11 +527,13 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
       <code>upstream</code>——所以打开上游池永远不会弄坏已有的配置。
     </p>
     <p>
-      <b>凭据在请求时才取，从不落盘。</b>配置只说 key 从哪来，代理取出来直接发到线上。Copilot 这条链是
-      GitHub token → <code>copilot_internal/v2/token</code> → 一张短期的 Copilot session token
-      （只在内存缓存，到期前 5 分钟刷新）。GitHub token 按官方顺序找：
+      <b>凭据在请求时才取，从不落盘。</b>配置只说 key 从哪来，代理取出来直接发到线上。Copilot 这边，
+      GitHub token 会<b>直接</b>作为 <code>Authorization: Bearer</code> 发给上游（与官方 Copilot SDK
+      一致）；<code>auth.tokenMode: "session"</code> 才启用旧版的
+      <code>copilot_internal/v2/token</code> 交换，换来的短期 token 只在内存缓存。GitHub token 按官方顺序找：
       <code>COPILOT_GITHUB_TOKEN</code> → <code>GH_TOKEN</code> → <code>GITHUB_TOKEN</code> →
       <code>gh</code> CLI → 存档的凭据文件 → 设备流登录（仅当上游写了 <code>auth.deviceFlow</code>）。
+      跑一次 <code>llm-session-proxy --login-copilot</code> 就能通过设备流把凭据存档。
       注意 <code>ghp_</code> 传统 PAT GitHub 已不支持用于 Copilot；
       <code>github_pat_</code>、<code>ghu_</code>、<code>gho_</code>、<code>ghs_</code> 支持。
     </p>
@@ -670,7 +672,7 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       所以模板写错了会在这里暴露，而不是等上游回一个 400。
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.3.0 —— 试运行
+llm-session-proxy v0.3.1 —— 试运行
 
 模型
   样例            proxy-glm
@@ -753,8 +755,10 @@ llm-session-proxy v0.3.0 —— 试运行
     <p>
       <code>--doctor</code> 在同一份报告之上追加 DNS 解析、TCP 连接与握手耗时、协议为 <code>https</code>
       时的 TLS 握手（证书不受信任会如实报出，但不算硬失败）、监听端口是否空闲、监听端口是否落在
-      <a href="#forbidden-ports">WHATWG 禁用端口清单</a>里，以及一句「代理从不注入凭据」的提醒。
-      它<b>不发 HTTP 请求、不带任何凭据</b>——连通性只问到传输层为止——所以跑体检不会消耗你的速率配额。
+      <a href="#forbidden-ports">WHATWG 禁用端口清单</a>里、一句「代理只为上游池里的 provider 注入凭据」的提醒，
+      以及对每个 <code>copilot</code> 上游的真实凭据探测：解析 token 后调用 <code>GET /models</code>，
+      报告来源、token 模式与可见模型数。token 本身绝不会出现在报告里。
+      除这一次只读调用外，它<b>不发 HTTP 请求</b>——连通性只问到传输层为止——所以跑体检不会消耗对话配额。
       一切正常退出码为 <code>0</code>，有问题为 <code>1</code>，可以直接当启动闸门用：
     </p>
     <pre><code>llm-session-proxy --doctor &amp;&amp; llm-session-proxy</code></pre>
@@ -881,6 +885,7 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
         <tr><td><code>v0.2.1</code> ✓</td><td>路由</td><td>五个内置命名变换（<code>noop</code>、<code>drop-fields</code>、<code>drop-empty-fields</code>、<code>rename-fields</code>、<code>clamp-max-tokens</code>），以及路由分桶（<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>）——规则自上而下、首个命中即止，可匹配路径、模型前缀、请求体字段与请求体大小。默认关闭；互转器要挂靠的宿主。原本设想的「从路径加载插件」被有意砍掉了。</td></tr>
         <tr><td><code>v0.2.2</code> ✓</td><td>协议覆盖</td><td>Anthropic ↔ OpenAI ↔ Responses 互转与字段归一化，含流式——请求体、JSON 响应与 SSE 逐事件转码。从这个版本起，客户端用哪套协议不再决定它能用到哪些模型。</td></tr>
         <tr><td><code>v0.3.0</code> ✓</td><td>难度路由与上游覆盖</td><td>一个本地确定性打分器按请求<i>形态</i>打分并映射到档位（<code>easy</code> / <code>medium</code> / <code>hard</code>）供规则匹配；加上一个上游池——每个上游各有自己的端点、线协议与凭据来源——其中包括用官方方式认证的 GitHub Copilot。Google Gemini 作为第四种线格式加入协议集合。</td></tr>
+        <tr><td><code>v0.3.1</code> ✓</td><td>Copilot 覆盖</td><td>GitHub token 像 OMP 一样直接发给 <code>api.githubcopilot.com</code>（session 交换改为可选），<code>--login-copilot</code> 通过设备流存档凭据，<code>--doctor</code> 用一次只读的 <code>/models</code> 调用验证每个 Copilot 上游。Copilot API 版本头固定为 <code>2026-08-01</code>。</td></tr>
         <tr><td><code>v0.4</code></td><td>可观测与可控</td><td>Prometheus <code>/metrics</code>、JSON 日志模式、OTLP/JSON 导出、会话与提示词缓存检查器、token 与成本统计、免构建的本地看板。</td></tr>
         <tr><td><code>v0.5</code></td><td>真实上游下的可靠性</td><td>带抖动重试的兜底、熔断、超时拆分与流空闲看门狗、退出时优雅排空。</td></tr>
         <tr><td><code>v0.6</code></td><td>安全与卫生</td><td>日志脱敏、正则护栏、精确到行的配置 schema 报错、CI 用的 <code>--check-config</code>。</td></tr>

@@ -3,7 +3,9 @@ import net from 'node:net';
 import test from 'node:test';
 
 import { buildConfig } from '../src/config.js';
+import { createCopilotSessionManager } from '../src/copilot.js';
 import {
+  checkCopilotUpstreams,
   checkListenPort,
   diagnose,
   explainModel,
@@ -465,7 +467,7 @@ test('Upstream pool 区块列出 provider 的类型、协议与凭据来源', ()
   assert.match(rows, /pool :: 2 provider\(s\)/);
   assert.match(rows, /default :: cheap/);
   assert.match(rows, /cheap :: type=openai wire=chat\|responses credential=env:OPENAI_API_KEY/);
-  assert.match(rows, /strong :: type=copilot/);
+  assert.match(rows, /strong :: type=copilot wire=chat\|responses mode=direct/);
   assert.match(rows, /#0 :: gpt-5 -> strong/);
   assert.match(rows, /sample :: \w+ {2}\(\w+\)/);
 });
@@ -487,4 +489,118 @@ test('上游池的区块在中文里叫「上游池」，与「上游」不撞�
   assert.ok(titles.includes('上游池'), titles.join(','));
   assert.equal(new Set(titles).size, titles.length, '所有区块标题必须互不相同');
   setLang(DEFAULT_LANG);
+});
+
+// ---------- Copilot 凭据探测 ----------
+
+function copilotConfig(extra = {}) {
+  return buildConfig({
+    env: ENV,
+    flags: {
+      upstreams: {
+        providers: {
+          c: {
+            type: 'copilot',
+            baseUrl: 'https://api.githubcopilot.com',
+            auth: { allowCommand: false, ...extra },
+          },
+        },
+        default: 'c',
+      },
+    },
+  });
+}
+
+const COPILOT_ENV = { ...ENV, COPILOT_GITHUB_TOKEN: 'gho_test' };
+
+test('没有 Copilot provider 时不做凭据探测', async () => {
+  const result = await checkCopilotUpstreams(enConfig(), { env: ENV });
+  assert.deepEqual(result, { checks: [], problems: [] });
+});
+
+test('checkCopilotUpstreams 用 GitHub token 打 /models，并报告模型数量', async () => {
+  const calls = [];
+  const result = await checkCopilotUpstreams(copilotConfig(), {
+    env: COPILOT_ENV,
+    fetchImpl: async (url, options) => {
+      calls.push({ url: String(url), options });
+      return new Response(JSON.stringify({ data: [{ id: 'a' }, { id: 'b' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  assert.equal(result.problems.length, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.githubcopilot.com/models');
+  assert.equal(calls[0].options.headers.authorization, 'Bearer gho_test');
+  assert.equal(calls[0].options.headers['x-github-api-version'], '2026-08-01');
+  assert.match(result.checks[0], /copilot "c" auth ok/);
+  assert.match(result.checks[0], /env:COPILOT_GITHUB_TOKEN/);
+  assert.match(result.checks[0], /mode direct/);
+  assert.match(result.checks[0], /2 models/);
+  assert.ok(!JSON.stringify(result).includes('gho_test'), '探测结果绝不能带上 token');
+});
+
+test('checkCopilotUpstreams 在 401 时给出明确失败与问题', async () => {
+  const result = await checkCopilotUpstreams(copilotConfig(), {
+    env: COPILOT_ENV,
+    fetchImpl: async () => new Response('{}', { status: 401 }),
+  });
+
+  assert.equal(result.checks.length, 1);
+  assert.match(result.checks[0], /copilot "c" auth FAILED \(HTTP 401\)/);
+  assert.equal(result.problems.length, 1);
+  assert.match(result.problems[0], /rejected the resolved credential/);
+});
+
+test('checkCopilotUpstreams 尊重 auth.tokenMode: session', async () => {
+  const calls = [];
+  const manager = createCopilotSessionManager({
+    env: COPILOT_ENV,
+    exchangeSession: async () => ({ token: 'session-xyz', expiresAt: Date.now() + 600000 }),
+  });
+
+  const result = await checkCopilotUpstreams(copilotConfig({ tokenMode: 'session' }), {
+    env: COPILOT_ENV,
+    manager,
+    fetchImpl: async (url, options) => {
+      calls.push({ url: String(url), options });
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    },
+  });
+
+  assert.equal(calls[0].options.headers.authorization, 'Bearer session-xyz');
+  assert.match(result.checks[0], /mode session/);
+  assert.match(result.checks[0], /0 models/);
+});
+
+test('runDoctor 会把 Copilot 凭据探测整合进 Checks', async () => {
+  const upstream = await listenOnce();
+  const config = buildConfig({
+    env: ENV,
+    flags: {
+      upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
+      listen: { port: 0 },
+      upstreams: {
+        providers: { c: { type: 'copilot', baseUrl: 'https://api.githubcopilot.com', auth: { allowCommand: false } } },
+        default: 'c',
+      },
+    },
+  });
+
+  const diagnosis = await runDoctor(config, {
+    mode: 'doctor',
+    env: COPILOT_ENV,
+    fetchImpl: async () => new Response(JSON.stringify({ data: [] }), { status: 200 }),
+  });
+  await upstream.close();
+
+  assert.equal(diagnosis.ok, true, diagnosis.problems.join('; '));
+  assert.ok(
+    diagnosis.checks.some((line) => line.includes('copilot "c" auth ok')),
+    diagnosis.checks.join('\n'),
+  );
+  assert.ok(diagnosis.checks.some((line) => line.includes('0 models')));
 });

@@ -65,7 +65,7 @@ x-opencode-session : 会话 ID，同一对话内保持稳定（用于提示词�
 - **请求体参数注入 / 删除**——统一给所有请求补 `temperature`、`metadata`，或删掉上游不认的字段。
 - **SSE 流式零缓冲透传**——逐块转发，不攒完再发，流式体验不受影响。
 - **日志默认落盘**——`~/.lsp/logs/llm-session-proxy.log`，支持按大小 / 按日期轮转与 30 天归档，进程消失也留得下线索。
-- **启动前体检**——`--dry-run` 打印一次请求会怎么被路由、注入了哪些头、模型名解析成什么，全程不发任何请求；`--doctor` 再加上 DNS/TCP/TLS 可达性与监听端口检查，有问题时退出码非 0。
+- **启动前体检**——`--dry-run` 打印一次请求会怎么被路由、注入了哪些头、模型名解析成什么，全程不发任何请求；`--doctor` 再加上 DNS/TCP/TLS 可达性、监听端口与真实的 Copilot 凭据检查，有问题时退出码非 0。
 - **零依赖**——只用 Node 内置模块，不引入任何第三方包，`npx` 启动无安装负担。
 - **本地状态端点**——随时查看会话数、命中率、注入配置和会话明细。
 
@@ -486,6 +486,8 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 | `auth.command` | 一条命令，它的 **stdout** 就是 API key。用 `execFile` 执行，不经过 shell |
 | `auth.header` / `auth.prefix` | 覆盖凭据头的名字与前缀 |
 | `auth.allowCommand` | `false` 表示不许执行任何命令去取凭据 |
+| `auth.tokenMode` | 仅 Copilot：`direct`（默认，GitHub token 直接当 Bearer 发）或 `session`（先换一个约 30 分钟的 session token） |
+| `auth.deviceFlow` | 仅 Copilot：`true` 时允许把 OAuth 设备流作为最后一环凭据来源（需要人参与，默认关闭） |
 
 **凭据绝不从配置文件读，也绝不进日志。** 配置只说 key **从哪来**；值在请求时现取，直接装进请求头。`--doctor` 里只会显示**来源名**（`env:OPENAI_API_KEY`），看不到 key 本身。
 
@@ -493,10 +495,11 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 
 #### 把 GitHub Copilot 当成一个上游
 
-`copilot` 类型的上游走 `api.githubcopilot.com`，用的是 **session token**——由 GitHub token 换来的：
+`copilot` 类型的上游**直接把 GitHub token 发给** `api.githubcopilot.com`——与官方 Copilot SDK、
+OpenCode、OMP 的做法一致：
 
 ```
-GitHub token  →  GET api.github.com/copilot_internal/v2/token  →  session token（约 30 分钟）
+GitHub token  →  Authorization: Bearer <token>  →  api.githubcopilot.com
 ```
 
 GitHub token 的查找顺序与官方 Copilot SDK 一致：
@@ -510,13 +513,30 @@ GitHub token 的查找顺序与官方 Copilot SDK 一致：
 
 上游可以用 `auth.env` 指定变量名、用 `auth.command` 指定命令，覆盖前几环。
 
-设备流是 GitHub 官方的 OAuth 2.0 Device Authorization Grant：代理向 GitHub 要一段短码，把码和验证地址打印出来，等你在浏览器里确认。拿到的 token 会存档进凭据文件，所以这件事**只发生一次**，不是每个请求都来一遍。它默认关闭——需要人参与的登录绝不该在你背后悄悄启动。
+跑一次设备流登录，token 就会存进凭据文件，之后既不需要环境变量、也不需要已登录的 `gh`：
+
+```bash
+npx llm-session-proxy --login-copilot
+```
+
+如果环境里已经设了凭据变量，CLI 会明确提示：环境变量优先于存档文件。
+
+`auth.tokenMode` 决定 token 怎么用：
+
+- `direct`（默认）——GitHub token 原样装进 `Authorization: Bearer`。GitHub 现在接受
+  `gho_`、`ghu_` 与 `github_pat_` 直连。
+- `session`——先到 `api.github.com/copilot_internal/v2/token` 换一个约 30 分钟的 session token，
+  **只在内存里缓存**，到期前五分钟刷新。这是旧版流程；部分 OAuth token（尤其是
+  `gh auth token`）会被该端点以 `403` 拒绝，只有确实需要短命 token 的部署才建议开启。
 
 > **`ghp_` 不支持。** 官方 SDK 明确把 classic PAT 标为已弃用；请用带 **Copilot Requests** 权限的细粒度 PAT（`github_pat_`）或 OAuth token。
 
-session token **只在内存里缓存**，到期前五分钟刷新，**从不落盘**。拿不到 session token 时，请求以 `502` 失败并给出明确原因，而不是没带凭据就发给上游。
+拿不到凭据时，请求以 `502` 失败并给出明确原因，而不是没带凭据就发给上游。
 
-上游按模型选端点：`gpt-5*`、`codex*`、`o1`–`o4` 走 `/responses`，其余走 `/chat/completions`。Copilot 还需要几个固定头——`Copilot-Integration-Id: copilot-developer-cli`、`Editor-Version`、`Editor-Plugin-Version`、`User-Agent`、`X-GitHub-Api-Version`——代理会替你补齐。
+上游按模型选端点：`gpt-5*`、`codex*`、`o1`–`o4` 走 `/responses`，其余走 `/chat/completions`。Copilot 还需要几个固定头——`Copilot-Integration-Id: copilot-developer-cli`、`Editor-Version`、`Editor-Plugin-Version`、`User-Agent`、`X-GitHub-Api-Version: 2026-08-01`——代理会替你补齐，`headers` 可以覆盖任意一项。（`2026-08-01` 是 Copilot API 的版本；`2022-11-28` 属于 `api.github.com`，发给 `api.githubcopilot.com` 会得到 `400 invalid apiVersion`。）
+
+`--doctor` 会对每个 `copilot` 上游做一次只读的 `GET /models`，报告凭据来源、token 模式与可见模型数；
+token 本身绝不会出现在输出里。`401`/`403` 会被判为问题，并让命令以非 0 退出。
 
 > **关于 BYOK。** Copilot 的「自带密钥」是**客户端**功能：密钥存在客户端的钥匙串里，流量直连 provider，计费归 provider，代理拦不到。代理能做的是另一半——**一部分**请求走你的 Copilot 订阅、**另一部分**走你自己的 provider 密钥，按模型决定。
 
@@ -616,7 +636,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.3.0 —— 试运行
+llm-session-proxy v0.3.1 —— 试运行
 
 配置
   文件            （无）
@@ -759,7 +779,7 @@ llm-session-proxy --dry-run --model proxy-not-a-real-alias
   池子            2 个上游
   默认上游        own
   own             type=openai wire=chat|responses credential=env:OPENAI_API_KEY
-  copilot         type=copilot wire=chat|responses
+  copilot         type=copilot wire=chat|responses mode=direct
   #0              gpt-5 -> copilot
   样例上游        own（default）
 ```
@@ -773,10 +793,12 @@ llm-session-proxy --dry-run --model proxy-not-a-real-alias
 - 协议是 `https` 时的 **TLS** 握手——证书不受信任会如实报出来，而不是直接判失败
 - `listen.port` 是否空闲（只算警告，因为「已经跑着一个实例」看起来是一样的）
 - `listen.port` 是否落在 WHATWG 禁用端口清单里（同样是警告，见下文）
-- 一句提醒：代理从不注入凭据
+- 对每个 `copilot` 上游做一次真实的凭据检查：取 GitHub token，调用
+  `GET {baseUrl}/models`，报告来源、token 模式与可见模型数
+- 一句提醒：代理只为上游池里的 provider 注入凭据；主上游仍需客户端自己带 `authorization` 头
 
-它**不发任何 HTTP 请求、不带任何凭据**：可达性在传输层就回答了，所以体检不会消耗上游的速率配额。
-一切正常退出码为 `0`，有问题为 `1`，因此可以直接拿来当启动闸门：
+除这次只读的 Copilot `/models` 调用外，它**不发任何 HTTP 请求**，也不消耗对话配额：可达性在传输层就回答了。
+Copilot token 只会出现在请求头里，绝不进入报告。一切正常退出码为 `0`，有问题为 `1`，因此可以直接拿来当启动闸门：
 
 ```bash
 llm-session-proxy --doctor && llm-session-proxy
@@ -853,9 +875,10 @@ Fetch 规范——以及所有照着它实现的浏览器——内置了一张**
 | `--log-keep-days <n>` | 自动删除超过 N 天的历史日志（`0` 为永久保留） |
 | `-l, --lang <en\|zh>` | 控制台与日志文案语言（默认 `en`）|
 | `--init [file]` | 生成示例配置 |
+| `--login-copilot` | 用 OAuth 设备流登录 GitHub Copilot 并保存凭据 |
 | `--print-config` | 打印合并后的最终配置并退出 |
 | `--dry-run` | 校验配置并打印路由、分桶、注入与模型解析结果，不产生任何网络请求 |
-| `--doctor` | 同 `--dry-run`，再加 DNS/TCP/TLS 可达性与监听端口检查；有问题时退出码非 0 |
+| `--doctor` | 同 `--dry-run`，再加 DNS/TCP/TLS 可达性、监听端口与 Copilot 凭据检查；有问题时退出码非 0 |
 | `--model <id>` | `--dry-run` / `--doctor` 演示用的样例模型名 |
 
 环境变量与配置文件同名字段一一对应（大写形式）：`PROXY_PORT`、`UPSTREAM_HOST`、
@@ -988,7 +1011,7 @@ Trae 之类客户端会按模型 ID 把流量分流到自己的云通道。
 - **内置别名表是发布时的快照，不是活的模型目录**——上游改模型名是常态；别名失效时会告警并且告诉你该补哪条，但不会自动去拉取。真实 ID 永远原样放行，所以别名过期不会致命。
 - **协议互转在边缘处刻意有损**——Anthropic 的 `thinking` / `signature` 流增量在 chat 里没有标准位置，会丢弃（日志里记名）；`messages ↔ responses` 经 chat 中转，不做直达转换器。保下来的是文本、工具调用、结束原因与 usage——客户端真正会用的就这些。
 - **难度打分评的是请求*形态*，不是语义难度**——它看得到体积、轮数、代码、diff、工具、文件与明确的推理意图。一句「把它改成幂等的」和任何一句短消息分数一样低。请把它当作廉价且可解释的启发式；你明确知道情况时，还是用字节数与模型前缀两个匹配条件。
-- **Copilot 的凭据来自你已有的 GitHub 登录态**——代理读一个 GitHub token（环境变量、`gh` CLI 或凭据文件）换 session token。`ghp_` classic PAT 用不了；Copilot 的「自带密钥」仍然是客户端侧的功能——代理能做的是把一部分请求走你的订阅、另一部分走你自己的 provider 密钥。
+- **Copilot 的凭据来自你已有的 GitHub 登录态**——代理读一个 GitHub token（环境变量、`gh` CLI 或凭据文件）**直接**发给 `api.githubcopilot.com`；`auth.tokenMode: "session"` 才启用旧版的短命 token 交换。`ghp_` classic PAT 用不了；Copilot 的「自带密钥」仍然是客户端侧的功能——代理能做的是把一部分请求走你的订阅、另一部分走你自己的 provider 密钥。
 - 本工具只做转发与参数修补，不缓存、不计费、不修改响应内容。
 
 ---
@@ -1017,7 +1040,7 @@ as the model name. See the Chinese sections above for the full configuration ref
 3. 打一个同名 tag 并推送：
 
 ```bash
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.3.1 && git push origin v0.3.1
 ```
 
 workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本一致，再用仓库 secrets 里的
@@ -1037,6 +1060,8 @@ workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本�
   具名档位，规则于是可以写 `{ "bucket": "think", "difficulty": "hard" }`。另一条轴上，上游池让
   一部分模型走你的 GitHub Copilot 订阅、另一部分走你自己的 provider 密钥。
   **已交付 v0.3.0：** 打分器与档位、各自带凭据的上游池，以及作为第四种线协议的 Google Gemini。
+  **已交付 v0.3.1：** Copilot 改走直连——GitHub token 本身即 Bearer 凭据，不再强制交换 session
+  token——并新增 `--login-copilot` 与 `--doctor` 里的真实凭据探测。
 - **v0.4 — 可观测与可控。** Prometheus 格式指标、结构化 JSON 日志、token/成本统计端点、
   免构建的本地看板。
 - **v0.5 — 真实上游下的可靠性。** 熔断、上游健康检查、带抖动的重试、流空闲看门狗、优雅退出。

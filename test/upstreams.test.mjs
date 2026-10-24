@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  COPILOT_API_VERSION,
   PROVIDER_TYPES,
   apiKeyFromEnv,
   credentialHeaderSpec,
@@ -211,7 +212,9 @@ test('Copilot 的必需头自动补齐', () => {
   assert.ok(headers['editor-version']);
   assert.ok(headers['editor-plugin-version']);
   assert.ok(headers['user-agent']);
-  assert.ok(headers['x-github-api-version']);
+  // 2022-11-28 是 api.github.com 的版本，发给 Copilot API 会 400 invalid apiVersion
+  assert.equal(headers['x-github-api-version'], COPILOT_API_VERSION);
+  assert.equal(COPILOT_API_VERSION, '2026-08-01');
 });
 
 test('Copilot 的固定头可以被 provider.headers 覆盖', () => {
@@ -263,6 +266,22 @@ test('provider 摘要不包含凭据值', () => {
   assert.equal(summary.name, 'x');
   assert.equal(summary.credential, 'env:MY_KEY');
   assert.ok(!JSON.stringify(summary).includes('sk-'));
+});
+
+test('provider 摘要带出 Copilot 的 token 模式', () => {
+  const direct = normalizeProvider('c', { type: 'copilot', baseUrl: 'https://api.githubcopilot.com' });
+  assert.equal(describeProvider(direct).tokenMode, 'direct');
+
+  const session = normalizeProvider('c', {
+    type: 'copilot',
+    baseUrl: 'https://api.githubcopilot.com',
+    auth: { tokenMode: 'SESSION' },
+  });
+  assert.equal(session.auth.tokenMode, 'session');
+  assert.equal(describeProvider(session).tokenMode, 'session');
+
+  const custom = normalizeProvider('x', { type: 'custom', baseUrl: 'https://x.example' });
+  assert.equal(describeProvider(custom).tokenMode, null, 'tokenMode 只属于 Copilot');
 });
 
 test('池的摘要按名字列出', () => {

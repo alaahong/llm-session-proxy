@@ -167,7 +167,8 @@ export function createProxyServer({ config, logger }) {
     return agents.get(key);
   };
 
-  // Copilot 的 session token 管理器：内存缓存 + 到期前自动刷新。
+  // Copilot 的 token 管理器：默认直连 GitHub token；provider 配了
+  // auth.tokenMode: "session" 才换短命 session token。内存缓存，不落盘。
   // allowCommand 默认开着（官方链的最后一环是 gh CLI）；
   // 某个 provider 配了 auth.allowCommand: false 就单独关掉它。
   const copilotSession = createCopilotSessionManager({
@@ -1028,7 +1029,7 @@ export function createProxyServer({ config, logger }) {
    * 给请求头装上 provider 的凭据。
    *
    * 值在运行时现取，**绝不从配置文件读、绝不进日志**：
-   * - Copilot：GitHub token → session token（内存缓存，到期前刷新）；
+   * - Copilot：GitHub token 直连（默认），或换 session token（auth.tokenMode: "session"）；
    * - 其余 provider：从环境变量或命令取 API key。
    *
    * 三种情况不加凭据头，都不算错：
@@ -1038,18 +1039,21 @@ export function createProxyServer({ config, logger }) {
    *
    * 但 Copilot 是例外：它的凭据走内置的 GitHub token 链，与 provider.auth
    * 无关。没配 auth 的 Copilot provider **不代表**「这是一个免鉴权端点」——
-   * 放行只会让上游回一个语焉不详的 401，不如在这里说清楚「没拿到 session token」。
+   * 放行只会让上游回一个语焉不详的 401，不如在这里说清楚「没拿到 Copilot 凭据」。
    */
   async function applyProviderCredential(headers, provider, { log: logger2, copilotSession: sessionMgr }) {
     const spec = credentialHeaderSpec(provider);
 
     if (provider.type === 'copilot') {
-      // Copilot 必须有 session token：没有它上游只会回一个语焉不详的 401。
+      // Copilot 必须有凭据：没有它上游只会回一个语焉不详的 401。
       const auth = provider.auth && typeof provider.auth === 'object' ? provider.auth : {};
       const session = await sessionMgr.get({
         envNames: typeof auth.env === 'string' ? auth.env.split(',').map((s) => s.trim()).filter(Boolean) : [],
         command: typeof auth.command === 'string' ? auth.command : null,
         allowCommand: auth.allowCommand !== false,
+        // direct（默认）把 GitHub token 直接发给 Copilot API；
+        // session 才去 copilot_internal/v2/token 换短命 token。
+        tokenMode: auth.tokenMode,
         // 设备流登录需要人参与，所以只有 provider 明确写了 auth.deviceFlow 才启用。
         allowDeviceFlow: auth.deviceFlow === true,
         // 设备码要给人看：把它写到控制台与日志里（只有码和地址，没有 token）。

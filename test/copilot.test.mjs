@@ -7,10 +7,13 @@ import test from 'node:test';
 import {
   COPILOT_CLIENT_ID,
   COPILOT_TOKEN_ENV,
+  COPILOT_TOKEN_MODES,
+  DEFAULT_COPILOT_TOKEN_MODE,
   classifyToken,
   clearStoredCredential,
   createCopilotSessionManager,
   credentialFilePath,
+  normalizeCopilotTokenMode,
   readStoredCredential,
   resolveGitHubToken,
   runDeviceFlow,
@@ -256,9 +259,18 @@ test('设备流登录拿到的 token 会被 resolveGitHubToken 优先读到', as
   }
 });
 
-// ---------------------------------------------------------------- session 管理器
+// ---------------------------------------------------------------- token 管理器
 
-test('session 管理器在取不到凭据时抛出可读的错误', async () => {
+test('token 模式：默认 direct，只认 direct / session', () => {
+  assert.deepEqual(COPILOT_TOKEN_MODES, ['direct', 'session']);
+  assert.equal(DEFAULT_COPILOT_TOKEN_MODE, 'direct');
+  assert.equal(normalizeCopilotTokenMode('SESSION'), 'session');
+  assert.equal(normalizeCopilotTokenMode(' direct '), 'direct');
+  assert.equal(normalizeCopilotTokenMode('nope'), 'direct');
+  assert.equal(normalizeCopilotTokenMode(undefined, 'session'), 'session');
+});
+
+test('token 管理器在取不到凭据时抛出可读的错误', async () => {
   const manager = createCopilotSessionManager({ env: { LSP_HOME: '/tmp/lsp-empty-xyz' } });
   await assert.rejects(
     () => manager.get({ allowCommand: false }),
@@ -267,6 +279,66 @@ test('session 管理器在取不到凭据时抛出可读的错误', async () => 
       return true;
     },
   );
+});
+
+test('direct 模式直接把 GitHub token 交给上游，不做任何交换', async () => {
+  let exchanges = 0;
+  const manager = createCopilotSessionManager({
+    env: { A_TOKEN: 'a' },
+    exchangeSession: async () => {
+      exchanges += 1;
+      return { token: 'session-for-a', expiresAt: Date.now() + 600000 };
+    },
+  });
+
+  const token = await manager.get({ envNames: ['A_TOKEN'] });
+  assert.equal(token.token, 'a');
+  assert.equal(token.mode, 'direct');
+  assert.equal(token.source, 'env:A_TOKEN');
+  assert.equal(exchanges, 0, 'direct 模式不该去打 token 交换端点');
+});
+
+test('direct 缓存 5 分钟后失效，窗口内沿用同一 token', async () => {
+  let clock = 1_000_000;
+  const env = { A_TOKEN: 'a' };
+  const manager = createCopilotSessionManager({ env, now: () => clock });
+
+  assert.equal((await manager.get({ envNames: ['A_TOKEN'] })).token, 'a');
+  env.A_TOKEN = 'b';
+  assert.equal(
+    (await manager.get({ envNames: ['A_TOKEN'] })).token,
+    'a',
+    '缓存窗口内不该重复执行 gh CLI 或重读文件',
+  );
+
+  clock += 5 * 60 * 1000;
+  assert.equal((await manager.get({ envNames: ['A_TOKEN'] })).token, 'b', 'TTL 到期后应当重新取凭据');
+});
+
+test('同一来源的 direct 与 session 分桶缓存，不互相污染', async () => {
+  let exchanges = 0;
+  const manager = createCopilotSessionManager({
+    env: { A_TOKEN: 'a' },
+    exchangeSession: async (githubToken) => {
+      exchanges += 1;
+      return { token: `session-for-${githubToken}`, expiresAt: Date.now() + 600000 };
+    },
+  });
+
+  const direct = await manager.get({ envNames: ['A_TOKEN'] });
+  const session = await manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' });
+  assert.equal(direct.token, 'a');
+  assert.equal(session.token, 'session-for-a');
+  assert.equal(exchanges, 1);
+
+  assert.equal((await manager.get({ envNames: ['A_TOKEN'] })).token, 'a');
+  assert.equal((await manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' })).token, 'session-for-a');
+  assert.equal(exchanges, 1, '两种模式各自命中自己的缓存');
+});
+
+test('classic PAT 在发请求前就被明确拒绝', async () => {
+  const manager = createCopilotSessionManager({ env: { A_TOKEN: 'ghp_abc' } });
+  await assert.rejects(() => manager.get({ envNames: ['A_TOKEN'] }), /classic PAT/);
 });
 
 test('session 管理器按凭据来源分桶缓存，不同来源不串号', async () => {
@@ -280,13 +352,13 @@ test('session 管理器按凭据来源分桶缓存，不同来源不串号', asy
     },
   });
 
-  const a = await manager.get({ envNames: ['A_TOKEN'] });
-  const b = await manager.get({ envNames: ['B_TOKEN'] });
+  const a = await manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' });
+  const b = await manager.get({ envNames: ['B_TOKEN'], tokenMode: 'session' });
   assert.equal(a.token, 'session-for-a');
   assert.equal(b.token, 'session-for-b');
 
   // 再取一次走缓存，不该再换
-  const aAgain = await manager.get({ envNames: ['A_TOKEN'] });
+  const aAgain = await manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' });
   assert.equal(aAgain.token, 'session-for-a');
   assert.equal(calls.length, 2, '两次不同来源各换一次，重复取命中缓存');
 });
@@ -303,11 +375,11 @@ test('session 管理器的 invalidate 清掉指定来源的缓存', async () => 
     exchangeSession: async () => ({ token: 'session-a', expiresAt: Date.now() + 600000 }),
   });
 
-  await manager.get({ envNames: ['A_TOKEN'] });
-  assert.ok(manager.peek({ envNames: ['A_TOKEN'] }));
+  await manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' });
+  assert.ok(manager.peek({ envNames: ['A_TOKEN'], tokenMode: 'session' }));
 
-  manager.invalidate({ envNames: ['A_TOKEN'] });
-  assert.equal(manager.peek({ envNames: ['A_TOKEN'] }), null);
+  manager.invalidate({ envNames: ['A_TOKEN'], tokenMode: 'session' });
+  assert.equal(manager.peek({ envNames: ['A_TOKEN'], tokenMode: 'session' }), null);
 });
 
 test('session 管理器在 token 快过期时提前刷新', async () => {
@@ -323,12 +395,12 @@ test('session 管理器在 token 快过期时提前刷新', async () => {
     },
   });
 
-  await manager.get({ envNames: ['A_TOKEN'] });
+  await manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' });
   assert.equal(exchanges, 1);
 
-  // 过了 26 分钟：还在有效期内（离过期还有 4 分钟 > 5 分钟余量？不对，正好该刷新）
+  // 过了 26 分钟：离过期不足 5 分钟，该换新的
   clock += 26 * 60 * 1000;
-  await manager.get({ envNames: ['A_TOKEN'] });
+  await manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' });
   assert.equal(exchanges, 2, '离过期不足 5 分钟就该换新的');
 });
 
@@ -344,9 +416,9 @@ test('session 管理器把并发请求合并成一次交换', async () => {
   });
 
   const results = await Promise.all([
-    manager.get({ envNames: ['A_TOKEN'] }),
-    manager.get({ envNames: ['A_TOKEN'] }),
-    manager.get({ envNames: ['A_TOKEN'] }),
+    manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' }),
+    manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' }),
+    manager.get({ envNames: ['A_TOKEN'], tokenMode: 'session' }),
   ]);
   assert.equal(exchanges, 1, '三个并发请求只换一次 token');
   assert.equal(results[0].token, results[2].token);

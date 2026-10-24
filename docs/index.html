@@ -114,7 +114,7 @@
       <div class="card">
         <div class="tag">copilot</div>
         <h4>GitHub Copilot as an upstream</h4>
-        <p>Your GitHub login becomes a short-lived Copilot session token, so Copilot-hosted models sit in the same pool as the ones you pay for yourself. Credentials come from the environment, the <code>gh</code> CLI or a device-flow login — never from the config file, never into the log.</p>
+        <p>Your GitHub token is sent straight to Copilot, so Copilot-hosted models sit in the same pool as the ones you pay for yourself. Credentials come from the environment, the <code>gh</code> CLI or a <code>--login-copilot</code> device-flow login — never from the config file, never into the log. <code>--doctor</code> verifies the credential with a read-only <code>/models</code> call.</p>
       </div>
       <div class="card">
         <div class="tag">protocol</div>
@@ -510,7 +510,7 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>wire</code></td><td>Which protocol this provider speaks. The request body is converted to it before forwarding</td></tr>
           <tr><td><code>modelWire</code></td><td>Per-model-prefix wire override. Copilot uses it so <code>gpt-5</code>-family models go to <code>/responses</code> and the rest to <code>/chat/completions</code></td></tr>
           <tr><td><code>headers</code></td><td>Static headers to send. Copilot's required headers are filled in automatically</td></tr>
-          <tr><td><code>auth</code></td><td>Where the credential comes from: <code>env</code> (comma-separated variable names), <code>command</code> (its stdout is the key), <code>header</code> / <code>prefix</code> (override the credential header), <code>allowCommand</code> (<code>false</code> forbids running any command), <code>deviceFlow</code> (allow a device login). <b>The value itself never lives in the config and never reaches the log</b></td></tr>
+          <tr><td><code>auth</code></td><td>Where the credential comes from: <code>env</code> (comma-separated variable names), <code>command</code> (its stdout is the key), <code>header</code> / <code>prefix</code> (override the credential header), <code>allowCommand</code> (<code>false</code> forbids running any command), <code>deviceFlow</code> (allow a device login), and — for Copilot only — <code>tokenMode</code> (<code>direct</code>, the default, or <code>session</code>). <b>The value itself never lives in the config and never reaches the log</b></td></tr>
         </tbody>
       </table>
     </div>
@@ -540,14 +540,16 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
     </p>
     <p>
       <b>Credentials are read at request time and never written down.</b> The config says where the
-      key comes from; the proxy fetches it and puts it on the wire. For Copilot the chain is
-      GitHub token → <code>copilot_internal/v2/token</code> → a short-lived Copilot session token
-      (cached in memory, refreshed five minutes before expiry). The GitHub token is looked up in the
-      official order — <code>COPILOT_GITHUB_TOKEN</code> → <code>GH_TOKEN</code> → <code>GITHUB_TOKEN</code>
-      → the <code>gh</code> CLI → the archived credential file → the device flow (only when the
-      provider sets <code>auth.deviceFlow</code>). Note that <code>ghp_</code> classic PATs are
-      <b>not</b> supported by GitHub for Copilot; <code>github_pat_</code>, <code>ghu_</code>,
-      <code>gho_</code> and <code>ghs_</code> are.
+      key comes from; the proxy fetches it and puts it on the wire. For Copilot the GitHub token is
+      sent <b>directly</b> as <code>Authorization: Bearer</code> (the same approach as the official
+      Copilot SDK); <code>auth.tokenMode: "session"</code> opts into the older exchange at
+      <code>copilot_internal/v2/token</code> for a short-lived token cached in memory. The GitHub
+      token is looked up in the official order — <code>COPILOT_GITHUB_TOKEN</code> →
+      <code>GH_TOKEN</code> → <code>GITHUB_TOKEN</code> → the <code>gh</code> CLI → the archived
+      credential file → the device flow (only when the provider sets <code>auth.deviceFlow</code>).
+      Run <code>llm-session-proxy --login-copilot</code> once to archive a credential via the device
+      flow. Note that <code>ghp_</code> classic PATs are <b>not</b> supported by GitHub for Copilot;
+      <code>github_pat_</code>, <code>ghu_</code>, <code>gho_</code> and <code>ghs_</code> are.
     </p>
 
     <h3 id="protocol">protocol — convert between protocols</h3>
@@ -690,7 +692,7 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       a 400 from the upstream.
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.3.0 — dry run
+llm-session-proxy v0.3.1 — dry run
 
 Model
   sample              proxy-glm
@@ -781,9 +783,12 @@ Transformers
       <code>--doctor</code> runs the same report and adds DNS resolution, a TCP connect with handshake
       time, a TLS handshake when the protocol is <code>https</code> (an untrusted certificate is
       reported, not treated as a hard failure), a listen-port availability check, a check for the
-      <a href="#forbidden-ports">WHATWG forbidden-port list</a>, and a reminder that
-      the proxy never injects credentials. It sends <b>no HTTP request and no credentials</b> —
-      reachability is answered at the transport layer — so a doctor run cannot burn rate-limit quota.
+      <a href="#forbidden-ports">WHATWG forbidden-port list</a>, a reminder that only upstream-pool
+      providers get credentials injected, and — for every <code>copilot</code> provider — a real
+      credential probe: resolve the token and call <code>GET /models</code>, reporting the source,
+      the token mode and the visible model count. The token itself never appears in the report.
+      Apart from that single read-only call it sends <b>no HTTP request</b> — reachability is
+      answered at the transport layer — so a doctor run cannot burn chat quota.
       It exits <code>0</code> when everything is fine and <code>1</code> when something needs fixing,
       which makes it usable as a startup gate:
     </p>
@@ -935,6 +940,7 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
         <tr><td><code>v0.2.1</code> ✓</td><td>Routing</td><td>Five named in-tree transforms (<code>noop</code>, <code>drop-fields</code>, <code>drop-empty-fields</code>, <code>rename-fields</code>, <code>clamp-max-tokens</code>) and router buckets (<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>) with top-down first-match rules over path, model prefix, body field and request size. Off by default; the host the translators plug into. The load-a-plugin-from-a-path model originally sketched for this milestone was dropped on purpose.</td></tr>
         <tr><td><code>v0.2.2</code> ✓</td><td>Protocol reach</td><td>Anthropic ↔ OpenAI ↔ Responses translation with field normalisation, streaming included — request bodies, JSON responses and event-by-event SSE transcoding. The release that stops a client&rsquo;s protocol from deciding which models it can reach.</td></tr>
         <tr><td><code>v0.3.0</code> ✓</td><td>Difficulty routing and upstream reach</td><td>A local deterministic scorer that grades a request by <i>shape</i> and maps it onto bands (<code>easy</code> / <code>medium</code> / <code>hard</code>) that rules can match on, plus a pool of upstreams — each with its own endpoints, wire protocol and credential source — including GitHub Copilot authenticated the official way. Google Gemini joins the protocol set as a fourth wire format.</td></tr>
+        <tr><td><code>v0.3.1</code> ✓</td><td>Copilot reach</td><td>The GitHub token goes straight to <code>api.githubcopilot.com</code> the way OMP does (the session exchange becomes opt-in), a <code>--login-copilot</code> device-flow login archives a credential, and <code>--doctor</code> verifies each Copilot provider with a read-only <code>/models</code> call. The Copilot API version header is pinned to <code>2026-08-01</code>.</td></tr>
         <tr><td><code>v0.4</code></td><td>Observability and control</td><td>Prometheus <code>/metrics</code>, JSON log mode, OTLP/JSON export, a session and prompt-cache inspector, token and cost accounting, and a zero-build local dashboard.</td></tr>
         <tr><td><code>v0.5</code></td><td>Reliability under real upstreams</td><td>Fallback with jittered retry, circuit breaking, separated timeouts with a stream idle watchdog, graceful drain on shutdown.</td></tr>
         <tr><td><code>v0.6</code></td><td>Safety and hygiene</td><td>Log redaction, regex guardrails, line-precise config schema errors, and <code>--check-config</code> for CI.</td></tr>

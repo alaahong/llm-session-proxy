@@ -1209,7 +1209,7 @@ test('Copilot 走设备流登录：设备码要显示给用户，session token �
     upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
     upstreams: {
       providers: {
-        c: { type: 'copilot', baseUrl: `http://127.0.0.1:${upstream.port}`, auth: { allowCommand: false, deviceFlow: true } },
+        c: { type: 'copilot', baseUrl: `http://127.0.0.1:${upstream.port}`, auth: { allowCommand: false, deviceFlow: true, tokenMode: 'session' } },
       },
       default: 'c',
     },
@@ -1223,6 +1223,64 @@ test('Copilot 走设备流登录：设备码要显示给用户，session token �
       proxy.logs.info.some((line) => line.includes('ABCD-1234')),
       `设备码要显示给用户，实际：${JSON.stringify(proxy.logs.info)}`,
     );
+  } finally {
+    https.request = originalRequest;
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    if (savedHome === undefined) delete process.env.LSP_HOME;
+    else process.env.LSP_HOME = savedHome;
+    fs.rmSync(home, { recursive: true, force: true });
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('Copilot 默认 direct：GitHub token 直接装进请求头，不换 session token', async () => {
+  const seen = [];
+  const upstream = await startUpstream((req, res) => {
+    seen.push(req.headers.authorization);
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+  });
+
+  const saved = {};
+  for (const name of ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN']) {
+    saved[name] = process.env[name];
+    delete process.env[name];
+  }
+  process.env.COPILOT_GITHUB_TOKEN = 'gho_direct';
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-copilot-direct-'));
+  const savedHome = process.env.LSP_HOME;
+  process.env.LSP_HOME = home;
+
+  // direct 模式不该碰 api.github.com；任何 https 请求都记下来
+  const originalRequest = https.request;
+  let httpsCalls = 0;
+  https.request = function patched(...args) {
+    httpsCalls += 1;
+    return originalRequest.apply(this, args);
+  };
+
+  const proxy = await startProxy({
+    upstream: { protocol: 'http', host: '127.0.0.1', port: upstream.port },
+    upstreams: {
+      providers: {
+        c: { type: 'copilot', baseUrl: `http://127.0.0.1:${upstream.port}`, auth: { allowCommand: false } },
+      },
+      default: 'c',
+    },
+  });
+
+  try {
+    const response = await postJson(`${proxy.url}/v1/chat/completions`, { model: 'gpt-4o', messages: [] });
+    assert.equal(response.status, 200);
+    assert.equal(seen[0], 'Bearer gho_direct', 'direct 模式发的是 GitHub token 本身');
+    assert.equal(httpsCalls, 0, 'direct 模式不该去换 session token');
   } finally {
     https.request = originalRequest;
     for (const [name, value] of Object.entries(saved)) {

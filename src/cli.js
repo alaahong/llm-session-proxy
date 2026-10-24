@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { DEFAULT_CONFIG, buildConfig, parseUpstream, resolveLogFile } from './config.js';
+import { classifyToken, credentialFilePath, runDeviceFlow, tokenFromEnv } from './copilot.js';
 import { renderDiagnosis, runDoctor } from './doctor.js';
 import { NAME, VERSION } from './index.js';
 import { Logger, logDetail } from './logger.js';
@@ -121,6 +122,7 @@ export function parseArgv(argv) {
   let dryRun = false;
   let doctor = false;
   let doctorModel = null;
+  let loginCopilot = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const raw = argv[i];
@@ -159,6 +161,9 @@ export function parseArgv(argv) {
       case '--model':
         // 只服务于 --dry-run / --doctor：指定一个样例模型名来演示解析结果
         doctorModel = takeValue();
+        break;
+      case '--login-copilot':
+        loginCopilot = true;
         break;
       case '--init': {
         initRequested = true;
@@ -284,7 +289,44 @@ export function parseArgv(argv) {
     }
   }
 
-  return { flags, configFile, printConfig, initRequested, initFile, dryRun, doctor, model: doctorModel };
+  return { flags, configFile, printConfig, initRequested, initFile, dryRun, doctor, model: doctorModel, loginCopilot };
+}
+
+/**
+ * `--login-copilot`：跑一次 GitHub 设备流登录，把 token 存进凭据文件。
+ * 只把设备码与验证地址写到终端，**绝不回显 token**。
+ */
+export async function runCopilotLogin({
+  env = process.env,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  deviceFlow = runDeviceFlow,
+} = {}) {
+  stdout.write(`${t('cli.copilotLogin.start')}\n`);
+  try {
+    const result = await deviceFlow({
+      env,
+      onDeviceCode: ({ userCode, verificationUri }) => {
+        stdout.write(`${t('cli.copilotLogin.code', { code: userCode, url: verificationUri })}\n`);
+        stdout.write(`${t('cli.copilotLogin.waiting')}\n`);
+      },
+    });
+    const file = credentialFilePath(env);
+    const kind = classifyToken(result?.token).kind;
+    // 注入的 deviceFlow 可能不带 stored；只有明确写 false 才算没存下来。
+    if (result?.stored === false) {
+      stderr.write(`${t('cli.copilotLogin.notSaved', { file })}\n`);
+      return { ok: false, file, kind };
+    }
+    stdout.write(`${t('cli.copilotLogin.ok', { file, kind })}\n`);
+    // 环境变量比存档优先；用户设过就必须说清楚，否则「登录了却不生效」无从解释
+    const envToken = tokenFromEnv(env);
+    if (envToken) stderr.write(`${t('cli.copilotLogin.envOverride', { names: envToken.envName })}\n`);
+    return { ok: true, file, kind };
+  } catch (error) {
+    stderr.write(`${t('cli.copilotLogin.fail', { message: error.message })}\n`);
+    return { ok: false, error };
+  }
 }
 
 
@@ -417,6 +459,12 @@ export async function runCli(argv = process.argv.slice(2)) {
     }
     fs.writeFileSync(target, sampleConfig(), 'utf8');
     process.stdout.write(t('cli.init.created', { target, name: NAME }));
+    return;
+  }
+  if (parsed.loginCopilot) {
+    // 登录只写凭据文件，不读配置、不起服务
+    const result = await runCopilotLogin();
+    if (!result.ok) process.exitCode = 1;
     return;
   }
 

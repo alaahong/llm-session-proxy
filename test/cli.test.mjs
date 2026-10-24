@@ -7,7 +7,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { parseArgv } from '../src/cli.js';
+import { parseArgv, runCopilotLogin } from '../src/cli.js';
+import { credentialFilePath, readStoredCredential, writeStoredCredential } from '../src/copilot.js';
 import { setLang } from '../src/messages.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -133,6 +134,10 @@ test('parseArgv 识别本地工具开关', () => {
   const printed = parseArgv(['--print-config', '-c', './custom.json']);
   assert.equal(printed.printConfig, true);
   assert.equal(printed.configFile, './custom.json');
+
+  const login = parseArgv(['--login-copilot']);
+  assert.equal(login.loginCopilot, true);
+  assert.deepEqual(login.flags, {}, '登录开关不该写进配置');
 });
 
 test('parseArgv 空参数返回全默认的空片段', () => {
@@ -184,6 +189,7 @@ test('CLI --help 打印用法并覆盖关键选项', () => {
     '--path-rewrite',
     '--print-config',
     '--init',
+    '--login-copilot',
     '--lang',
     '--log-file',
     '--no-log-file',
@@ -396,7 +402,7 @@ test('CLI --doctor 对可达上游以退出码 0 结束，并列出检查项', a
 
   assert.ok(out.includes('Checks'), `doctor 输出里应当有检查小节:\n${out}`);
   assert.match(out, /tcp ok/);
-  assert.match(out, /the proxy never injects credentials/);
+  assert.match(out, /the proxy only injects credentials for upstream-pool providers/);
   assert.ok(out.includes('OK — the configuration is valid and every check passed.'));
 });
 
@@ -456,4 +462,96 @@ test('CLI --transformer 拼错名字以退出码 2 结束', () => {
     () => execFileSync(process.execPath, [bin, '--dry-run', '--transformer', 'noop2'], { encoding: 'utf8', env, stdio: 'pipe' }),
     (error) => error.status === 2 && /not a registered transformer/.test(error.stderr),
   );
+});
+
+// ---------------------------------------------------------------- --login-copilot
+
+test('runCopilotLogin 只显示设备码与地址，token 不落到终端', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-login-'));
+  const out = [];
+  const err = [];
+  const stdout = { write: (chunk) => out.push(chunk) };
+  const stderr = { write: (chunk) => err.push(chunk) };
+  try {
+    const result = await runCopilotLogin({
+      env: { LSP_HOME: home },
+      stdout,
+      stderr,
+      deviceFlow: async ({ env, onDeviceCode }) => {
+        onDeviceCode({ userCode: 'ABCD-1234', verificationUri: 'https://github.com/login/device' });
+        writeStoredCredential('gho_from_device', env);
+        return { token: 'gho_from_device', source: 'device-flow' };
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.file, credentialFilePath({ LSP_HOME: home }));
+    assert.equal(result.kind, 'oauth-user');
+
+    const text = out.join('');
+    assert.match(text, /ABCD-1234/);
+    assert.match(text, /https:\/\/github\.com\/login\/device/);
+    assert.match(text, /Credential saved to/);
+    assert.ok(!text.includes('gho_from_device'), '终端输出绝不能包含 token');
+    assert.ok(!err.join('').includes('gho_from_device'));
+
+    assert.equal(readStoredCredential({ LSP_HOME: home }).token, 'gho_from_device');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('runCopilotLogin 存档失败时如实报告，而不是谎称已保存', async () => {
+  const out = [];
+  const err = [];
+  const result = await runCopilotLogin({
+    env: { LSP_HOME: '/tmp/lsp-login-none' },
+    stdout: { write: (chunk) => out.push(chunk) },
+    stderr: { write: (chunk) => err.push(chunk) },
+    deviceFlow: async () => ({ token: 'gho_device', source: 'device-flow', stored: false }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(err.join(''), /could not be saved/);
+  assert.ok(!out.join('').includes('Credential saved'), '没存下来就不能说已保存');
+  assert.ok(!out.join('').includes('gho_device'), '终端输出绝不能包含 token');
+});
+
+test('runCopilotLogin 登录失败时返回 ok:false，并把原因写到 stderr', async () => {
+  const out = [];
+  const err = [];
+  const result = await runCopilotLogin({
+    env: { LSP_HOME: '/tmp/lsp-login-none' },
+    stdout: { write: (chunk) => out.push(chunk) },
+    stderr: { write: (chunk) => err.push(chunk) },
+    deviceFlow: async () => {
+      throw new Error('device flow timed out');
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(err.join(''), /Sign-in failed: device flow timed out/);
+  assert.ok(!out.join('').includes('Credential saved'));
+});
+
+test('runCopilotLogin 在环境变量优先于存档时明确提示', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-login-'));
+  const err = [];
+  try {
+    const result = await runCopilotLogin({
+      env: { LSP_HOME: home, GH_TOKEN: 'env-token' },
+      stdout: { write: () => {} },
+      stderr: { write: (chunk) => err.push(chunk) },
+      deviceFlow: async ({ env }) => {
+        writeStoredCredential('gho_from_device', env);
+        return { token: 'gho_from_device', source: 'device-flow' };
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(err.join(''), /GH_TOKEN/);
+    assert.ok(!err.join('').includes('env-token'), '提示里不能出现凭据值');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

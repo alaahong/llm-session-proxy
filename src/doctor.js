@@ -3,6 +3,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 
 import { resolveLogFile, resolveUpstream } from './config.js';
+import { createCopilotSessionManager } from './copilot.js';
 import { rewriteModel } from './inject.js';
 import { logDetail } from './logger.js';
 import { t } from './messages.js';
@@ -14,7 +15,7 @@ import { listScorers } from './scoring.js';
 import { generateId } from './session.js';
 import { createContext, renderTemplate } from './template.js';
 import { listTransformers } from './transformers.js';
-import { describeProvider, resolveUpstream as resolvePoolUpstream } from './upstreams.js';
+import { describeProvider, normalizeProvider, credentialHeaderSpec, providerHeaders, resolveUpstream as resolvePoolUpstream } from './upstreams.js';
 
 /**
  * 配置体检与路由预演。
@@ -23,9 +24,10 @@ import { describeProvider, resolveUpstream as resolvePoolUpstream } from './upst
  *   --dry-run   只做静态分析，一个字节都不发出去
  *   --doctor    在静态分析之上，额外探测上游可达性与监听端口占用
  *
- * 刻意**不发送 HTTP 请求**：探测只到 DNS / TCP / TLS 为止，既不碰上游的
- * 速率配额，也不涉及任何凭据。想知道「能不能连上」这就够了，
- * 想知道「密钥对不对」该由客户端自己发一次真实请求去回答。
+ * 刻意**不发送聊天请求**：普通探测只到 DNS / TCP / TLS 为止，不碰上游的
+ * 对话配额。唯一带凭据的调用是 Copilot provider 的 `GET /models`——
+ * 它只回答「这个 token 能不能用」，不消耗 token 配额，也不会把凭据写进
+ * 任何输出。想知道「密钥对不对」除此之外只能由客户端自己发一次真实请求。
  */
 
 /** 全角字符按 2 列计算，否则中英混排的标签列会歪。 */
@@ -396,6 +398,7 @@ export function diagnose(config, { model = null, env = process.env, name = 'llm-
       const info = describeProvider(provider);
       const bits = [`type=${info.type}`, `wire=${info.wire.join('|') || '-'}`];
       if (info.credential) bits.push(`credential=${info.credential}`);
+      if (info.tokenMode) bits.push(`mode=${info.tokenMode}`);
       poolRows.push([t('doctor.label.poolProvider', { name }), bits.join(' ')]);
     }
     const poolRoutes = Array.isArray(pool.routes) ? pool.routes : [];
@@ -571,12 +574,77 @@ export function checkListenPort({ host, port }) {
 }
 
 /**
+ * 探测上游池里的 Copilot provider。
+ *
+ * 每个 provider 单独取一次凭据（来源与模式都可能不同），再调用
+ * `GET {baseUrl}/models`：200 = token 可用；401 / 403 = 凭据或 Copilot 权限有问题。
+ * 这是一次只读调用，不消耗对话配额；token 只出现在请求头里，
+ * **绝不进入返回值、检查项或错误信息**。
+ */
+export async function checkCopilotUpstreams(
+  config,
+  { env = process.env, timeoutMs = 8000, fetchImpl = globalThis.fetch, manager = null } = {},
+) {
+  const pool = config?.upstreams;
+  const providers = pool?.providers && typeof pool.providers === 'object' ? pool.providers : {};
+  const targets = Object.entries(providers).filter(([, provider]) => provider?.type === 'copilot');
+  const checks = [];
+  const problems = [];
+  if (!targets.length) return { checks, problems };
+
+  const sessionManager = manager || createCopilotSessionManager({ env });
+
+  for (const [name, raw] of targets) {
+    const provider = normalizeProvider(name, raw);
+    try {
+      const auth = provider.auth && typeof provider.auth === 'object' ? provider.auth : {};
+      const token = await sessionManager.get({
+        envNames: typeof auth.env === 'string' ? auth.env.split(',').map((item) => item.trim()).filter(Boolean) : [],
+        command: typeof auth.command === 'string' ? auth.command : null,
+        allowCommand: auth.allowCommand !== false,
+        tokenMode: auth.tokenMode,
+        // 体检不能把人拖进交互式登录：没凭据就如实报「取不到」
+        allowDeviceFlow: false,
+      });
+      const spec = credentialHeaderSpec(provider);
+      const headers = { ...providerHeaders(provider), [spec.header]: `${spec.prefix}${token.token}` };
+      if (!headers.accept) headers.accept = 'application/json';
+      const response = await fetchImpl(`${provider.baseUrl}/models`, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!response.ok) {
+        checks.push(t('doctor.check.copilotFail', { name, message: `HTTP ${response.status}` }));
+        problems.push(t('doctor.fail.copilot', { name }));
+        continue;
+      }
+      const body = await response.json().catch(() => null);
+      const models = Array.isArray(body?.data) ? body.data.length : null;
+      checks.push(
+        t('doctor.check.copilotOk', {
+          name,
+          source: token.source,
+          mode: token.mode || 'direct',
+          models,
+        }),
+      );
+    } catch (error) {
+      checks.push(t('doctor.check.copilotFail', { name, message: error.message }));
+      problems.push(t('doctor.fail.copilot', { name }));
+    }
+  }
+
+  return { checks, problems };
+}
+
+/**
  * 完整跑一次体检。
  *
  * mode = 'dryRun'  → 只有静态诊断
- * mode = 'doctor'  → 静态诊断 + 上游可达性 + 监听端口
+ * mode = 'doctor'  → 静态诊断 + 上游可达性 + 监听端口 + Copilot 凭据
  */
-export async function runDoctor(config, { mode = 'dryRun', model = null, env = process.env, name = 'llm-session-proxy', timeoutMs = 8000 } = {}) {
+export async function runDoctor(config, { mode = 'dryRun', model = null, env = process.env, name = 'llm-session-proxy', timeoutMs = 8000, fetchImpl = globalThis.fetch } = {}) {
   const diagnosis = diagnose(config, { model, env, name });
 
   if (mode === 'doctor') {
@@ -624,6 +692,12 @@ export async function runDoctor(config, { mode = 'dryRun', model = null, env = p
       checks.push(t('doctor.check.portBusy', { port: config.listen.port }));
       diagnosis.warnings.push(t('doctor.warn.portBusy', { port: config.listen.port }));
     }
+
+    // Copilot provider 的凭据是真的可以「当场验证」的：解析一次凭据，
+    // 再拿它打一次 /models，就知道它能不能用。
+    const copilotProbe = await checkCopilotUpstreams(config, { env, timeoutMs, fetchImpl });
+    checks.push(...copilotProbe.checks);
+    diagnosis.problems.push(...copilotProbe.problems);
 
     checks.push(t('doctor.check.credentials', { header: 'authorization' }));
 
