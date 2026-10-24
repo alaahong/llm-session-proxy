@@ -194,13 +194,19 @@ test('同协议或非法 payload 不转换', () => {
   assert.equal(convertResponseJson('text', 'messages', 'chat').changed, false);
 });
 
-test('注册表覆盖全部六个方向', () => {
+test('注册表覆盖全部十二个方向', () => {
   assert.deepEqual(listResponseConverters().sort(), [
+    'chat->gemini',
     'chat->messages',
     'chat->responses',
+    'gemini->chat',
+    'gemini->messages',
+    'gemini->responses',
     'messages->chat',
+    'messages->gemini',
     'messages->responses',
     'responses->chat',
+    'responses->gemini',
     'responses->messages',
   ]);
 });

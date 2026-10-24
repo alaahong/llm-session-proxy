@@ -8,6 +8,10 @@
   // 想按请求大小、请求体字段或模型前缀分流到不同模型，见 README 的 router 一节；
   // 想统一删掉或改写请求体字段，见 transformers 一节；
   // 想把这里接给只说 Anthropic 协议的上游，见 protocol 一节。三者默认都关闭。
+  //
+  // 从 v0.3.0 起还有两节：router 里的 scorers / bands（按请求难度分桶），
+  // 以及 upstreams（上游池——可以让不同模型走不同供应商，其中就包括 GitHub Copilot）。
+  // 见 examples/opencode-go-models.json 末尾。
 
   "listen": { "host": "127.0.0.1", "port": 8788 },
 

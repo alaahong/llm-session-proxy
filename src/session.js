@@ -59,7 +59,9 @@ function firstUserMessage(body) {
     for (const message of messages) {
       if (message && typeof message === 'object' && message.role === 'user') return message;
     }
-    return undefined;
+    // 这里**不能**直接 return：responses 协议的正文在 body.input 里，
+    // 两种字段同时出现（messages 里没有 user 消息）时也要去看 input，
+    // 否则那条用户消息会被漏掉，指纹少了一半。
   }
   if (Array.isArray(body?.input)) {
     for (const item of body.input) {
@@ -83,11 +85,16 @@ export function contentFingerprint(body, options = {}) {
   const anchor = [];
   for (const field of fields) {
     const value = getByPath(body, field);
-    if (value !== undefined && value !== null) anchor.push(`${field}=${extractText(value)}`);
+    if (value === undefined || value === null) continue;
+    const text = extractText(value);
+    // 内容为空的字段**不算锚点**：否则「system 是空串」「user 消息没有正文」这类请求
+    // 会算出同一个常量指纹，一堆不相干的对话被归到同一个会话 ID 上。
+    if (text) anchor.push(`${field}=${text}`);
   }
   if (includeFirstUserMessage) {
     const user = firstUserMessage(body);
-    if (user) anchor.push(`firstUser=${extractText(user.content ?? user.text)}`);
+    const text = user ? extractText(user.content ?? user.text) : '';
+    if (text) anchor.push(`firstUser=${text}`);
   }
   if (includePromptField && typeof body?.prompt === 'string' && body.prompt) {
     anchor.push(`prompt=${body.prompt}`);
@@ -113,7 +120,8 @@ export function findExplicitSession(headers = {}, body = null, options = {}) {
 
   if (!body || typeof body !== 'object') return null;
   for (const field of bodyFields) {
-    const value = normalizeSessionId(getByPath(body, field.replace(/^(body|metadata|extra_body)\./, (m) => m)));
+    // bodyFields 支持点路径，直接按路径取 body 里的值
+    const value = normalizeSessionId(getByPath(body, field));
     if (value) return { id: value, source: `body:${field}` };
   }
   // 兼容常见嵌套位置

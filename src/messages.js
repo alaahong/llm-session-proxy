@@ -72,6 +72,41 @@ const en = {
   'config.badTransformers': () => 'transformers must be an object with "enabled" and "options"',
   'config.badTransformerEnabled': () => 'transformers.enabled must be an array of transformer names',
 
+  // ---------- scoring.js：难度打分器与档位 ----------
+  'scorer.builtinComplexity': () =>
+    'builtin-complexity: scores the request shape (size, turns, code, diffs, tools, files, reasoning)',
+  'config.badScorerEnabled': ({ value }) =>
+    `router.scorers.enabled must be an array of scorer names, got ${value}`,
+  'config.badScorerName': ({ name, known }) =>
+    `router.scorers.enabled: "${name}" is not a registered scorer (available: ${known})`,
+  'config.badBandDuplicate': ({ name }) => `router.bands: duplicate band name "${name}"`,
+  'config.badBandScore': ({ name, value }) =>
+    `router.bands["${name}"].maxScore must be a number between 0 and 100, got ${value}`,
+  'config.badRouterRuleDifficulty': ({ index, value, known }) =>
+    `router.rules[${index}].difficulty must be a declared band (${known}), got ${value}`,
+
+  // ---------- upstreams.js：上游池 ----------
+  'config.badUpstreams': () => 'upstreams must be an object with "providers", "routes" and "default"',
+  'config.badUpstreamProvider': ({ name }) => `upstreams.providers["${name}"] must be an object`,
+  'config.badUpstreamType': ({ name, type, known }) =>
+    `upstreams.providers["${name}"].type must be one of ${known}, got ${type}`,
+  'config.badUpstreamBaseUrl': ({ name }) =>
+    `upstreams.providers["${name}"].baseUrl is required and must be a non-empty string`,
+  'config.badUpstreamBaseUrlScheme': ({ name, scheme }) =>
+    `upstreams.providers["${name}"].baseUrl must start with http:// or https://, got ${scheme}`,
+  'config.badUpstreamPath': ({ name, wire, value }) =>
+    `upstreams.providers["${name}"].paths["${wire}"] must be a path starting with "/", got ${value}`,
+  'config.badUpstreamWire': ({ name, wire, known }) =>
+    `upstreams.providers["${name}"].wire must be one of ${known}, got ${wire}`,
+  'config.badUpstreamAuth': ({ name }) =>
+    `upstreams.providers["${name}"].auth must be an object with "env" / "command" / "header" / "prefix"`,
+  'config.badUpstreamAuthSource': ({ name }) =>
+    `upstreams.providers["${name}"].auth must declare where the credential comes from: "env" or "command"`,
+  'config.badUpstreamRouteTarget': ({ index, name }) =>
+    `upstreams.routes[${index}] points at upstream "${name}", which is not declared in upstreams.providers`,
+  'config.badUpstreamDefault': ({ name }) =>
+    `upstreams.default "${name}" is not declared in upstreams.providers`,
+
   // ---------- protocol.js / converters.js / replies.js / stream.js：协议互转 ----------
   'config.badProtocolSection': () => 'protocol must be an object with "enabled", "paths" and "routes"',
   'config.badProtocolEnabled': ({ value }) => `protocol.enabled must be a boolean, got ${value}`,
@@ -375,6 +410,7 @@ EXAMPLES
   'doctor.section.model': () => 'Model',
   'doctor.section.router': () => 'Router',
   'doctor.section.transformers': () => 'Transformers',
+  'doctor.section.upstreams': () => 'Upstream pool',
   'doctor.section.log': () => 'Log',
   'doctor.section.checks': () => 'Checks',
   'doctor.section.result': () => 'Result',
@@ -401,6 +437,14 @@ EXAMPLES
   'doctor.label.defaultBucket': () => 'default bucket',
   'doctor.label.bucketRow': ({ name }) => `bucket ${name}`,
   'doctor.label.rules': () => 'rules',
+  'doctor.label.scorers': () => 'scorers',
+  'doctor.label.availableScorers': () => 'available scorers',
+  'doctor.label.bands': () => 'bands',
+  'doctor.label.sampleDifficulty': () => 'sample difficulty',
+  'doctor.label.upstreamPool': () => 'pool',
+  'doctor.label.poolDefault': () => 'default',
+  'doctor.label.poolProvider': ({ name }) => name,
+  'doctor.label.poolSample': () => 'sample',
   'doctor.label.sampleRoute': () => 'sample route',
   'doctor.label.globalTransformers': () => 'global',
   'doctor.label.effectiveTransformers': () => 'effective',
@@ -417,6 +461,19 @@ EXAMPLES
   'doctor.value.forced': ({ bucket }) => `yes — forced to "${bucket}"`,
   'doctor.value.disabled': ({ bucket }) => `${bucket} (router disabled)`,
   'doctor.value.noRules': () => '(no rules)',
+  'doctor.value.noScorers': () => '(none — "difficulty" rules never match without a scorer)',
+  'doctor.value.sampleDifficulty': ({ band, score, signals }) => {
+    const detail = Object.entries(signals || {})
+      .filter(([, value]) => typeof value === 'number' && value > 0)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(' ');
+    return `${band} (score ${score})${detail ? `  ${detail}` : ''}`;
+  },
+  'doctor.value.poolEmpty': () => '(empty — a single upstream, same as before)',
+  'doctor.value.poolSize': ({ count }) => `${count} provider(s)`,
+  'doctor.value.poolNoDefault': () => '(none — falls back to the configured upstream)',
+  'doctor.value.poolSample': ({ name, source }) => `${name}  (${source})`,
+  'doctor.value.poolNone': () => '(none — falls back to the configured upstream)',
   'doctor.value.routeBy': ({ bucket, index, path }) => `${bucket}  (rule #${index}, sample path ${path})`,
   'doctor.value.routeDefault': ({ bucket, path }) => `${bucket}  (default bucket, no rule matched ${path})`,
   'doctor.value.routeForced': ({ bucket }) => `${bucket}  (forced by --router)`,
@@ -454,6 +511,9 @@ EXAMPLES
   'doctor.warn.modelMapEmpty': () =>
     'model.map is empty while prefix stripping is enabled — aliases such as "proxy-deepseek" will be forwarded stripped and verbatim',
   'doctor.warn.portBusy': ({ port }) => `listen port ${port} is already in use`,
+  'doctor.warn.forbiddenPort': ({ port }) =>
+    `listen port ${port} is on the WHATWG forbidden-port list — the proxy will bind it, but browsers and ` +
+    `fetch-based clients refuse to connect by spec, so pick another port`,
   'doctor.warn.routerEmpty': () =>
     'router is enabled but no rule and no bucket is configured — every request falls through to the default bucket, so the routing layer costs a check and decides nothing',
   'doctor.fail.dns': ({ host }) => `cannot resolve upstream host ${host}`,
@@ -501,6 +561,8 @@ EXAMPLES
   'proxy.err.upstreamTimeout': ({ timeoutMs }) => `Upstream did not respond within ${timeoutMs}ms`,
   'proxy.err.upstreamUnreachable': ({ origin, message }) => `Cannot reach upstream ${origin}: ${message}`,
   'proxy.err.clientAborted': () => 'Client aborted the request',
+  'proxy.err.credentialFailed': ({ upstream, message }) =>
+    `Cannot obtain the credential for upstream "${upstream}": ${message}`,
 
   // ---------- proxy.js：日志 ----------
   'proxy.log.respondFailed': ({ message }) => `[client] failed to write the response (client may be gone): ${message}`,
@@ -531,6 +593,36 @@ EXAMPLES
   'proxy.log.transformerSkipped': ({ name, bucket }) =>
     `[transformer] "${name}" from bucket "${bucket}" is not a registered request-phase transformer — skipped`,
   'proxy.log.serverError': ({ detail }) => `[server] server error (process continues): ${detail}`,
+  'proxy.log.upstreamMissing': ({ name }) =>
+    `[upstream] "${name}" is not declared in upstreams.providers — falling back to the default upstream`,
+  'proxy.log.credentialFailed': ({ upstream, message }) =>
+    `[upstream] cannot obtain the credential for "${upstream}": ${message}`,
+  'proxy.log.protocolUnknown': ({ upstream, wire, path }) =>
+    `[upstream] cannot tell which protocol "${path}" uses, so the body cannot be converted to "${wire}" — forwarding as-is`,
+  'proxy.log.autoPortRetry': ({ port }) =>
+    `[listen] auto-assigned port ${port} is on the WHATWG forbidden-port list — retrying on another port`,
+  'proxy.log.autoPortForbidden': ({ port }) =>
+    `[listen] could not get off forbidden port ${port}; browsers and fetch-based clients will refuse to connect`,
+
+  // ---------- copilot.js：GitHub Copilot 凭据 ----------
+  'copilot.err.noGitHubToken': ({ envs }) =>
+    `No GitHub token found (checked ${envs}, then the credential file, then the gh CLI) — ` +
+    `set one of them, or run the device-flow login`,
+  'copilot.err.tokenExchangeFailed': ({ status }) =>
+    `The Copilot token endpoint returned ${status}`,
+  'copilot.err.tokenNotJson': () => 'The Copilot token endpoint did not return JSON',
+  'copilot.err.tokenMissing': () => 'The Copilot token endpoint returned no token field',
+  'copilot.err.tokenTimeout': () => 'The Copilot token endpoint timed out',
+  'copilot.err.deviceCodeFailed': ({ status }) => `The device code endpoint returned ${status}`,
+  'copilot.err.deviceCodeMissing': () => 'The device code endpoint returned no device_code field',
+  'copilot.err.deviceCodeNotJson': () => 'The device code endpoint did not return JSON',
+  'copilot.err.deviceTimeout': () => 'The device flow timed out before the login was confirmed',
+  'copilot.err.deviceFailed': ({ error }) => `The device token endpoint returned ${error}`,
+  'copilot.err.deviceTokenNotJson': () => 'The device token endpoint did not return JSON',
+  'copilot.log.noApiKey': ({ upstream }) =>
+    `[upstream] no API key found for "${upstream}" — forwarding without a credential header`,
+  'copilot.log.deviceCode': ({ code, url }) =>
+    `[copilot] open ${url} and enter the code ${code} to sign in with GitHub`,
 };
 
 const zh = {
@@ -574,6 +666,41 @@ const zh = {
   'config.badTransformerOptions': () => 'transformers.options 必须是以变换名为键的对象',
   'config.badTransformers': () => 'transformers 必须是带 enabled 与 options 的对象',
   'config.badTransformerEnabled': () => 'transformers.enabled 必须是变换名数组',
+
+  // ---------- scoring.js：难度打分器与档位 ----------
+  'scorer.builtinComplexity': () =>
+    'builtin-complexity：按请求形态打分（体积、轮数、代码块、diff、工具、文件、推理意图）',
+  'config.badScorerEnabled': ({ value }) =>
+    `router.scorers.enabled 必须是打分器名数组，实际是 ${value}`,
+  'config.badScorerName': ({ name, known }) =>
+    `router.scorers.enabled：「${name}」不是已注册的打分器（可用：${known}）`,
+  'config.badBandDuplicate': ({ name }) => `router.bands：档位名重复「${name}」`,
+  'config.badBandScore': ({ name, value }) =>
+    `router.bands["${name}"].maxScore 必须是 0 到 100 之间的数字，实际是 ${value}`,
+  'config.badRouterRuleDifficulty': ({ index, value, known }) =>
+    `router.rules[${index}].difficulty 必须是已声明的档位（${known}），实际是 ${value}`,
+
+  // ---------- upstreams.js：上游池 ----------
+  'config.badUpstreams': () => 'upstreams 必须是包含 "providers"、"routes" 与 "default" 的对象',
+  'config.badUpstreamProvider': ({ name }) => `upstreams.providers["${name}"] 必须是对象`,
+  'config.badUpstreamType': ({ name, type, known }) =>
+    `upstreams.providers["${name}"].type 只能是 ${known} 之一，实际是 ${type}`,
+  'config.badUpstreamBaseUrl': ({ name }) =>
+    `upstreams.providers["${name}"].baseUrl 必填，且必须是非空字符串`,
+  'config.badUpstreamBaseUrlScheme': ({ name, scheme }) =>
+    `upstreams.providers["${name}"].baseUrl 必须以 http:// 或 https:// 开头，实际是 ${scheme}`,
+  'config.badUpstreamPath': ({ name, wire, value }) =>
+    `upstreams.providers["${name}"].paths["${wire}"] 必须是以 "/" 开头的路径，实际是 ${value}`,
+  'config.badUpstreamWire': ({ name, wire, known }) =>
+    `upstreams.providers["${name}"].wire 只能是 ${known} 之一，实际是 ${wire}`,
+  'config.badUpstreamAuth': ({ name }) =>
+    `upstreams.providers["${name}"].auth 必须是对象，含 "env" / "command" / "header" / "prefix"`,
+  'config.badUpstreamAuthSource': ({ name }) =>
+    `upstreams.providers["${name}"].auth 必须说明凭据从哪来："env" 或 "command"`,
+  'config.badUpstreamRouteTarget': ({ index, name }) =>
+    `upstreams.routes[${index}] 指向的上游「${name}」未在 upstreams.providers 里声明`,
+  'config.badUpstreamDefault': ({ name }) =>
+    `upstreams.default「${name}」未在 upstreams.providers 里声明`,
 
   // ---------- protocol.js / converters.js / replies.js / stream.js：协议互转 ----------
   'config.badProtocolSection': () => 'protocol 必须是包含 "enabled"、"paths" 与 "routes" 的对象',
@@ -873,6 +1000,7 @@ ${name} v${version}
   'doctor.section.model': () => '模型',
   'doctor.section.router': () => '路由分桶',
   'doctor.section.transformers': () => '变换',
+  'doctor.section.upstreams': () => '上游池',
   'doctor.section.log': () => '日志',
   'doctor.section.checks': () => '检查',
   'doctor.section.result': () => '结果',
@@ -899,6 +1027,14 @@ ${name} v${version}
   'doctor.label.defaultBucket': () => '默认桶',
   'doctor.label.bucketRow': ({ name }) => `桶 ${name}`,
   'doctor.label.rules': () => '规则',
+  'doctor.label.scorers': () => '打分器',
+  'doctor.label.availableScorers': () => '可用打分器',
+  'doctor.label.bands': () => '档位',
+  'doctor.label.sampleDifficulty': () => '样例难度',
+  'doctor.label.upstreamPool': () => '池子',
+  'doctor.label.poolDefault': () => '默认上游',
+  'doctor.label.poolProvider': ({ name }) => name,
+  'doctor.label.poolSample': () => '样例上游',
   'doctor.label.sampleRoute': () => '样例路由',
   'doctor.label.globalTransformers': () => '全局',
   'doctor.label.effectiveTransformers': () => '生效',
@@ -915,6 +1051,19 @@ ${name} v${version}
   'doctor.value.forced': ({ bucket }) => `是 —— 已强制为「${bucket}」`,
   'doctor.value.disabled': ({ bucket }) => `${bucket}（路由已关闭）`,
   'doctor.value.noRules': () => '（无规则）',
+  'doctor.value.noScorers': () => '（无 —— 没有打分器时「难度」规则永远不会命中）',
+  'doctor.value.sampleDifficulty': ({ band, score, signals }) => {
+    const detail = Object.entries(signals || {})
+      .filter(([, value]) => typeof value === 'number' && value > 0)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(' ');
+    return `${band}（分数 ${score}）${detail ? `  ${detail}` : ''}`;
+  },
+  'doctor.value.poolEmpty': () => '（空 —— 只有一个上游，与之前完全一致）',
+  'doctor.value.poolSize': ({ count }) => `${count} 个上游`,
+  'doctor.value.poolNoDefault': () => '（无 —— 回退到配置里的上游）',
+  'doctor.value.poolSample': ({ name, source }) => `${name}（${source}）`,
+  'doctor.value.poolNone': () => '（无 —— 回退到配置里的上游）',
   'doctor.value.routeBy': ({ bucket, index, path }) => `${bucket}（规则 #${index}，样例路径 ${path}）`,
   'doctor.value.routeDefault': ({ bucket, path }) => `${bucket}（默认桶，${path} 未命中任何规则）`,
   'doctor.value.routeForced': ({ bucket }) => `${bucket}（由 --router 强制）`,
@@ -950,6 +1099,8 @@ ${name} v${version}
   'doctor.warn.modelMapEmpty': () =>
     '前缀剥离已启用但 model.map 为空 —— proxy-deepseek 这类别名会被剥完前缀后原样转发',
   'doctor.warn.portBusy': ({ port }) => `监听端口 ${port} 已被占用`,
+  'doctor.warn.forbiddenPort': ({ port }) =>
+    `监听端口 ${port} 在 WHATWG 禁用端口清单里 —— 代理照样绑得上，但浏览器和基于 fetch 的客户端会按规范拒绝连接，建议换一个端口`,
   'doctor.warn.routerEmpty': () =>
     '路由已开启，但既没有规则、也没有任何桶配了模型或变换 —— 所有请求都会落到默认桶，等于白跑一层判定',
   'doctor.fail.dns': ({ host }) => `无法解析上游主机名 ${host}`,
@@ -995,6 +1146,7 @@ ${name} v${version}
   'proxy.err.upstreamTimeout': ({ timeoutMs }) => `上游 ${timeoutMs}ms 未响应，已超时`,
   'proxy.err.upstreamUnreachable': ({ origin, message }) => `无法连接上游 ${origin}: ${message}`,
   'proxy.err.clientAborted': () => '客户端中断了请求',
+  'proxy.err.credentialFailed': ({ upstream, message }) => `拿不到上游「${upstream}」的凭据: ${message}`,
 
   // ---------- proxy.js：日志 ----------
   'proxy.log.respondFailed': ({ message }) => `[client] 回写响应失败（客户端可能已断开）: ${message}`,
@@ -1024,6 +1176,35 @@ ${name} v${version}
   'proxy.log.transformerSkipped': ({ name, bucket }) =>
     `[transformer] 桶 "${bucket}" 挂的 "${name}" 不是已注册的请求相位变换 —— 已跳过`,
   'proxy.log.serverError': ({ detail }) => `[server] 服务器错误（进程继续）: ${detail}`,
+  'proxy.log.upstreamMissing': ({ name }) =>
+    `[upstream] 「${name}」未在 upstreams.providers 里声明 —— 回退到默认上游`,
+  'proxy.log.credentialFailed': ({ upstream, message }) =>
+    `[upstream] 拿不到「${upstream}」的凭据: ${message}`,
+  'proxy.log.protocolUnknown': ({ upstream, wire, path }) =>
+    `[upstream] 认不出 "${path}" 用的是哪套协议，请求体没法转成 "${wire}" —— 按原样转发`,
+  'proxy.log.autoPortRetry': ({ port }) =>
+    `[listen] 自动分配的端口 ${port} 在 WHATWG 禁用端口清单里 —— 换个端口重试`,
+  'proxy.log.autoPortForbidden': ({ port }) =>
+    `[listen] 没能避开禁用端口 ${port} —— 浏览器和基于 fetch 的客户端将拒绝连接`,
+
+  // ---------- copilot.js：GitHub Copilot 凭据 ----------
+  'copilot.err.noGitHubToken': ({ envs }) =>
+    `没找到 GitHub token（已查 ${envs}，再查凭据文件，再问 gh CLI）—— ` +
+    `请设置其中之一，或走设备流登录`,
+  'copilot.err.tokenExchangeFailed': ({ status }) => `Copilot token 端点返回 ${status}`,
+  'copilot.err.tokenNotJson': () => 'Copilot token 端点返回的不是 JSON',
+  'copilot.err.tokenMissing': () => 'Copilot token 端点返回里没有 token 字段',
+  'copilot.err.tokenTimeout': () => 'Copilot token 端点超时',
+  'copilot.err.deviceCodeFailed': ({ status }) => `设备码端点返回 ${status}`,
+  'copilot.err.deviceCodeMissing': () => '设备码端点返回里没有 device_code 字段',
+  'copilot.err.deviceCodeNotJson': () => '设备码端点返回的不是 JSON',
+  'copilot.err.deviceTimeout': () => '设备流在确认登录前就超时了',
+  'copilot.err.deviceFailed': ({ error }) => `设备 token 端点返回 ${error}`,
+  'copilot.err.deviceTokenNotJson': () => '设备 token 端点返回的不是 JSON',
+  'copilot.log.noApiKey': ({ upstream }) =>
+    `[upstream] 没找到「${upstream}」的 API key —— 不带凭据头转发`,
+  'copilot.log.deviceCode': ({ code, url }) =>
+    `[copilot] 打开 ${url} 并输入代码 ${code} 完成 GitHub 登录`,
 };
 
 export const MESSAGES = { en, zh };

@@ -42,8 +42,8 @@
     <h1>llm-session-proxy</h1>
     <p class="lead">
       可自定义参数的 LLM 本地反向代理。自动补上客户端不会发的会话头，注入任意自定义参数，
-      重写模型名与请求路径，还能在 OpenAI、Anthropic 与 Responses 三种协议之间互转——
-      然后把请求（含 SSE 流式响应）转发出去。
+      重写模型名与请求路径，按难度给请求打分，挑好该发往哪个上游，还能在 OpenAI、Anthropic、
+      Responses 与 Gemini 四种协议之间互转——然后把请求（含 SSE 流式响应）转发出去。
     </p>
     <div class="install">
       <code id="install-cmd">npx llm-session-proxy</code>
@@ -94,14 +94,29 @@
         <p>四个桶——<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>，各自可以换模型、挂请求体变换。规则按路径前缀、模型前缀、请求体字段、请求体大小匹配，<b>自上而下、首个命中即止</b>，同一条规则内条件是与。<b>默认关闭</b>，升级不会改变现有行为。</p>
       </div>
       <div class="card">
+        <div class="tag">difficulty</div>
+        <h4>按请求难度路由</h4>
+        <p>一个本地确定性打分器按请求的<b>形态</b>打分——请求体大小、轮数、代码块、diff 行数、工具个数——再映射到档位（<code>easy</code> / <code>medium</code> / <code>hard</code>），规则就能按档位匹配。不调模型、不发网络请求、不猜。</p>
+      </div>
+      <div class="card">
         <div class="tag">transform</div>
         <h4>可组合的请求体变换</h4>
         <p>五个内置命名变换（<code>drop-fields</code>、<code>drop-empty-fields</code>、<code>rename-fields</code>、<code>clamp-max-tokens</code>、<code>noop</code>），可全局挂也可按桶挂，按固定顺序执行。注册表是写死的清单：<b>代理绝不从某个路径加载代码</b>。</p>
       </div>
       <div class="card">
+        <div class="tag">upstreams</div>
+        <h4>上游池</h4>
+        <p>一个进程里放多个上游，每个各有自己的端点路径、线协议与凭据来源。桶可以点名选，模型名前缀规则也可以选，都不命中就用池子的默认项。请求体会按选中的上游说的那套协议转换。</p>
+      </div>
+      <div class="card">
+        <div class="tag">copilot</div>
+        <h4>把 GitHub Copilot 当成一个上游</h4>
+        <p>你的 GitHub 登录态会换成一张短期的 Copilot session token，于是 Copilot 托管的模型和你自己付费的模型能待在同一个池子里。凭据来自环境变量、<code>gh</code> CLI 或设备流登录——绝不来自配置文件，绝不进日志。</p>
+      </div>
+      <div class="card">
         <div class="tag">protocol</div>
         <h4>协议互转</h4>
-        <p>OpenAI Chat ↔ Anthropic Messages ↔ OpenAI Responses，请求体、JSON 响应与 SSE 逐事件转码全覆盖。只会说一种协议的客户端，也能调到说另一种协议的模型。按模型前缀路由，默认关闭。</p>
+        <p>OpenAI Chat ↔ Anthropic Messages ↔ OpenAI Responses ↔ Google Gemini，请求体、JSON 响应与 SSE 逐事件转码全覆盖。只会说一种协议的客户端，也能调到说另一种协议的模型。按模型前缀路由，默认关闭。</p>
       </div>
       <div class="card">
         <div class="tag">path</div>
@@ -121,7 +136,7 @@
       <div class="card">
         <div class="tag">check</div>
         <h4>启动前自检</h4>
-        <p><code>--dry-run</code> 在<b>不走网络</b>的前提下打印生效的路由、<b>渲染后</b>的注入表与模型解析链路；<code>--doctor</code> 再加 DNS/TCP/TLS 连通性与监听端口检查，有问题时退出码非零。</p>
+        <p><code>--dry-run</code> 在<b>不走网络</b>的前提下打印生效的路由、<b>渲染后</b>的注入表与模型解析链路；<code>--doctor</code> 再加 DNS/TCP/TLS 连通性与监听端口检查（是否空闲、是否在 WHATWG 禁用端口清单里），有问题时退出码非零。</p>
       </div>
       <div class="card">
         <div class="tag">deps</div>
@@ -260,11 +275,11 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
     </div>
 
     <div class="note">
-      <b>本代理不做协议转换。</b>
-      客户端发 OpenAI 格式的请求体时，②③ 两类模型用不了——它只负责补头、改名、换路径，
-      不会把 Chat Completions 的 body 翻译成 Messages 的 body。
-      直接写上游真实 ID（不加别名、不加前缀）也能用，代理会原样放行。
-      模型清单随时可能变，以<a href="https://opencode.ai/docs/go/">上游文档</a>为准。
+      <b>你能用到哪些模型，取决于客户端说的是哪套协议。</b>
+      ②③ 两类模型分别需要客户端支持 Responses 与 Anthropic 协议——直接写上游真实 ID（不加别名、不加前缀）
+      也能用，代理会原样放行。自 v0.2.2 起代理也<b>能互转</b>协议，所以只会说 Chat Completions 的客户端
+      也能调到 Anthropic 模型——但互转默认关闭、且按模型前缀路由，所以要显式打开，别指望它自动生效，
+      详见下方<a href="#protocol">protocol</a> 一节。模型清单随时可能变，以<a href="https://opencode.ai/docs/go/">上游文档</a>为准。
     </div>
   </section>
 
@@ -369,7 +384,9 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>enabled</code></td><td><code>false</code></td><td>总开关。<code>--no-router</code> 强制关闭</td></tr>
           <tr><td><code>forced</code></td><td><code>null</code></td><td>所有请求都走这个桶、忽略全部规则（<code>--router &lt;桶名&gt;</code>）。它的优先级同样高于 <code>enabled: false</code>——用户都点名了，再被配置挡掉只会让人困惑</td></tr>
           <tr><td><code>defaultBucket</code></td><td><code>default</code></td><td>没命中任何规则的请求落到这个桶</td></tr>
-          <tr><td><code>buckets</code></td><td>内置四个，全为空</td><td><code>{ "model": &lt;模型 ID 或 null&gt;, "transformers": [&lt;名字&gt;] }</code>。可以自己加桶名；没声明过的桶名退化成空桶</td></tr>
+          <tr><td><code>buckets</code></td><td>内置四个，全为空</td><td><code>{ "model": &lt;模型 ID 或 null&gt;, "transformers": [&lt;名字&gt;], "upstream": &lt;上游名或 null&gt; }</code>。可以自己加桶名；没声明过的桶名退化成空桶</td></tr>
+          <tr><td><code>scorers.enabled</code></td><td><code>[]</code></td><td>要跑的打分器，按名字。内置只有 <code>builtin-complexity</code> 一个。<b>留空即不打分，此时 <code>difficulty</code> 规则永远不命中</b></td></tr>
+          <tr><td><code>bands</code></td><td><code>easy</code> ≤ 30，<code>medium</code> ≤ 60，<code>hard</code> ≤ 100</td><td>难度档位定义，加载时按 <code>maxScore</code> 排序。一档是 <code>{ "name": "easy", "maxScore": 30 }</code></td></tr>
           <tr><td><code>rules</code></td><td><code>[]</code></td><td>自上而下求值，首个命中即止。一条规则必须有 <code>bucket</code> 外加至少一个匹配条件——一个条件都不给是配置错误：无法判定的规则和「命中一切」不是一回事</td></tr>
         </tbody>
       </table>
@@ -382,6 +399,7 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>modelPrefix</code></td><td><b>客户端原始模型名</b>或<b>重写后的模型名</b>任一个以它开头，所以 <code>proxy-think</code> 和 <code>glm-5.3</code> 都能拿来写规则</td></tr>
           <tr><td><code>bodyField</code></td><td>该点路径存在且非空。再加 <code>bodyFieldValue</code> 则要求等于某个具体值</td></tr>
           <tr><td><code>minBytes</code> / <code>maxBytes</code></td><td>请求体字节数，两端都是闭区间。按<b>字节、不按 token</b>——估 token 就得带一个分词器，而字节数是你能实际调得动的数字</td></tr>
+          <tr><td><code>difficulty</code></td><td>请求的难度档位与之相等。需要先启用打分器，详见下方<a href="#difficulty">difficulty</a> 一节</td></tr>
         </tbody>
       </table>
     </div>
@@ -404,17 +422,129 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
       后面的：桶只能加、不能取消全局的某个变换。桶的 <code>model</code> 在别名重写<b>之后</b>生效并
       直接替换结果，所以这里应当写真实的上游模型 ID、而不是 <code>proxy-</code> 别名。引用
       <code>{{model}}</code> 的请求头模板看到的是桶覆盖后的值，因为注入是最后一步。
+      桶的 <code>upstream</code> 指定上游池里的某个上游名，会覆盖池子自身的路由，
+      对所有落进这个桶的请求生效。
+    </p>
+
+    <h3 id="difficulty">difficulty —— 按形态给请求打分</h3>
+    <p class="sub">按字节数卡阈值很别扭：40 KB 的请求可能是一整个贴进来的文件，也可能是五十条短消息。于是<b>打分器</b>改按请求的<i>形态</i>打分，<b>档位</b>再把分数变成一个规则能匹配的名字。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>router.scorers.enabled</code></td><td><code>[]</code></td><td>要跑的打分器，按名字。内置只有 <code>builtin-complexity</code> 一个。<b>留空即不打分，此时 <code>difficulty</code> 规则永远不命中</b></td></tr>
+          <tr><td><code>router.bands</code></td><td><code>easy</code> ≤ 30，<code>medium</code> ≤ 60，<code>hard</code> ≤ 100</td><td>难度档位定义，加载时按 <code>maxScore</code> 排序。一档是 <code>{ "name": "easy", "maxScore": 30 }</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>信号</th><th>权重</th><th>衡量什么</th></tr></thead>
+        <tbody>
+          <tr><td><code>bytes</code></td><td>22</td><td>请求体大小，走<b>对数</b>刻度（<code>log2(len+1)/16</code>）。不足 512 字节一律 <b>0</b> 分——一句话谈不上复杂</td></tr>
+          <tr><td><code>turns</code></td><td>12</td><td>对话里的消息条数</td></tr>
+          <tr><td><code>codeBlocks</code></td><td>15</td><td>消息文本里的围栏代码块数量</td></tr>
+          <tr><td><code>diffLines</code></td><td>13</td><td>以 <code>+</code> 或 <code>-</code> 开头的行（排除 <code>+++</code>/<code>---</code> 文件头）</td></tr>
+          <tr><td><code>tools</code></td><td>8</td><td>工具声明的个数</td></tr>
+          <tr><td><code>system</code></td><td>8</td><td>system 提示的长度</td></tr>
+          <tr><td><code>files</code></td><td>8</td><td>按扩展名识别出的不同文件路径数量</td></tr>
+          <tr><td><code>reasoning</code></td><td>8</td><td>明确的推理意图（<code>reasoning_effort</code>、<code>thinking</code> 等）</td></tr>
+          <tr><td><code>maxTokens</code></td><td>6</td><td>客户端要的输出预算</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"router": {
+  "enabled": true,
+  "scorers": { "enabled": ["builtin-complexity"] },
+  "bands": [
+    { "name": "easy",   "maxScore": 30 },
+    { "name": "medium", "maxScore": 60 },
+    { "name": "hard",   "maxScore": 100 }
+  ],
+  "buckets": {
+    "think":      { "model": "glm-5.3-think" },
+    "background": { "model": "glm-5.3-flash" }
+  },
+  "rules": [
+    { "bucket": "think",      "difficulty": "hard" },
+    { "bucket": "background", "difficulty": "easy" }
+  ]
+}</code></pre>
+    <p>
+      <b>它衡量的是形态，不是语义。</b>30 KB 上下文里的一句短问题照样算 <code>hard</code>；
+      跨三个文件的 40 行重构算 <code>medium</code>。打分器是确定性、本地、内置的——和变换注册表一样，
+      <b>只按名字选、绝不按路径选</b>，所以配置文件无法让代理执行代码。
+    </p>
+
+    <h3 id="upstreams">upstreams —— 上游池</h3>
+    <p class="sub">一个上游够用，直到它不够用。上游池让便宜模型在一家供应商上干杂活、贵模型走另一家——<b>其中就包括 GitHub Copilot，于是有些模型走你的订阅、有些模型走你自己的 key</b>。池子留空就等于只有一个上游，行为与从前完全一致。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>true</code></td><td>总开关</td></tr>
+          <tr><td><code>providers</code></td><td><code>{}</code></td><td>具名上游表。每个上游各自声明类型、base URL、端点路径、线协议与凭据来源</td></tr>
+          <tr><td><code>routes</code></td><td><code>[]</code></td><td><code>{ "model": &lt;前缀，可选&gt;, "upstream": &lt;名字&gt; }</code>。自上而下、首个命中即止；不带 <code>model</code> 的路由匹配所有请求</td></tr>
+          <tr><td><code>default</code></td><td><code>null</code></td><td>没命中任何规则时用哪个上游</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>上游字段</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>type</code></td><td><code>openai</code> / <code>anthropic</code> / <code>gemini</code> / <code>copilot</code> / <code>custom</code>。它决定默认端点路径、线协议与凭据头</td></tr>
+          <tr><td><code>baseUrl</code></td><td>请求发到哪里，如 <code>https://api.githubcopilot.com</code></td></tr>
+          <tr><td><code>paths</code></td><td>每种线协议对应的端点路径。<code>{model}</code> 与 <code>{stream}</code> 是占位符——Gemini 把模型名放在路径里</td></tr>
+          <tr><td><code>wire</code></td><td>这个上游说哪套协议。请求体转发前会转成它</td></tr>
+          <tr><td><code>modelWire</code></td><td>按模型名前缀覆盖线协议。Copilot 用它让 <code>gpt-5</code> 家族走 <code>/responses</code>，其余走 <code>/chat/completions</code></td></tr>
+          <tr><td><code>headers</code></td><td>要带的静态请求头。Copilot 必需的那几个会自动补齐</td></tr>
+          <tr><td><code>auth</code></td><td>凭据从哪来：<code>env</code>（逗号分隔的变量名）、<code>command</code>（stdout 就是 key）、<code>header</code> / <code>prefix</code>（改凭据头）、<code>allowCommand</code>（<code>false</code> 表示不许执行任何命令）、<code>deviceFlow</code>（允许设备流登录）。<b>凭据值本身绝不进配置、绝不进日志</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"upstreams": {
+  "providers": {
+    "copilot": {
+      "type": "copilot",
+      "baseUrl": "https://api.githubcopilot.com",
+      "auth": { "env": "COPILOT_GITHUB_TOKEN", "deviceFlow": true }
+    },
+    "own": {
+      "type": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "auth": { "env": "OPENAI_API_KEY" }
+    }
+  },
+  "routes": [
+    { "model": "gpt-5", "upstream": "copilot" }
+  ],
+  "default": "own"
+}</code></pre>
+    <p>
+      <b>谁赢？</b>桶里显式写的 <code>upstream</code> 最优先，然后是按模型名前缀匹配的
+      <code>routes</code> 表，最后是池子的 <code>default</code>。都不命中就退回顶层那个单
+      <code>upstream</code>——所以打开上游池永远不会弄坏已有的配置。
+    </p>
+    <p>
+      <b>凭据在请求时才取，从不落盘。</b>配置只说 key 从哪来，代理取出来直接发到线上。Copilot 这条链是
+      GitHub token → <code>copilot_internal/v2/token</code> → 一张短期的 Copilot session token
+      （只在内存缓存，到期前 5 分钟刷新）。GitHub token 按官方顺序找：
+      <code>COPILOT_GITHUB_TOKEN</code> → <code>GH_TOKEN</code> → <code>GITHUB_TOKEN</code> →
+      <code>gh</code> CLI → 存档的凭据文件 → 设备流登录（仅当上游写了 <code>auth.deviceFlow</code>）。
+      注意 <code>ghp_</code> 传统 PAT GitHub 已不支持用于 Copilot；
+      <code>github_pat_</code>、<code>ghu_</code>、<code>gho_</code>、<code>ghs_</code> 支持。
     </p>
 
     <h3 id="protocol">protocol —— 协议互转</h3>
-    <p class="sub">代理从请求路径推断客户端的协议（<code>/chat/completions</code> → <code>chat</code>、<code>/messages</code> → <code>messages</code>、<code>/responses</code> → <code>responses</code>），再由路由决定<b>上游</b>说哪套。两者不同时：请求体转发前整体转换，响应回来前转换回去——JSON 整包改写，SSE 按事件逐条转码。<code>enabled</code> 默认 <code>false</code>。</p>
+    <p class="sub">代理从请求路径推断客户端的协议（<code>/chat/completions</code> → <code>chat</code>、<code>/messages</code> → <code>messages</code>、<code>/responses</code> → <code>responses</code>、<code>:generateContent</code> → <code>gemini</code>），再由路由决定<b>上游</b>说哪套。两者不同时：请求体转发前整体转换，响应回来前转换回去——JSON 整包改写，SSE 按事件逐条转码。<code>enabled</code> 默认 <code>false</code>。</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
         <tbody>
           <tr><td><code>enabled</code></td><td><code>false</code></td><td>总开关。<code>--no-protocol</code> 强制关闭</td></tr>
           <tr><td><code>forced</code></td><td><code>null</code></td><td>把所有请求强制转成该协议，忽略全部路由（<code>--protocol &lt;target&gt;</code>）。同样压过 <code>enabled: false</code></td></tr>
-          <tr><td><code>paths</code></td><td>三条 <code>/zen/go/v1/…</code> 默认路径</td><td>每种目标协议对应的上游路径。<code>paths.&lt;target&gt;</code> 会<b>整体替换</b>转发路径，注意与 <code>request.pathRewrite</code>「修补客户端路径」的语义不同</td></tr>
+          <tr><td><code>paths</code></td><td>四条 <code>/zen/go/v1/…</code> 默认路径</td><td>每种目标协议对应的上游路径。<code>paths.&lt;target&gt;</code> 会<b>整体替换</b>转发路径，注意与 <code>request.pathRewrite</code>「修补客户端路径」的语义不同</td></tr>
           <tr><td><code>routes</code></td><td><code>[]</code></td><td><code>{ "model": &lt;前缀，可选&gt;, "target": &lt;协议&gt;, "path": &lt;上游路径，可选&gt; }</code>。自上而下、首个命中即止；不带 <code>model</code> 的路由匹配所有请求</td></tr>
         </tbody>
       </table>
@@ -434,12 +564,19 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
     <p>
       字段归一化是内建的：<code>max_tokens</code> ↔ <code>max_completion_tokens</code> ↔
       <code>max_output_tokens</code>；<code>reasoning_effort</code> ↔ <code>thinking.budget_tokens</code>
-      （固定表 1024 / 8192 / 16384，反向按阈值反推）；工具声明与工具调用在三种形状间重塑；
-      <code>stop</code> ↔ <code>stop_sequences</code>；chat 的 system 消息 ↔ Anthropic 的顶层
-      <code>system</code> ↔ Responses 的 <code>instructions</code>。没有等价物的字段<b>逐个记名</b>
+      （固定表 1024 / 8192 / 16384，反向按阈值反推）；工具声明与工具调用在四种形状间重塑；
+      <code>stop</code> ↔ <code>stop_sequences</code> ↔ <code>stopSequences</code>；chat 的 system 消息 ↔
+      Anthropic 的顶层 <code>system</code> ↔ Responses 的 <code>instructions</code> ↔ Gemini 的
+      <code>systemInstruction</code>。没有等价物的字段<b>逐个记名</b>
       丢进日志里的 <code>dropped</code> 列表。Anthropic 必填 <code>max_tokens</code>，chat 请求两个名字
       都没带时补一个记入日志的 4096，而不是等上游 400。<b>上游 4xx/5xx 错误体永不转换</b>——
       错误是上游协议的一部分，原样回传。
+    </p>
+    <p>
+      <b>Gemini 是第四种协议，不是 OpenAI 形状的仿制品。</b>它把模型名与流式标志放在<b>路径</b>里
+      （<code>/v1beta/models/{model}:generateContent</code> 与
+      <code>:streamGenerateContent?alt=sse</code>），模型名因此会离开请求体、流式意图也跟着挪位——
+      这正是代理要在任何转换发生<b>之前</b>把两者取下来的原因。
     </p>
 
     <h3>模板变量</h3>
@@ -479,7 +616,7 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--transformer &lt;name&gt;</code></td><td>挂一个命名请求体变换，可重复。是<b>整体替换</b> <code>transformers.enabled</code> 而不是追加（与 <code>--model-prefix</code> 替换 <code>stripPrefixes</code> 同理）</td></tr>
           <tr><td><code>--router &lt;bucket&gt;</code></td><td>强制所有请求走指定桶，忽略全部规则</td></tr>
           <tr><td><code>--no-router</code></td><td>关闭路由分桶，即使配置文件里开着</td></tr>
-          <tr><td><code>--protocol &lt;target&gt;</code></td><td>转发前把所有请求转成指定协议（<code>chat</code> / <code>messages</code> / <code>responses</code>），压过 <code>protocol.routes</code></td></tr>
+          <tr><td><code>--protocol &lt;target&gt;</code></td><td>转发前把所有请求转成指定协议（<code>chat</code> / <code>messages</code> / <code>responses</code> / <code>gemini</code>），压过 <code>protocol.routes</code></td></tr>
           <tr><td><code>--no-protocol</code></td><td>关闭协议互转，即使配置文件里开着</td></tr>
           <tr><td><code>--session-header &lt;name&gt;</code> / <code>--session-field &lt;path&gt;</code></td><td>追加会话来源位置，可重复</td></tr>
           <tr><td><code>--session-id-format &lt;f&gt;</code> / <code>--request-id-format &lt;t&gt;</code></td><td>会话 ID 格式 / 请求号模板</td></tr>
@@ -494,7 +631,7 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--init [file]</code></td><td>生成示例配置</td></tr>
           <tr><td><code>--print-config</code></td><td>打印合并后的最终配置并退出</td></tr>
           <tr><td><code>--dry-run</code></td><td>校验配置并打印路由、分桶、注入与模型解析结果，不走任何网络</td></tr>
-          <tr><td><code>--doctor</code></td><td>在 <code>--dry-run</code> 基础上追加 DNS/TCP/TLS 连通性与监听端口检查；有问题时退出码非零</td></tr>
+          <tr><td><code>--doctor</code></td><td>在 <code>--dry-run</code> 基础上追加 DNS/TCP/TLS 连通性与监听端口检查（是否空闲、是否为禁用端口）；有问题时退出码非零</td></tr>
           <tr><td><code>--model &lt;id&gt;</code></td><td><code>--dry-run</code> / <code>--doctor</code> 用于演示的样例模型名</td></tr>
         </tbody>
       </table>
@@ -533,7 +670,7 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       所以模板写错了会在这里暴露，而不是等上游回一个 400。
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.2.2 —— 试运行
+llm-session-proxy v0.3.0 —— 试运行
 
 模型
   样例            proxy-glm
@@ -545,6 +682,7 @@ llm-session-proxy v0.2.2 —— 试运行
 路由分桶
   启用            否
   默认桶          default
+  打分器          （无——没有打分器时 "difficulty" 规则永不命中）
   桶 default      （无）
   桶 background   （无）
   桶 think        （无）
@@ -562,6 +700,10 @@ llm-session-proxy v0.2.2 —— 试运行
   路径            chat=/zen/go/v1/chat/completions，messages=/zen/go/v1/messages，responses=/zen/go/v1/responses
   规则            （无规则）
   样例转换        样例请求不发生转换
+
+上游池
+  池子            （空——只有一个上游，与从前一致）
+  默认上游        （无）
 
 结果
   通过 —— 配置有效。</code></pre>
@@ -610,11 +752,27 @@ llm-session-proxy v0.2.2 —— 试运行
     </p>
     <p>
       <code>--doctor</code> 在同一份报告之上追加 DNS 解析、TCP 连接与握手耗时、协议为 <code>https</code>
-      时的 TLS 握手（证书不受信任会如实报出，但不算硬失败）、监听端口是否空闲，以及一句「代理从不注入凭据」的提醒。
+      时的 TLS 握手（证书不受信任会如实报出，但不算硬失败）、监听端口是否空闲、监听端口是否落在
+      <a href="#forbidden-ports">WHATWG 禁用端口清单</a>里，以及一句「代理从不注入凭据」的提醒。
       它<b>不发 HTTP 请求、不带任何凭据</b>——连通性只问到传输层为止——所以跑体检不会消耗你的速率配额。
       一切正常退出码为 <code>0</code>，有问题为 <code>1</code>，可以直接当启动闸门用：
     </p>
     <pre><code>llm-session-proxy --doctor &amp;&amp; llm-session-proxy</code></pre>
+
+    <h3 id="forbidden-ports">禁用监听端口</h3>
+    <p>
+      Fetch 规范——以及所有照着它实现的浏览器——内置了一张<b>禁用端口</b>清单（<code>6000</code>、
+      <code>6666</code>、<code>6667</code>、<code>10080</code>、<code>5060</code> …）。
+      发往这些端口的请求会在<b>真正发出之前</b>就被拒掉，连接根本不会建立。而 Node 原生的
+      <code>http</code> / <code>https</code> 客户端不理会这份清单，于是这成了一种很难自查的故障：
+      代理明明把端口绑上了、日志也一片干净，浏览器和基于 <code>fetch</code> 的客户端却一律连不上。
+    </p>
+    <p>
+      由此定下两条规则，都是刻意的。<code>listen.port: 0</code>（让系统随便分一个）<b>永远不会</b>落到
+      禁用端口上——分到就换个端口重绑，因为用户没点名要哪个端口，就没有需要被尊重的意图。
+      而用户显式写下的端口<b>原样尊重</b>：哪怕它就在清单里，<code>--dry-run</code> /
+      <code>--doctor</code> 也只会给出警告，而不是悄悄把服务搬到别的地方去。
+    </p>
 
     <h3>本地状态端点</h3>
     <pre><code><span class="cmt"># 运行概览：会话数、命中率、注入的头、上游地址</span>
@@ -640,15 +798,18 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       <div class="arrow">→</div>
       <div class="flow-step"><b>04 分桶</b><span>桶的模型覆盖 + 请求体变换</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>05 注入</b><span>请求头与请求体参数</span></div>
+      <div class="flow-step"><b>05 选上游</b><span>桶 &gt; 模型规则 &gt; 池子默认</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>06 互转</b><span>翻译成上游的协议</span></div>
+      <div class="flow-step"><b>06 注入</b><span>请求头与请求体参数</span></div>
       <div class="arrow">→</div>
-      <div class="flow-step"><b>07 转发</b><span>SSE 逐块回传</span></div>
+      <div class="flow-step"><b>07 互转</b><span>翻译成上游的协议</span></div>
+      <div class="arrow">→</div>
+      <div class="flow-step"><b>08 转发</b><span>SSE 逐块回传</span></div>
     </div>
     <p>
-      03～06 的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
-      别名解析之后，所以它只可能是真实 ID；注入放在倒数第二步，请求头里的 <code>{{model}}</code>
+      03～08 的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
+      别名解析之后，所以它只可能是真实 ID；<b>选上游排在任何协议互转之前</b>——它同时决定了线协议
+      与要对话的主机；注入放在倒数第二步，请求头里的 <code>{{model}}</code>
       反映的是最终决定；<b>协议互转放在所有步骤之后</b>——变换与注入针对的是客户端协议下的字段名，
       等请求体定稿了才整体翻译。
     </p>
@@ -690,6 +851,19 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
       发真实请求之前先用 <code>--dry-run</code> 看一眼每个别名最终变成了什么。
     </p>
     <p>
+      <b>难度打分器读的是请求，不是任务。</b>它衡量请求的<i>形态</i>，所以超长上下文里的一句短问题
+      照样高分。把档位当成一个你可以调的启发式，而不是对「这件事有多难」的判决。
+    </p>
+    <p>
+      <b>上游池只负责挑，不负责兜底。</b>目前还没有重试、健康检查与熔断：选中的上游回 429 或 5xx，
+      就原样交给客户端。兜底与重试是下一个里程碑的事。
+    </p>
+    <p>
+      <b>Copilot 自己的 BYOK 依然是客户端功能。</b>GitHub 把密钥存在客户端钥匙串、直接向供应商计费——
+      代理改不了这件事。「Copilot 托管模型 + 自己的密钥」在这里的落点是
+      <b>把自己的供应商加成另一个上游</b>，而不是让 Copilot 去用你的 key。
+    </p>
+    <p>
       <b>协议互转在边缘处刻意有损。</b>Anthropic 的 <code>thinking</code> / <code>signature</code>
       流增量在 chat 里没有标准位置，会丢弃（日志里记名）；<code>messages ↔ responses</code> 经 chat
       中转，不做直达转换器。保下来的是文本、工具调用、结束原因与 usage——客户端真正会用的就这些。
@@ -706,9 +880,10 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
         <tr><td><code>v0.2.0</code> ✓</td><td>正确性</td><td>内置精选模型映射表（27 条别名）、以 <code>proxy-</code> 开头的别名解析不出结果时的「同别名只报一次」告警，以及 <code>--dry-run</code> / <code>--doctor</code> 启动前自检。修掉的正是「别名被静默原样转发给上游」这个坑。</td></tr>
         <tr><td><code>v0.2.1</code> ✓</td><td>路由</td><td>五个内置命名变换（<code>noop</code>、<code>drop-fields</code>、<code>drop-empty-fields</code>、<code>rename-fields</code>、<code>clamp-max-tokens</code>），以及路由分桶（<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>）——规则自上而下、首个命中即止，可匹配路径、模型前缀、请求体字段与请求体大小。默认关闭；互转器要挂靠的宿主。原本设想的「从路径加载插件」被有意砍掉了。</td></tr>
         <tr><td><code>v0.2.2</code> ✓</td><td>协议覆盖</td><td>Anthropic ↔ OpenAI ↔ Responses 互转与字段归一化，含流式——请求体、JSON 响应与 SSE 逐事件转码。从这个版本起，客户端用哪套协议不再决定它能用到哪些模型。</td></tr>
-        <tr><td><code>v0.3</code></td><td>可观测与可控</td><td>Prometheus <code>/metrics</code>、JSON 日志模式、OTLP/JSON 导出、会话与提示词缓存检查器、token 与成本统计、免构建的本地看板。</td></tr>
-        <tr><td><code>v0.4</code></td><td>真实上游下的可靠性</td><td>多上游、带抖动重试的兜底、熔断、超时拆分与流空闲看门狗、退出时优雅排空。</td></tr>
-        <tr><td><code>v0.5</code></td><td>安全与卫生</td><td>日志脱敏、正则护栏、精确到行的配置 schema 报错、CI 用的 <code>--check-config</code>。</td></tr>
+        <tr><td><code>v0.3.0</code> ✓</td><td>难度路由与上游覆盖</td><td>一个本地确定性打分器按请求<i>形态</i>打分并映射到档位（<code>easy</code> / <code>medium</code> / <code>hard</code>）供规则匹配；加上一个上游池——每个上游各有自己的端点、线协议与凭据来源——其中包括用官方方式认证的 GitHub Copilot。Google Gemini 作为第四种线格式加入协议集合。</td></tr>
+        <tr><td><code>v0.4</code></td><td>可观测与可控</td><td>Prometheus <code>/metrics</code>、JSON 日志模式、OTLP/JSON 导出、会话与提示词缓存检查器、token 与成本统计、免构建的本地看板。</td></tr>
+        <tr><td><code>v0.5</code></td><td>真实上游下的可靠性</td><td>带抖动重试的兜底、熔断、超时拆分与流空闲看门狗、退出时优雅排空。</td></tr>
+        <tr><td><code>v0.6</code></td><td>安全与卫生</td><td>日志脱敏、正则护栏、精确到行的配置 schema 报错、CI 用的 <code>--check-config</code>。</td></tr>
         <tr><td><code>v1.0</code></td><td>分发与承诺</td><td>单文件可执行产物、按客户端的兼容性矩阵、基于 golden SSE fixture 的协议契约测试、配置迁移工具，以及从此开始的语义化版本。</td></tr>
       </tbody>
     </table>

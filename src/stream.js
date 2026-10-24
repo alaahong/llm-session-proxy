@@ -30,6 +30,30 @@ const FINISH_TO_STOP = {
   content_filter: 'refusal',
 };
 
+/** Gemini 的 finishReason → OpenAI finish_reason。 */
+const GEMINI_TO_FINISH = {
+  STOP: 'stop',
+  MAX_TOKENS: 'length',
+  SAFETY: 'content_filter',
+  RECITATION: 'content_filter',
+  OTHER: 'stop',
+};
+
+/** OpenAI finish_reason → Gemini 的 finishReason。 */
+const FINISH_TO_GEMINI = {
+  stop: 'STOP',
+  length: 'MAX_TOKENS',
+  tool_calls: 'STOP',
+  function_call: 'STOP',
+  content_filter: 'SAFETY',
+};
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null) return [];
+  return [value];
+}
+
 /**
  * 增量 SSE 解析器。喂任意切分的文本，按空行分块；每块产出 { event, data }。
  * `data: [DONE]` 产出 { event: 'done', data: null }。注释行（: ping）忽略。
@@ -70,6 +94,17 @@ function safeJson(text) {
   }
 }
 
+/** 解析工具参数：成功返回对象，失败返回 undefined（区别于「解析成 null」）。 */
+function tryParseJson(text) {
+  if (typeof text !== 'string' || !text) return undefined;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 流式转码器。
  * @param {{from:string, to:string, write:(text:string)=>void}} options
@@ -107,11 +142,14 @@ export function createStreamTranscoder({ from, to, write }) {
       if (chunk.id) meta.id = chunk.id;
       if (chunk.model) meta.model = chunk.model;
       const choice = chunk.choices?.[0];
+      // usage 可能单独成块——OpenAI 的 stream_options.include_usage 就是这么发的：
+      // 最后一块 choices 是空数组，usage 在顶层。所以**不能**只在 finish_reason
+      // 那块里找，否则标准 OpenAI 流式的 usage 会被整个丢掉。
+      // 也有网关把它塞在 choice 里，两边都认。
+      const usage = chunk.usage || choice?.usage;
+      if (usage) up.usage = usage;
       if (choice?.finish_reason) {
         up.stopReason = choice.finish_reason;
-        // usage 通常在顶层（stream_options.include_usage），有的网关塞在 choice 里，两边都认
-        const usage = chunk.usage || choice.usage;
-        if (usage) up.usage = usage;
         up.ended = true;
       }
       if (choice?.delta && Object.keys(choice.delta).length) return [deltaChunk(choice.delta)];
@@ -167,6 +205,57 @@ export function createStreamTranscoder({ from, to, write }) {
         default:
           return [];
       }
+    }
+
+    // from === 'gemini'
+    // Gemini 的 SSE 每一条 data 都是一个残缺的 GenerateContentResponse：
+    //   { candidates:[{content:{parts:[{text}|{functionCall}], role:"model"}, finishReason}], usageMetadata, modelVersion }
+    // 没有事件类型，全靠内容判断。
+    if (from === 'gemini') {
+      const payload = safeJson(data) || {};
+      if (payload.modelVersion) meta.model = payload.modelVersion;
+      if (payload.responseId) meta.id = payload.responseId;
+
+      const candidate = asArray(payload.candidates)[0] || {};
+      const parts = asArray(candidate.content?.parts);
+
+      if (candidate.finishReason) {
+        up.stopReason = GEMINI_TO_FINISH[candidate.finishReason] || 'stop';
+        up.ended = true;
+      }
+
+      const usage = payload.usageMetadata;
+      if (usage) {
+        if (Number.isFinite(usage.promptTokenCount)) up.usage.prompt_tokens = usage.promptTokenCount;
+        if (Number.isFinite(usage.candidatesTokenCount)) up.usage.completion_tokens = usage.candidatesTokenCount;
+      }
+
+      const chunks = [];
+      for (const part of parts) {
+        if (typeof part?.text === 'string') {
+          if (part.text) chunks.push(deltaChunk({ content: part.text }));
+          continue;
+        }
+        if (part?.functionCall) {
+          // Gemini 的工具调用整块出现（不像 chat 那样分片），一次转完
+          const call = part.functionCall;
+          chunks.push(
+            deltaChunk({
+              tool_calls: [
+                {
+                  index: up.toolCounter++,
+                  id: `call_${up.toolCounter}`,
+                  type: 'function',
+                  function: { name: call.name || '', arguments: JSON.stringify(call.args ?? {}) },
+                },
+              ],
+            }),
+          );
+          continue;
+        }
+        if (part) stats.dropped.push(`part:${Object.keys(part)[0] || 'unknown'}`);
+      }
+      return chunks;
     }
 
     // from === 'responses'
@@ -233,34 +322,55 @@ export function createStreamTranscoder({ from, to, write }) {
     return down.usage;
   };
 
+  /**
+   * 发出协议各自的「开头」。
+   *
+   * - chat：开头块本身带 role delta，发完即止（不能落两次）；
+   * - messages：message_start 事件；
+   * - responses：response.created 事件；
+   * - gemini：没有独立开头事件，第一个候选块自己就是开头。
+   *
+   * @param {object|null} chunk 手上的块（没有就传 null）。
+   * @returns {boolean} true 表示这个块已当作开头块发出去了，调用方不要再发一遍。
+   */
+  const openStream = (chunk) => {
+    if (down.started) return false;
+    down.started = true;
+    const id = chunk?.id ?? meta.id;
+    const model = chunk?.model ?? meta.model;
+    if (to === 'chat') {
+      if (chunk?.choices?.[0]?.delta?.role) {
+        sendData(chunk);
+        return true;
+      }
+      sendData({ ...header(), choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
+      return false;
+    }
+    if (to === 'messages') {
+      sendEvent('message_start', {
+        type: 'message_start',
+        message: {
+          id, type: 'message', role: 'assistant', model,
+          content: [], stop_sequence: null,
+          usage: { input_tokens: up.usage.prompt_tokens ?? 0, output_tokens: 0 },
+        },
+      });
+    } else if (to === 'gemini') {
+      /* Gemini 无独立开头事件 */
+    } else {
+      sendEvent('response.created', { type: 'response.created', response: { id, status: 'in_progress', model, output: [] } });
+    }
+    return false;
+  };
+
   const emitChunk = (chunk) => {
     const delta = chunk.choices?.[0]?.delta || {};
     if (delta.role && !down.started) {
-      down.started = true;
-      if (to === 'chat') {
-        // chat 的开头块本身就带着这个 delta，发完即止，不能再落一次
-        sendData(chunk);
-        return;
-      }
-      if (to === 'messages') {
-        sendEvent('message_start', {
-          type: 'message_start',
-          message: {
-            id: chunk.id, type: 'message', role: 'assistant', model: chunk.model,
-            content: [], stop_sequence: null,
-            usage: { input_tokens: up.usage.prompt_tokens ?? 0, output_tokens: 0 },
-          },
-        });
-      } else {
-        sendEvent('response.created', { type: 'response.created', response: { id: chunk.id, status: 'in_progress', model: chunk.model, output: [] } });
-      }
-      // 刻意不 return：有的上游把首段文本和 role 放进同一个 delta，接着往下走
-    }
-    if (!down.started) {
-      down.started = true;
-      if (to === 'chat') sendData({ ...header(), choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
-      else if (to === 'messages') sendEvent('message_start', { type: 'message_start', message: { id: chunk.id, type: 'message', role: 'assistant', model: chunk.model, content: [], stop_sequence: null, usage: { input_tokens: up.usage.prompt_tokens ?? 0, output_tokens: 0 } } });
-      else sendEvent('response.created', { type: 'response.created', response: { id: chunk.id, status: 'in_progress', model: chunk.model, output: [] } });
+      // chat 的开头块发完即止；messages/responses 开了头还要**接着往下走**——
+      // 有的上游把首段文本和 role 放进同一个 delta，return 会丢掉首段文本。
+      if (openStream(chunk)) return;
+    } else if (!down.started) {
+      openStream(chunk);
     }
 
     if (to === 'chat') {
@@ -277,6 +387,10 @@ export function createStreamTranscoder({ from, to, write }) {
           sendEvent('content_block_start', { type: 'content_block_start', index: down.blockIndex, content_block: { type: 'text', text: '' } });
         }
         sendEvent('content_block_delta', { type: 'content_block_delta', index: down.blockIndex, delta: { type: 'text_delta', text: delta.content } });
+      } else if (to === 'gemini') {
+        sendData({
+          candidates: [{ content: { role: 'model', parts: [{ text: delta.content }] }, index: 0 }],
+        });
       } else {
         if (!down.textOpen) {
           down.textOpen = true;
@@ -292,10 +406,12 @@ export function createStreamTranscoder({ from, to, write }) {
       const fn = call.function || {};
       let tool = down.tools.get(call.index);
       if (!tool) {
-        tool = { blockIndex: ++down.blockIndex, id: call.id, name: fn.name || '', args: '', closed: false };
+        tool = { blockIndex: ++down.blockIndex, id: call.id, name: fn.name || '', args: '', closed: false, emitted: false };
         down.tools.set(call.index, tool);
         if (to === 'messages') {
           sendEvent('content_block_start', { type: 'content_block_start', index: tool.blockIndex, content_block: { type: 'tool_use', id: call.id, name: tool.name, input: {} } });
+        } else if (to === 'gemini') {
+          // Gemini 的 functionCall 一次给全，参数齐全才发
         } else {
           sendEvent('response.output_item.added', { type: 'response.output_item.added', output_index: tool.blockIndex, item: { type: 'function_call', call_id: call.id, name: tool.name, arguments: '' } });
         }
@@ -304,6 +420,17 @@ export function createStreamTranscoder({ from, to, write }) {
         tool.args += fn.arguments;
         if (to === 'messages') {
           sendEvent('content_block_delta', { type: 'content_block_delta', index: tool.blockIndex, delta: { type: 'input_json_delta', partial_json: fn.arguments } });
+        } else if (to === 'gemini') {
+          // Gemini 没有「参数分片」这个概念：等参数能解析成 JSON 了再整块发
+          if (!tool.emitted) {
+            const parsed = tryParseJson(tool.args);
+            if (parsed !== undefined) {
+              tool.emitted = true;
+              sendData({
+                candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: tool.name, args: parsed } }] }, index: 0 }],
+              });
+            }
+          }
         } else {
           sendEvent('response.function_call_arguments.delta', { type: 'response.function_call_arguments.delta', item_id: tool.id, delta: fn.arguments });
         }
@@ -317,9 +444,28 @@ export function createStreamTranscoder({ from, to, write }) {
   const finalize = () => {
     if (down.ended) return;
     down.ended = true;
-    const finish = up.stopReason ? (from === 'messages' ? STOP_TO_FINISH[up.stopReason] || 'stop' : up.stopReason) : 'stop';
+    // 上游的停止原因统一折成 chat 的 finish_reason。
+    //
+    // 注意 chat 词表是**归一后的**结果，不是上游原值：
+    // - messages 上游的 stop_reason 是 Anthropic 原值，要查 STOP_TO_FINISH；
+    // - gemini 上游的 finishReason 在 upstreamToChunks 里已经查过 GEMINI_TO_FINISH，
+    //   存进 up.stopReason 的就是 chat 词表的值（stop/length/content_filter/…），
+    //   这里**不能再查一次** GEMINI_TO_FINISH——查不到就全退化成 'stop'，
+    //   length 与 content_filter 的语义会被悄悄抹掉。
+    // - chat / responses 上游本来就是 chat 词表，原样带过去。
+    const finish = up.stopReason
+      ? from === 'messages'
+        ? STOP_TO_FINISH[up.stopReason] || 'stop'
+        : up.stopReason
+      : 'stop';
     const usage = ensureUsage();
     down.finish = down.finish || finish;
+
+    // 上游一个增量都没给过时，down.started 还是 false。
+    // 这时必须**先补开头**再发收尾——否则客户端会收到「没有 message_start 的
+    // message_stop」或「没有 response.created 的 response.completed」，那是坏流。
+    // 补出来的开头块用空 delta，语义上就是「这一轮什么都没有」。
+    if (!down.started) openStream(null);
 
     if (to === 'chat') {
       const tail = { ...header(), choices: [{ index: 0, delta: {}, finish_reason: down.finish }] };
@@ -346,6 +492,34 @@ export function createStreamTranscoder({ from, to, write }) {
         usage: { output_tokens: usage.completion_tokens ?? 0 },
       });
       sendEvent('message_stop', { type: 'message_stop' });
+      return;
+    }
+
+    // to === 'gemini'：收尾发最后一个候选块，带 finishReason 与 usage
+    if (to === 'gemini') {
+      // 参数没解析出来的工具调用（如分片没收全）在收尾时补发一次
+      for (const tool of down.tools.values()) {
+        if (tool.emitted) continue;
+        tool.emitted = true;
+        const parsed = tryParseJson(tool.args);
+        sendData({
+          candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: tool.name, args: parsed ?? {} } }] }, index: 0 }],
+        });
+      }
+      sendData({
+        candidates: [
+          {
+            content: { role: 'model', parts: [] },
+            finishReason: FINISH_TO_GEMINI[down.finish] || 'STOP',
+            index: 0,
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: usage.prompt_tokens ?? 0,
+          candidatesTokenCount: usage.completion_tokens ?? 0,
+          totalTokenCount: (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0),
+        },
+      });
       return;
     }
 

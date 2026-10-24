@@ -7,7 +7,9 @@ import { SUPPORTED_LANGS, normalizeLang, setLang, t } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
 import { BUILTIN_BUCKETS, emptyBucket, hasMatcher, normalizeRule } from './router.js';
 import { isTransformer, listTransformers } from './transformers.js';
+import { isScorer, listScorers } from './scoring.js';
 import { PROTOCOLS } from './protocol.js';
+import { PROVIDER_TYPES, normalizeUpstreams } from './upstreams.js';
 
 /** 默认日志文件基名（与包名一致），用于拼默认路径与归档匹配。 */
 export const LOG_BASENAME = 'llm-session-proxy';
@@ -114,6 +116,18 @@ export const DEFAULT_CONFIG = {
     defaultBucket: 'default',
     // 四个内置桶预先声明好（都是空桶），用户只要填 model / transformers 就能用
     buckets: Object.fromEntries(BUILTIN_BUCKETS.map((name) => [name, emptyBucket()])),
+    // 难度打分（v0.3.0）：把请求形态折成一个分数与档位，供 difficulty 规则匹配。
+    // 默认不启用——启用后每条请求都要算一次分，而没配 difficulty 规则时纯属白算。
+    scorers: {
+      enabled: [],
+      options: {},
+    },
+    // 难度档位：分数 <= maxScore 落进该档。缺省用内置的 easy / medium / hard。
+    bands: [
+      { name: 'easy', maxScore: 30 },
+      { name: 'medium', maxScore: 60 },
+      { name: 'hard', maxScore: 100 },
+    ],
     // 自上而下匹配，首个命中生效；同一条规则内多条件为 AND
     rules: [],
   },
@@ -129,10 +143,20 @@ export const DEFAULT_CONFIG = {
       chat: '/zen/go/v1/chat/completions',
       messages: '/zen/go/v1/messages',
       responses: '/zen/go/v1/responses',
+      gemini: '/v1beta/models/{model}:generateContent',
     },
     // 自上而下匹配，首个命中生效。model 缺省表示命中一切（上游只有一种协议时用）。
     // target 必须是 chat | messages | responses；route.path 可显式覆盖该路由的上游路径。
     routes: [],
+  },
+  // 上游池（v0.3.0）：多个上游，按模型挑。默认空 —— 空就等于只有一个上游，
+  // 走旧的 config.upstream，行为与 v0.2 完全一致。
+  upstreams: {
+    enabled: true,
+    // providers 是具名上游的表；routes 按模型前缀选上游；default 是兜底。
+    providers: {},
+    routes: [],
+    default: null,
   },
   // 控制台与日志文案语言。默认英文，需要中文显式切换（--lang zh / PROXY_LANG=zh）。
   lang: 'en',
@@ -342,6 +366,7 @@ function normalize(config) {
   next.router = normalizeRouter(next.router);
   next.transformers = normalizeTransformers(next.transformers);
   next.protocol = normalizeProtocol(next.protocol);
+  next.upstreams = normalizeUpstreams(next.upstreams);
   return next;
 }
 
@@ -365,9 +390,40 @@ function normalizeRouter(router) {
       transformers: Array.isArray(bucket.transformers)
         ? bucket.transformers.filter((item) => typeof item === 'string' && item)
         : [],
+      upstream: typeof bucket.upstream === 'string' && bucket.upstream.trim() ? bucket.upstream.trim() : null,
     };
   }
   out.buckets = buckets;
+
+  // 打分器：名字去空，options 原样留着交给校验。
+  if (router.scorers !== undefined && !isPlainObject(router.scorers)) {
+    // 整个 scorers 段写错了：原样留着，交给 validate 报错
+    out.scorers = router.scorers;
+  } else {
+    const scorers = isPlainObject(router.scorers) ? router.scorers : {};
+    out.scorers = {
+      // 类型不对时**原样留着**，交给 validate 报错：静默退化成空列表等于
+      // 「配了但没生效」——用户以为难度打分开着，实际一条 difficulty 规则都没命中。
+      enabled:
+        scorers.enabled === undefined
+          ? []
+          : Array.isArray(scorers.enabled)
+            ? scorers.enabled.filter((item) => typeof item === 'string' && item)
+            : scorers.enabled,
+      options: isPlainObject(scorers.options) ? scorers.options : {},
+    };
+  }
+
+  // 档位：按 maxScore 升序，非法项丢掉。
+  out.bands = (Array.isArray(router.bands) ? router.bands : [])
+    .filter((band) => isPlainObject(band) && typeof band.name === 'string' && band.name)
+    .map((band) => ({
+      name: band.name,
+      // 分数不是数字时**原样留着**，交给 validate 报错：静默当成 0 会让这个档位
+      // 变成「什么都进不来」的窄档，配了等于没配。
+      maxScore: Number.isFinite(Number(band.maxScore)) ? Number(band.maxScore) : band.maxScore,
+    }))
+    .sort((a, b) => Number(a.maxScore) - Number(b.maxScore));
 
   out.rules = (Array.isArray(router.rules) ? router.rules : []).map(normalizeRule).filter(Boolean);
   out.forced = typeof router.forced === 'string' && router.forced.trim() ? router.forced.trim() : null;
@@ -430,6 +486,7 @@ function validate(config) {
   validateTransformers(config.transformers, errors);
   validateRouter(config.router, errors);
   validateProtocol(config.protocol, errors);
+  validateUpstreams(config.upstreams, errors);
   validateLog(config.log, errors);
   if (errors.length) throw new Error(t('config.validationFailed', { list: errors.join('\n  - ') }));
   return config;
@@ -492,6 +549,32 @@ function validateRouter(router, errors) {
     );
   }
 
+  // 打分器名字必须在注册表里真实存在
+  const knownScorers = listScorers();
+  const scorerEnabled = router.scorers?.enabled;
+  if (!Array.isArray(scorerEnabled)) {
+    errors.push(t('config.badScorerEnabled', { value: JSON.stringify(scorerEnabled) }));
+  } else {
+    for (const name of scorerEnabled) {
+      if (!isScorer(name)) {
+        errors.push(t('config.badScorerName', { name, known: knownScorers.join(' | ') }));
+      }
+    }
+  }
+
+  // 难度档位：名字不能重，maxScore 要有上限
+  const bands = Array.isArray(router.bands) ? router.bands : [];
+  const bandNames = new Set();
+  for (const band of bands) {
+    if (bandNames.has(band.name)) {
+      errors.push(t('config.badBandDuplicate', { name: band.name }));
+    }
+    bandNames.add(band.name);
+    if (!Number.isFinite(band.maxScore) || band.maxScore < 0 || band.maxScore > 100) {
+      errors.push(t('config.badBandScore', { name: band.name, value: JSON.stringify(band.maxScore) }));
+    }
+  }
+
   const rules = Array.isArray(router.rules) ? router.rules : [];
   rules.forEach((rule, index) => {
     if (!bucketNames.includes(rule.bucket)) {
@@ -501,6 +584,15 @@ function validateRouter(router, errors) {
     }
     if (!hasMatcher(rule)) {
       errors.push(t('config.badRouterRuleNoMatch', { index, bucket: rule.bucket }));
+    }
+    if (rule.difficulty !== undefined && bandNames.size && !bandNames.has(rule.difficulty)) {
+      errors.push(
+        t('config.badRouterRuleDifficulty', {
+          index,
+          value: rule.difficulty,
+          known: [...bandNames].join(' | '),
+        }),
+      );
     }
     for (const key of ['minBytes', 'maxBytes']) {
       const value = rule[key];
@@ -523,6 +615,83 @@ function validateRouter(router, errors) {
           }),
         );
       }
+    }
+  }
+}
+
+/**
+ * 上游池的校验。
+ *
+ * 这里比别处严一档：上游池配错了不会启动失败，而是**每个请求都发到错的地方**——
+ * 轻则 404，重则把请求连同凭据发给了不该去的地方。所以类型、URL、凭据来源、
+ * 路由指向的上游名都要在启动时就说清楚。
+ */
+function validateUpstreams(upstreams, errors) {
+  if (!isPlainObject(upstreams)) {
+    errors.push(t('config.badUpstreams'));
+    return;
+  }
+  if (upstreams.providers !== undefined && !isPlainObject(upstreams.providers)) {
+    // providers 不是对象：不能当成空池（那等于「配了但没生效」）
+    errors.push(t('config.badUpstreams'));
+    return;
+  }
+  const providers = isPlainObject(upstreams.providers) ? upstreams.providers : {};
+  const names = Object.keys(providers);
+  if (!names.length) return; // 空池 = 走旧 upstream，不报错
+
+  for (const [name, provider] of Object.entries(providers)) {
+    if (!isPlainObject(provider)) {
+      errors.push(t('config.badUpstreamProvider', { name }));
+      continue;
+    }
+    if (!PROVIDER_TYPES.includes(provider.type)) {
+      errors.push(t('config.badUpstreamType', { name, type: JSON.stringify(provider.type), known: PROVIDER_TYPES.join(' | ') }));
+    }
+    if (typeof provider.baseUrl !== 'string' || !provider.baseUrl) {
+      errors.push(t('config.badUpstreamBaseUrl', { name }));
+    } else if (!/^https?:\/\//i.test(provider.baseUrl)) {
+      errors.push(t('config.badUpstreamBaseUrlScheme', { name, scheme: provider.baseUrl }));
+    }
+    for (const [wire, path] of Object.entries(provider.paths || {})) {
+      if (typeof path !== 'string' || !path.startsWith('/')) {
+        errors.push(t('config.badUpstreamPath', { name, wire, value: JSON.stringify(path) }));
+      }
+    }
+    if (provider.wire?.length) {
+      for (const wire of provider.wire) {
+        if (!PROTOCOLS.includes(wire)) {
+          errors.push(t('config.badUpstreamWire', { name, wire, known: PROTOCOLS.join(' | ') }));
+        }
+      }
+    }
+    const auth = provider.auth;
+    if (auth === null || auth === undefined) {
+      // 没有凭据是允许的：本地 Ollama / LM Studio 这类端点不需要 key。
+      // 有请求真发过去被拒了，上游会回 401，那时候再报错更准。
+    } else if (!isPlainObject(auth)) {
+      errors.push(t('config.badUpstreamAuth', { name }));
+    } else {
+      const hasEnv = typeof auth.env === 'string' && auth.env.trim();
+      const hasCommand = typeof auth.command === 'string' && auth.command.trim();
+      if (!hasEnv && !hasCommand && auth.deviceFlow !== true) {
+        errors.push(t('config.badUpstreamAuthSource', { name }));
+      }
+    }
+  }
+
+  const routes = Array.isArray(upstreams.routes) ? upstreams.routes : [];
+  routes.forEach((route, index) => {
+    if (typeof route?.upstream !== 'string' || !route.upstream) {
+      errors.push(t('config.badUpstreamRouteTarget', { index, name: route?.upstream }));
+    }
+    // 指向不存在的 provider 不在启动时报错——那条规则可能永远不命中。
+    // 真的命中了时代理层会告警（proxy.log.upstreamMissing），那时才看得见。
+  });
+
+  if (upstreams.default !== null && upstreams.default !== undefined) {
+    if (typeof upstreams.default !== 'string' || !names.includes(upstreams.default)) {
+      errors.push(t('config.badUpstreamDefault', { name: upstreams.default }));
     }
   }
 }
@@ -672,7 +841,8 @@ export function resolveUpstream(config) {
     protocol,
     host,
     port: port ?? defaultPort,
-    hostHeader: (port ?? defaultPort) === defaultPort ? host : `${host}:${port ?? defaultPort}`,
+    // 走到这里说明端口不是默认端口（或为空），拼出来的就是「host:port」
+    hostHeader: (port ?? defaultPort) === defaultPort ? host : `${host}:${port}`,
     basePath: basePath || '',
   };
 }

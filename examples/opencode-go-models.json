@@ -21,6 +21,10 @@
   //  从 v0.2.2 起支持协议互转：客户端只说一种协议也能调到说另一种协议的模型
   //  （见下面注释掉的 "protocol" 段）。默认关闭。
   //
+  //  从 v0.3.0 起多出两件事：按请求难度分桶（router.scorers + router.bands，
+  //  见下面注释掉的 "router" 段），以及把请求发到不同的上游（upstreams 段，
+  //  可以把 Copilot 托管的模型和你自己付费的模型放进同一个池子）。
+  //
   //  启动：llm-session-proxy -c examples/opencode-go-models.json
   // ════════════════════════════════════════════════════════════════════
 
@@ -150,11 +154,33 @@
   //     { "bucket": "background",  "modelPrefix": "proxy-glm-flash", "maxBytes": 4096 }
   //   ]
   // },
+  //
+  // ── v0.3.0 起可选：按难度打分 ──────────────────────────────────────────
+  // 打分器把请求的**形态**折成一个 0–100 分与档位，规则就能按 difficulty 匹配。
+  // 它是本地确定性算法，不调模型、不发网络请求。注意它衡量的是形态不是语义：
+  // 长上下文里的短问题照样算难。
+  //
+  // 不配 scorers 时 difficulty 规则永远不命中（与「零条件规则不命中」同款语义）。
+  //
+  // "scorers": { "enabled": ["builtin-complexity"] },
+  // "bands": [
+  //   { "name": "easy",   "maxScore": 30 },
+  //   { "name": "medium", "maxScore": 60 },
+  //   { "name": "hard",   "maxScore": 100 }
+  // ],
+  //
+  // 然后规则里就能写难度了（可以和其它条件同时用，条件之间是「与」）：
+  //
+  // "rules": [
+  //   { "bucket": "think",       "difficulty": "hard" },
+  //   { "bucket": "background",  "difficulty": "easy" }
+  // ],
 
   // ── v0.2.2 起可选：协议互转 ────────────────────────────────────────────
   // 从请求路径推断客户端协议（/chat/completions → chat、/messages → messages、
-  // /responses → responses），路由决定上游说哪套；两者不同时自动转换请求体与响应，
-  // SSE 按事件逐条转码。默认关闭。target 只能是 chat | messages | responses。
+  // /responses → responses、:generateContent → gemini），路由决定上游说哪套；
+  // 两者不同时自动转换请求体与响应，SSE 按事件逐条转码。默认关闭。
+  // target 只能是 chat | messages | responses | gemini。
   //
   // "protocol": {
   //   "enabled": true,
@@ -167,6 +193,39 @@
   //     { "model": "minimax", "target": "messages" },
   //     { "model": "gpt", "target": "responses" }
   //   ]
+  // },
+  //
+  // ── v0.3.0 起可选：上游池 ──────────────────────────────────────────────
+  // 一个进程里放多个上游，各带各的端点路径、线协议与凭据来源。
+  // 选择顺序：桶里显式写的 "upstream" > 按模型名前缀匹配的 "routes" > "default"；
+  // 都不命中就退回上面那个顶层 "upstream"，所以打开池子不会弄坏现有配置。
+  //
+  // 凭据**只写来源、不写值**：auth.env 是环境变量名（可逗号分隔多个），
+  // auth.command 的 stdout 就是 key（不经 shell 展开），auth.deviceFlow 允许设备流登录。
+  // 凭据值运行时现取，绝不写进配置文件、绝不进日志。
+  //
+  // Copilot 侧走官方链路：GitHub token → copilot_internal/v2/token → 短期 session token。
+  // GitHub token 的查找顺序是 COPILOT_GITHUB_TOKEN → GH_TOKEN → GITHUB_TOKEN →
+  // gh CLI → 设备流登录。注意 ghp_ 传统 PAT 不被 GitHub 支持用于 Copilot，
+  // github_pat_ / ghu_ / gho_ / ghs_ 才支持。
+  //
+  // "upstreams": {
+  //   "providers": {
+  //     "copilot": {
+  //       "type": "copilot",
+  //       "baseUrl": "https://api.githubcopilot.com",
+  //       "auth": { "env": "COPILOT_GITHUB_TOKEN", "deviceFlow": true }
+  //     },
+  //     "own": {
+  //       "type": "openai",
+  //       "baseUrl": "https://api.openai.com/v1",
+  //       "auth": { "env": "OPENAI_API_KEY" }
+  //     }
+  //   },
+  //   "routes": [
+  //     { "model": "gpt-5", "upstream": "copilot" }
+  //   ],
+  //   "default": "own"
   // },
 
   "userAgent": "opencode/1.18.29 cli",

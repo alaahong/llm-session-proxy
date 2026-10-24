@@ -36,7 +36,44 @@ function stringify(value) {
   try {
     return JSON.stringify(value);
   } catch {
-    return String(value);
+    // 循环引用会让 JSON.stringify 抛错。用「见过就标记」的 replacer 再试一次，
+    // 至少还能看出这个对象里有什么，而不是退化成一句没信息量的 [object Object]。
+    try {
+      const seen = new WeakSet();
+      return JSON.stringify(value, (_key, item) => {
+        if (item && typeof item === 'object') {
+          if (seen.has(item)) return '[Circular]';
+          seen.add(item);
+        }
+        return item;
+      });
+    } catch {
+      return String(value);
+    }
+  }
+}
+
+/**
+ * 给 process.stderr 挂一个兜底的 'error' 监听器。
+ *
+ * stderr 的管道被关掉时（`lsp | head` 之类），write **不会同步抛错**，
+ * 而是异步在 process.stderr 上发一个 EPIPE 的 'error' 事件。
+ * 没有监听器的话它会变成未捕获异常，把代理直接带走——
+ * 那正好违反「日志器绝不能因为写日志而把代理搞挂」这条底线。
+ *
+ * 只挂一次（模块级标记），不覆盖别人已有的监听器。
+ */
+let stderrGuarded = false;
+
+function guardStderr() {
+  if (stderrGuarded) return;
+  stderrGuarded = true;
+  try {
+    process.stderr.on('error', () => {
+      /* stderr 不可写：放弃控制台输出，文件通道继续 */
+    });
+  } catch {
+    /* process.stderr 不是 EventEmitter（极少见）：放弃保护 */
   }
 }
 
@@ -85,6 +122,9 @@ export class Logger {
     this.written = 0;
     this.activeFile = null;
     this.lastSweep = 0;
+
+    // 控制台通道随时可能被关掉的管道接手，先把兜底监听器挂上
+    guardStderr();
 
     if (this.file) {
       try {
@@ -228,8 +268,9 @@ export class Logger {
       const color = COLORS[level] || 0;
       const out = process.stderr.isTTY ? `\u001b[${color}m${line}\u001b[0m` : line;
       try {
-        // stderr 被关掉（管道断开）时 write 会抛 EPIPE；
-        // 日志器绝不能因为写日志而把代理搞挂
+        // 管道被关掉时 write 往往**不会**同步抛错，而是异步发 EPIPE 的 'error' 事件
+        // （那个由 guardStderr 兜住）；这里的 try 只是再挡一层同步异常。
+        // 日志器绝不能因为写日志而把代理搞挂。
         process.stderr.write(`${out}\n`);
       } catch {
         /* 放弃控制台输出，文件通道继续 */

@@ -1,4 +1,5 @@
 import { t } from './messages.js';
+import { resolveDifficulty } from './scoring.js';
 
 /**
  * 路由分桶（router buckets）。
@@ -23,7 +24,7 @@ import { t } from './messages.js';
 export const BUILTIN_BUCKETS = ['default', 'background', 'think', 'longContext'];
 
 /** 规则里允许出现的匹配条件键。 */
-export const RULE_MATCHERS = ['path', 'modelPrefix', 'bodyField', 'minBytes', 'maxBytes'];
+export const RULE_MATCHERS = ['path', 'modelPrefix', 'bodyField', 'minBytes', 'maxBytes', 'difficulty'];
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -38,9 +39,9 @@ function getByPath(target, keyPath) {
   return cursor;
 }
 
-/** 桶的默认形态：不换模型、不挂变换。 */
+/** 桶的默认形态：不换模型、不挂变换、不指定上游。 */
 export function emptyBucket() {
-  return { model: null, transformers: [] };
+  return { model: null, transformers: [], upstream: null };
 }
 
 /**
@@ -56,6 +57,7 @@ export function normalizeRule(rule) {
     out.bodyField = rule.bodyField;
     if (rule.bodyFieldValue !== undefined) out.bodyFieldValue = rule.bodyFieldValue;
   }
+  if (typeof rule.difficulty === 'string' && rule.difficulty) out.difficulty = rule.difficulty;
   for (const key of ['minBytes', 'maxBytes']) {
     if (rule[key] !== undefined && rule[key] !== null) {
       const num = Number(rule[key]);
@@ -110,6 +112,18 @@ function matchBytes(request, rule) {
   return checks.every(Boolean);
 }
 
+/**
+ * 难度匹配：请求的难度档位与规则写的一致才算命中。
+ *
+ * 没有配打分器时 request.difficulty 是 null，这个条件不参与判定——
+ * 与「零条件规则不命中任何请求」的既有语义一致，不会因为难度而误伤。
+ */
+function matchDifficulty(request, rule) {
+  if (rule.difficulty === undefined) return null;
+  if (!request.difficulty) return false;
+  return request.difficulty === rule.difficulty;
+}
+
 /** 逐条件 AND。返回 { matched, details }，details 只保留真正参与判定的项。 */
 export function matchRule(request, rule) {
   const details = {};
@@ -121,6 +135,7 @@ export function matchRule(request, rule) {
     ['modelPrefix', matchModelPrefix(request, rule)],
     ['bodyField', matchBodyField(request, rule)],
     ['bytes', matchBytes(request, rule)],
+    ['difficulty', matchDifficulty(request, rule)],
   ];
 
   for (const [key, verdict] of pairs) {
@@ -148,18 +163,24 @@ export function resolveRoute(request = {}, routerConfig = {}) {
   // 显式指定（--router <bucket>）优先于一切，也优先于 enabled=false ——
   // 用户都点名了，再被配置里的 enabled 挡掉只会让人困惑。
   if (typeof routerConfig.forced === 'string' && routerConfig.forced) {
-    return { bucket: routerConfig.forced, source: 'forced', ruleIndex: null, match: null, reason: null };
+    return { bucket: routerConfig.forced, source: 'forced', ruleIndex: null, match: null, reason: null, difficulty: null };
   }
 
   if (routerConfig.enabled === false) {
-    return { bucket: 'default', source: 'disabled', ruleIndex: null, match: null, reason: null };
+    return { bucket: 'default', source: 'disabled', ruleIndex: null, match: null, reason: null, difficulty: null };
   }
+
+  // 难度打分（v0.3.0）：先算分定档，再拿档位去匹配规则。
+  // 没有配打分器时返回 null，difficulty 条件不参与判定。
+  const scoring = resolveDifficulty(request, routerConfig);
+  const difficulty = scoring?.band || null;
+  const effectiveRequest = scoring ? { ...request, difficulty } : request;
 
   const rules = Array.isArray(routerConfig.rules) ? routerConfig.rules : [];
   for (let index = 0; index < rules.length; index += 1) {
     const rule = rules[index];
     if (!rule || !hasMatcher(rule)) continue;
-    const verdict = matchRule(request, rule);
+    const verdict = matchRule(effectiveRequest, rule);
     if (verdict.matched) {
       return {
         bucket: rule.bucket,
@@ -167,6 +188,9 @@ export function resolveRoute(request = {}, routerConfig = {}) {
         ruleIndex: index,
         match: verdict.details,
         reason: rule.reason || null,
+        difficulty,
+        score: scoring?.score ?? null,
+        signals: scoring?.signals || null,
       };
     }
   }
@@ -174,7 +198,7 @@ export function resolveRoute(request = {}, routerConfig = {}) {
   const fallback = typeof routerConfig.defaultBucket === 'string' && routerConfig.defaultBucket
     ? routerConfig.defaultBucket
     : 'default';
-  return { bucket: fallback, source: 'default', ruleIndex: null, match: null, reason: null };
+  return { bucket: fallback, source: 'default', ruleIndex: null, match: null, reason: null, difficulty, score: scoring?.score ?? null, signals: scoring?.signals || null };
 }
 
 /** 取桶定义，没定义过的桶名退化成空桶（默认行为：什么都不做）。 */
@@ -184,6 +208,7 @@ export function getBucket(routerConfig = {}, name) {
   return {
     model: typeof bucket.model === 'string' && bucket.model ? bucket.model : null,
     transformers: Array.isArray(bucket.transformers) ? bucket.transformers.filter((x) => typeof x === 'string') : [],
+    upstream: typeof bucket.upstream === 'string' && bucket.upstream ? bucket.upstream : null,
   };
 }
 
@@ -230,6 +255,7 @@ export function describeBuckets(routerConfig = {}) {
       declared: declared.includes(name),
       model: bucket.model,
       transformers: bucket.transformers,
+      upstream: bucket.upstream,
     };
   });
 }
@@ -249,5 +275,6 @@ export function describeRule(rule) {
   }
   if (rule.minBytes !== undefined) parts.push(`bytes>=${rule.minBytes}`);
   if (rule.maxBytes !== undefined) parts.push(`bytes<=${rule.maxBytes}`);
+  if (rule.difficulty !== undefined) parts.push(`difficulty=${rule.difficulty}`);
   return parts.length ? parts.join(' AND ') : t('router.ruleNoMatch');
 }

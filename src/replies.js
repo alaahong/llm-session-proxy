@@ -217,6 +217,131 @@ function chatJsonToResponses(payload) {
   };
 }
 
+// ---------------------------------------------------------------- gemini → chat
+
+/** Gemini 的 finishReason → OpenAI finish_reason。 */
+const GEMINI_TO_FINISH = {
+  STOP: 'stop',
+  MAX_TOKENS: 'length',
+  SAFETY: 'content_filter',
+  RECITATION: 'content_filter',
+  OTHER: 'stop',
+};
+
+const FINISH_TO_GEMINI = {
+  stop: 'STOP',
+  length: 'MAX_TOKENS',
+  tool_calls: 'STOP',
+  function_call: 'STOP',
+  content_filter: 'SAFETY',
+};
+
+function geminiJsonToChat(payload) {
+  const dropped = [];
+  const candidate = asArray(payload.candidates)[0] || {};
+  const parts = asArray(candidate.content?.parts);
+  const text = [];
+  const toolCalls = [];
+  for (const part of parts) {
+    if (typeof part?.text === 'string') {
+      text.push(part.text);
+      continue;
+    }
+    if (part?.functionCall) {
+      toolCalls.push({
+        id: `call_${toolCalls.length}`,
+        type: 'function',
+        function: { name: part.functionCall.name || '', arguments: JSON.stringify(part.functionCall.args ?? {}) },
+      });
+      continue;
+    }
+    if (part) dropped.push(`part:${Object.keys(part)[0] || 'unknown'}`);
+  }
+
+  const message = { role: 'assistant' };
+  if (text.length) message.content = text.join('');
+  else if (toolCalls.length) message.content = null;
+  if (toolCalls.length) message.tool_calls = toolCalls;
+
+  const usage = payload.usageMetadata || {};
+  const promptTokens = usage.promptTokenCount ?? 0;
+  const completionTokens = usage.candidatesTokenCount ?? 0;
+
+  // 有工具调用时 finish_reason 应该是 tool_calls——
+  // Gemini 的 finishReason 里没有这一项（只有 STOP），但客户端要靠它决定要不要执行工具。
+  const finishReason = toolCalls.length
+    ? 'tool_calls'
+    : GEMINI_TO_FINISH[candidate.finishReason] || 'stop';
+
+  return {
+    payload: {
+      id: payload.responseId || payload.id,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: payload.modelVersion || payload.model,
+      choices: [
+        {
+          index: 0,
+          message,
+          finish_reason: finishReason,
+        },
+      ],
+      usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: usage.totalTokenCount ?? promptTokens + completionTokens },
+    },
+    dropped,
+  };
+}
+
+// ---------------------------------------------------------------- chat → gemini
+
+function chatJsonToGemini(payload) {
+  const dropped = [];
+  const choice = asArray(payload.choices)[0] || {};
+  const msg = choice.message || {};
+
+  const parts = [];
+  const text = typeof msg.content === 'string' ? msg.content : '';
+  if (text) parts.push({ text });
+  for (const call of asArray(msg.tool_calls)) {
+    let args = {};
+    if (typeof call.function?.arguments === 'string') {
+      try {
+        args = JSON.parse(call.function.arguments);
+      } catch {
+        args = {};
+        dropped.push('tool_calls:arguments_not_json');
+      }
+    } else if (call.function?.arguments && typeof call.function.arguments === 'object') {
+      args = call.function.arguments;
+    }
+    parts.push({ functionCall: { name: call.function?.name || '', args } });
+  }
+  if (!parts.length) parts.push({ text: '' });
+
+  const usage = payload.usage || {};
+  const promptTokens = usage.prompt_tokens ?? 0;
+  const completionTokens = usage.completion_tokens ?? 0;
+
+  return {
+    payload: {
+      candidates: [
+        {
+          content: { role: 'model', parts },
+          finishReason: FINISH_TO_GEMINI[choice.finish_reason] || 'STOP',
+          index: 0,
+        },
+      ],
+      modelVersion: payload.model,
+      usageMetadata: {
+        promptTokenCount: promptTokens,
+        candidatesTokenCount: completionTokens,
+        totalTokenCount: usage.total_tokens ?? promptTokens + completionTokens,
+      },
+    },
+    dropped,
+  };
+}
+
 // ---------------------------------------------------------------- 注册表
 
 const DIRECT = {
@@ -224,11 +349,17 @@ const DIRECT = {
   'chat->messages': chatJsonToMessages,
   'responses->chat': responsesJsonToChat,
   'chat->responses': chatJsonToResponses,
+  'gemini->chat': geminiJsonToChat,
+  'chat->gemini': chatJsonToGemini,
 };
 
 const VIA_CHAT = {
   'messages->responses': ['messages->chat', 'chat->responses'],
   'responses->messages': ['responses->chat', 'chat->messages'],
+  'messages->gemini': ['messages->chat', 'chat->gemini'],
+  'gemini->messages': ['gemini->chat', 'chat->messages'],
+  'responses->gemini': ['responses->chat', 'chat->gemini'],
+  'gemini->responses': ['gemini->chat', 'chat->responses'],
 };
 
 export function listResponseConverters() {

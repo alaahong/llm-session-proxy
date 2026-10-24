@@ -56,9 +56,11 @@ x-opencode-session : 会话 ID，同一对话内保持稳定（用于提示词�
 - **自动生成会话 ID**——三级策略：客户端显式会话标识 → 内容指纹（system + 首条用户消息）→ 一次性随机。同一对话稳定复用，提示词缓存才有效。
 - **任意请求头注入**——值支持模板（`{{session.id}}`、`{{uuid}}`、`{{env.HOME}}`…），想注什么注什么。
 - **模型别名重写**——前缀剥离（`proxy-glm-5.3-flash` → `glm-5.3-flash`）与精确映射（`fast` → `deepseek-chat`）双管齐下。**内置了 OpenCode Go 的别名表**，文档里让你写的 `proxy-` 前缀开箱就能解析；万一某个别名剥完前缀查不到映射，代理会明确告诉你该补哪一条，而不是悄悄把一个不存在的模型名发给上游。
-- **按规则分桶路由**——`default` / `background` / `think` / `longContext` 四个桶，各自可以换模型、挂变换。规则按路径前缀、模型前缀、请求体字段、请求体大小匹配，**自上而下、首个命中即止**，同一条规则内的条件是与关系。默认关闭，升级不会改变现有行为。
+- **按规则分桶路由**——`default` / `background` / `think` / `longContext` 四个桶，各自可以换模型、挂变换。规则按路径前缀、模型前缀、请求体字段、请求体大小、**请求难度**匹配，**自上而下、首个命中即止**，同一条规则内的条件是与关系。默认关闭，升级不会改变现有行为。
+- **难度打分**——一个本地确定性打分器按请求的**形态**（体积、对话轮数、代码块、diff 行数、工具数量、涉及文件、推理意图）打分，再映射到具名档位（`easy` / `medium` / `hard`）。规则于是可以写 `{ "bucket": "think", "difficulty": "hard" }`，不用再手调字节阈值。它衡量的是请求**形态**而非语义难度——见[限制与注意](#限制与注意)。
+- **多上游，各自带各自的凭据**——把不同模型分流到不同上游：你自己的 API key、GitHub Copilot 订阅、本地 Ollama，可以并存。每个上游自己声明端点路径、线协议与凭据来源。**凭据在运行时现取，绝不写进配置文件。**
 - **可组合的请求体变换**——五个内置命名变换（`drop-fields`、`drop-empty-fields`、`rename-fields`、`clamp-max-tokens`、`noop`），可以全局挂，也可以按桶挂，按固定顺序执行。注册表是**写死的清单**：**代理绝不会从某个路径加载代码**，「零依赖 + 只听回环」这句话才站得住。
-- **协议互转**——让只会说一种协议的客户端调到说另一种协议的模型：OpenAI Chat Completions ↔ Anthropic Messages ↔ OpenAI Responses，请求体与响应体都转，SSE 流按事件逐条转码、流式体验不降级。默认关闭；按模型前缀路由，语义与路由分桶同款。
+- **协议互转**——让只会说一种协议的客户端调到说另一种协议的模型：OpenAI Chat Completions ↔ Anthropic Messages ↔ OpenAI Responses ↔ Google Gemini，请求体与响应体都转，SSE 流按事件逐条转码、流式体验不降级。默认关闭；按模型前缀路由，语义与路由分桶同款。
 - **请求路径重写**——客户端只会填 `/v1` 时，用一条正则把它转到上游真正要的路径。
 - **请求体参数注入 / 删除**——统一给所有请求补 `temperature`、`metadata`，或删掉上游不认的字段。
 - **SSE 流式零缓冲透传**——逐块转发，不攒完再发，流式体验不受影响。
@@ -168,9 +170,9 @@ npx llm-session-proxy --path-rewrite "^/v1/=>/zen/go/v1/"
 | Qwen3.7 Plus | `proxy-qwen3.7-plus` | `qwen3.7-plus` |
 | Qwen3.6 Plus | `proxy-qwen-plus` | `qwen3.6-plus` |
 
-> 本代理**不做协议转换**。客户端发 OpenAI 格式的请求体时，②③ 两类模型用不了——
-> 它只负责补头、改名、换路径，不会把 Chat Completions 的 body 翻译成 Messages 的 body。
-> （这条正是 [Roadmap](ROADMAP.zh-CN.md) 里 v0.2.2 的头号目标。）
+> 本代理**默认不做协议转换**。它默认只负责补头、改名、换路径，不会把 Chat Completions 的
+> body 翻译成 Messages 的 body。协议互转（以及 Gemini 协议）在 v0.2.2 / v0.3.0 交付了，
+> 见 [`protocol`](#protocol) 与 [Roadmap](ROADMAP.zh-CN.md)。
 >
 > 直接写上游真实 ID（不加别名、不加前缀）也能用，代理会原样放行。
 > 模型清单随时可能变，以[上游文档](https://opencode.ai/docs/go/)和 `https://opencode.ai/zen/go/v1/models` 为准。
@@ -231,7 +233,7 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `host` | `127.0.0.1` | 监听地址。只监听本机，不要改成 `0.0.0.0`，否则同网段都能用你的 Key 和额度 |
-| `port` | `9355` | 监听端口 |
+| `port` | `9355` | 监听端口。填 `0` 表示让系统随机分配。避开 [WHATWG 禁用端口](#禁用监听端口)——浏览器和 `fetch` 客户端会按规范拒绝连接 |
 
 ### `upstream`
 
@@ -356,6 +358,7 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 | `modelPrefix` | **客户端原始模型名**或**重写后的模型名**任一个以它开头，所以 `proxy-think` 和 `glm-5.3` 都能拿来写规则 |
 | `bodyField` | 该点路径存在且非空（`0` 和 `false` 算非空）。再加 `bodyFieldValue` 则要求等于某个具体值 |
 | `minBytes` / `maxBytes` | 请求体字节数，两端都是闭区间 |
+| `difficulty` | 请求的难度档位等于这个名字。**只有配了打分器才参与判定**——见下 |
 
 规则**自上而下求值，首个命中即止**；同一条规则内多个条件是「与」，所以写的时候要从具体到宽泛。
 大小一律按**字节，不按 token**：估 token 就得带一个分词器，而字节数是你能实际调得动的数字。
@@ -381,18 +384,156 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 
 桶的 `model` 在别名重写**之后**生效并直接替换结果，所以这里应当写真实的上游模型 ID、而不是 `proxy-` 别名。引用 `{{model}}` 的请求头模板看到的是桶覆盖后的值，因为注入是最后一步。
 
+#### 难度打分
+
+字节阈值总是别扭：40 KB 的请求可能是一个粘贴的文件，也可能是五十条短消息。**打分器**改按请求的**形态**评分，**档位**再把分数变成一个能拿来做匹配的名字。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `router.scorers.enabled` | `[]` | 要跑的打分器，按名字。内置只有 `builtin-complexity`。**留空 = 不打分，此时 `difficulty` 规则永远不命中** |
+| `router.bands` | `easy` ≤ 30、`medium` ≤ 60、`hard` ≤ 100 | 档位定义，加载时按 `maxScore` 排序。一个档位形如 `{ "name": "easy", "maxScore": 30 }` |
+
+`builtin-complexity` 看九个信号，每个先归一化到 0–1 再乘权重（权重合计 100）：
+
+| 信号 | 权重 | 衡量什么 |
+| --- | --- | --- |
+| `bytes` | 22 | 请求体大小，走**对数**刻度（`log2(len+1)/16`）。小于 512 字节一律 **0 分**——一句话不复杂 |
+| `turns` | 12 | 对话里的消息条数 |
+| `codeBlocks` | 15 | 消息文本里的围栏代码块数 |
+| `diffLines` | 13 | 以 `+` / `-` 开头的行数（排除 `+++` / `---` 文件头） |
+| `tools` | 8 | 工具声明的数量 |
+| `system` | 8 | system 提示词的体积 |
+| `files` | 8 | 涉及的不同文件路径（按扩展名识别） |
+| `reasoning` | 8 | 明确的推理意图（`reasoning_effort`、`thinking` 等） |
+| `maxTokens` | 6 | 要求的输出预算 |
+
+```json
+"router": {
+  "enabled": true,
+  "scorers": { "enabled": ["builtin-complexity"] },
+  "bands": [
+    { "name": "easy",   "maxScore": 30 },
+    { "name": "medium", "maxScore": 60 },
+    { "name": "hard",   "maxScore": 100 }
+  ],
+  "buckets": {
+    "cheap": { "model": "glm-5.3-flash" },
+    "smart": { "model": "glm-5.3-think" }
+  },
+  "rules": [
+    { "bucket": "smart", "difficulty": "hard" },
+    { "bucket": "cheap", "difficulty": "easy" }
+  ]
+}
+```
+
+打分器是**本地且确定性**的——同一个请求，每次、每台机器都是同一个分数。没有模型调用、没有网络、没有随机。它同样是**树内具名注册表**（与变换同款）：配置文件不能让它去加载代码。
+
+> **它测不了什么。** 打分器评的是请求**形态**，不是语义难度。一句「把这个函数改成幂等的」分数很低；一条 30 个字、内容相同的消息分数也一样低。请把它当作**廉价且可解释的启发式**——而你明确知道情况时，还是用 `minBytes` / `maxBytes` / `modelPrefix`。
+
+### `upstreams`
+
+上游池。顶层那个 `upstream`（单个上游）照旧能用；池子**默认为空**，所以现有配置行为不变。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 池子的总开关 |
+| `providers` | `{}` | 具名上游，每个声明自己的类型、base URL、端点路径、线协议与凭据来源 |
+| `routes` | `[]` | `{ "model": <前缀>, "upstream": <上游名> }`。自上而下，首个命中即止 |
+| `default` | `null` | 没有规则命中时用的上游 |
+
+选上游的顺序：**桶里指定的 `upstream`**（路由选中桶时）→ **按模型前缀命中的 `routes` 条目** → **`default`**。都没命中就回落到顶层 `upstream`。
+
+模型前缀会同时比对**客户端发来的名字**与**别名重写后的名字**，所以 `proxy-gpt-5` 和 `gpt-5` 都能用。
+
+一个上游长这样：
+
+```json
+"upstreams": {
+  "enabled": true,
+  "providers": {
+    "own": {
+      "type": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "auth": { "env": "OPENAI_API_KEY" }
+    },
+    "copilot": {
+      "type": "copilot",
+      "baseUrl": "https://api.githubcopilot.com"
+    },
+    "local": {
+      "type": "openai",
+      "baseUrl": "http://127.0.0.1:11434/v1"
+    }
+  },
+  "routes": [
+    { "model": "gpt-5",  "upstream": "copilot" },
+    { "model": "claude", "upstream": "own" }
+  ],
+  "default": "own"
+}
+```
+
+| 上游字段 | 说明 |
+| --- | --- |
+| `type` | `openai` / `anthropic` / `gemini` / `copilot` / `custom`。决定默认端点路径、默认线协议与默认凭据头 |
+| `baseUrl` | 发到哪里。路径部分成为 base path，主机名成为连接目标 |
+| `paths` | 每种线协议对应的端点路径，例如 `{ "chat": "/chat/completions" }`。`{model}` 与 `{stream}` 会被替换 |
+| `wire` | 这个上游说哪几种协议。按类型取默认值 |
+| `modelWire` | 按模型前缀覆盖协议，例如 `{ "gpt-5": "responses" }`。前缀长的优先 |
+| `headers` | 静态请求头（不含凭据） |
+| `auth.env` | 存放 API key 的环境变量，多个用逗号分隔构成兜底链 |
+| `auth.command` | 一条命令，它的 **stdout** 就是 API key。用 `execFile` 执行，不经过 shell |
+| `auth.header` / `auth.prefix` | 覆盖凭据头的名字与前缀 |
+| `auth.allowCommand` | `false` 表示不许执行任何命令去取凭据 |
+
+**凭据绝不从配置文件读，也绝不进日志。** 配置只说 key **从哪来**；值在请求时现取，直接装进请求头。`--doctor` 里只会显示**来源名**（`env:OPENAI_API_KEY`），看不到 key 本身。
+
+默认凭据头按类型给：OpenAI 兼容走 `Authorization: Bearer …`，Gemini 走 `x-goog-api-key`，Anthropic 走 `x-api-key`。
+
+#### 把 GitHub Copilot 当成一个上游
+
+`copilot` 类型的上游走 `api.githubcopilot.com`，用的是 **session token**——由 GitHub token 换来的：
+
+```
+GitHub token  →  GET api.github.com/copilot_internal/v2/token  →  session token（约 30 分钟）
+```
+
+GitHub token 的查找顺序与官方 Copilot SDK 一致：
+
+1. `COPILOT_GITHUB_TOKEN`
+2. `GH_TOKEN`
+3. `GITHUB_TOKEN`
+4. `gh` CLI（`gh auth token`）——`auth.allowCommand` 为 `false` 时跳过
+5. 凭据文件 `~/.lsp/copilot-credentials.json`（权限 `0600`）——上一次设备流登录的存档
+6. **设备流登录**——且仅当上游写了 `"auth": { "deviceFlow": true }`
+
+上游可以用 `auth.env` 指定变量名、用 `auth.command` 指定命令，覆盖前几环。
+
+设备流是 GitHub 官方的 OAuth 2.0 Device Authorization Grant：代理向 GitHub 要一段短码，把码和验证地址打印出来，等你在浏览器里确认。拿到的 token 会存档进凭据文件，所以这件事**只发生一次**，不是每个请求都来一遍。它默认关闭——需要人参与的登录绝不该在你背后悄悄启动。
+
+> **`ghp_` 不支持。** 官方 SDK 明确把 classic PAT 标为已弃用；请用带 **Copilot Requests** 权限的细粒度 PAT（`github_pat_`）或 OAuth token。
+
+session token **只在内存里缓存**，到期前五分钟刷新，**从不落盘**。拿不到 session token 时，请求以 `502` 失败并给出明确原因，而不是没带凭据就发给上游。
+
+上游按模型选端点：`gpt-5*`、`codex*`、`o1`–`o4` 走 `/responses`，其余走 `/chat/completions`。Copilot 还需要几个固定头——`Copilot-Integration-Id: copilot-developer-cli`、`Editor-Version`、`Editor-Plugin-Version`、`User-Agent`、`X-GitHub-Api-Version`——代理会替你补齐。
+
+> **关于 BYOK。** Copilot 的「自带密钥」是**客户端**功能：密钥存在客户端的钥匙串里，流量直连 provider，计费归 provider，代理拦不到。代理能做的是另一半——**一部分**请求走你的 Copilot 订阅、**另一部分**走你自己的 provider 密钥，按模型决定。
+
 ### `protocol`
 
-协议互转。代理从请求路径推断客户端说的是哪套协议（`/chat/completions` → `chat`、`/messages` → `messages`、`/responses` → `responses`），再由路由（或 `forced`）决定**上游**说哪套。两者不同时：请求体在转发前整体转换，响应在回到客户端前转换回来——JSON 体整包改写，SSE 流**按事件逐条**转码，流式体验不降级。`enabled` 默认 `false`。
+协议互转。代理从请求路径推断客户端说的是哪套协议（`/chat/completions` → `chat`、`/messages` → `messages`、`/responses` → `responses`、`:generateContent` → `gemini`），再由路由（或 `forced`）决定**上游**说哪套。两者不同时：请求体在转发前整体转换，响应在回到客户端前转换回来——JSON 体整包改写，SSE 流**按事件逐条**转码，流式体验不降级。`enabled` 默认 `false`。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `false` | 总开关。`--no-protocol` 强制关闭 |
 | `forced` | `null` | 把所有请求强制转成该协议，忽略全部路由（`--protocol <target>`）。写了同样压过 `enabled: false` |
-| `paths` | 三条 `/zen/go/v1/…` 默认路径 | 每种目标协议对应的上游路径。`paths.<target>` 会**整体替换**转发的路径（注意与 `request.pathRewrite` 的「修补客户端路径」语义不同） |
+| `paths` | 四条 `/zen/go/v1/…` 默认路径 | 每种目标协议对应的上游路径。`paths.<target>` 会**整体替换**转发的路径（注意与 `request.pathRewrite` 的「修补客户端路径」语义不同） |
 | `routes` | `[]` | `{ "model": <前缀，可选>, "target": <协议>, "path": <上游路径，可选> }`。自上而下、首个命中即止；不带 `model` 的路由匹配所有请求 |
 
-转换时做的字段归一化：`max_tokens` ↔ `max_completion_tokens` ↔ `max_output_tokens`；`reasoning_effort` ↔ `thinking.budget_tokens`（固定表 low=1024 / medium=8192 / high=16384，反向 ≥16384 → high、≥4096 → medium、否则 low）；工具声明与工具调用在三种形状间重塑；`stop` ↔ `stop_sequences`；chat 的 system 消息 ↔ Anthropic 的顶层 `system` ↔ Responses 的 `instructions`。没有等价物的字段（`cache_control`、`response_format`…）**逐个记名丢弃**，转换本身以 `protocol:<from>-><to>` 标签进日志。
+转换时做的字段归一化：`max_tokens` ↔ `max_completion_tokens` ↔ `max_output_tokens`；`reasoning_effort` ↔ `thinking.budget_tokens`（固定表 low=1024 / medium=8192 / high=16384，反向 ≥16384 → high、≥4096 → medium、否则 low）↔ Gemini 的 `thinkingConfig.thinkingBudget`；工具声明与工具调用在各形状间重塑；`stop` ↔ `stop_sequences` ↔ `stopSequences`；chat 的 system 消息 ↔ Anthropic 的顶层 `system` ↔ Responses 的 `instructions` ↔ Gemini 的 `systemInstruction`。没有等价物的字段（`cache_control`、`response_format`…）**逐个记名丢弃**，转换本身以 `protocol:<from>-><to>` 标签进日志。
+
+Gemini 有两点与众不同，值得单独说：它的模型名住在**路径**里（`/v1beta/models/{model}:generateContent`），不在请求体里；流式是靠**方法名**区分的（`:streamGenerateContent?alt=sse`），而不是请求体里的一个开关。上游声明 `gemini` 线协议时代理会把这两点都处理掉。
 
 两个刻意为之的边界：Anthropic 必填 `max_tokens`，chat 请求两个名字都没带时补一个保守的 `4096`（日志记 `max_tokens:default(4096)`），而不是等上游 400；**上游 4xx/5xx 错误体永不转换**——错误是上游协议的一部分，与不走转换时一样原样回传。
 
@@ -475,7 +616,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.2.2 —— 试运行
+llm-session-proxy v0.3.0 —— 试运行
 
 配置
   文件            （无）
@@ -509,6 +650,7 @@ llm-session-proxy v0.2.2 —— 试运行
 路由分桶
   启用            否
   默认桶          default
+  打分器          （无 —— 没有打分器时「难度」规则永远不会命中）
   桶 default      （无）
   桶 background   （无）
   桶 think        （无）
@@ -526,6 +668,10 @@ llm-session-proxy v0.2.2 —— 试运行
   路径            chat=/zen/go/v1/chat/completions，messages=/zen/go/v1/messages，responses=/zen/go/v1/responses
   规则            （无规则）
   样例转换        样例请求不发生转换
+
+上游池
+  池子            （空 —— 只有一个上游，与之前完全一致）
+  默认上游        （无）
 
 日志
   文件            ~/.lsp/logs/llm-session-proxy.log
@@ -604,12 +750,29 @@ llm-session-proxy --dry-run --model proxy-not-a-real-alias
 
 英文输出里这一段叫 `Protocol`。
 
+`路由分桶` 那段会列出难度打分器、档位，以及（配了打分器时）样例请求的分数。
+`上游池` 那段列出每个上游的类型、线协议与凭据**来源**（绝不显示凭据本身），
+以及样例请求会落到哪个上游：
+
+```
+上游池
+  池子            2 个上游
+  默认上游        own
+  own             type=openai wire=chat|responses credential=env:OPENAI_API_KEY
+  copilot         type=copilot wire=chat|responses
+  #0              gpt-5 -> copilot
+  样例上游        own（default）
+```
+
+中文输出里这一段叫 `上游池`，刻意与既有的 `上游`（单个上游）那段区分开。
+
 `--doctor` 会在这份报告之外再检查：
 
 - `upstream.host` 的 **DNS** 解析
 - 到 `upstream.host:upstream.port` 的 **TCP** 连接与握手耗时
 - 协议是 `https` 时的 **TLS** 握手——证书不受信任会如实报出来，而不是直接判失败
 - `listen.port` 是否空闲（只算警告，因为「已经跑着一个实例」看起来是一样的）
+- `listen.port` 是否落在 WHATWG 禁用端口清单里（同样是警告，见下文）
 - 一句提醒：代理从不注入凭据
 
 它**不发任何 HTTP 请求、不带任何凭据**：可达性在传输层就回答了，所以体检不会消耗上游的速率配额。
@@ -618,6 +781,22 @@ llm-session-proxy --dry-run --model proxy-not-a-real-alias
 ```bash
 llm-session-proxy --doctor && llm-session-proxy
 ```
+
+### 禁用监听端口
+
+Fetch 规范——以及所有照着它实现的浏览器——内置了一张**禁用端口**清单（6000、6666、6667、10080、5060 …）。
+发往这些端口的请求会在**真正发出之前**就被拒掉，连接根本不会建立。而 Node 原生的
+`http` / `https` 客户端不理会这份清单，于是这成了一种很难自查的故障：代理明明把端口绑上了、
+日志也一片干净，浏览器和基于 `fetch` 的客户端却一律连不上。
+
+由此定下两条规则，都是刻意的：
+
+- `listen.port: 0`（让系统随便分一个）**永远不会**落到禁用端口上——分到就换个端口重绑。
+  用户没点名要哪个端口，就没有需要被尊重的意图。
+- 用户显式写下的端口**原样尊重**。哪怕它就在清单里，`--dry-run` / `--doctor` 也只会给出警告，
+  而不是悄悄把服务搬到别的地方去。
+
+警告里会点名端口和原因；换一个端口，并把客户端的 base URL 一起改掉。
 
 ---
 
@@ -658,7 +837,7 @@ llm-session-proxy --doctor && llm-session-proxy
 | `--transformer <name>` | 挂一个命名请求体变换，可重复。是**整体替换** `transformers.enabled` 而不是追加（与 `--model-prefix` 替换 `stripPrefixes` 同理） |
 | `--router <bucket>` | 强制所有请求走指定桶，忽略全部规则 |
 | `--no-router` | 关闭路由分桶，即使配置文件里开着 |
-| `--protocol <target>` | 转发前把所有请求转成指定协议（`chat` / `messages` / `responses`），压过 `protocol.routes` |
+| `--protocol <target>` | 转发前把所有请求转成指定协议（`chat` / `messages` / `responses` / `gemini`），压过 `protocol.routes` |
 | `--no-protocol` | 关闭协议互转，即使配置文件里开着 |
 | `--session-header <name>` | 追加会话来源请求头，可重复 |
 | `--session-field <path>` | 追加会话来源请求体字段，可重复 |
@@ -710,14 +889,16 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions
               ├─ 1. 读请求体，解析 JSON
               ├─ 2. 解析会话：显式标识 > 内容指纹 > 随机
               ├─ 3. 重写模型名：剥前缀，再查别名表
-              ├─ 4. 选桶、应用桶的模型覆盖、跑请求体变换
-              ├─ 5. 注入请求头与请求体参数
-              ├─ 6. 路由指定了不同协议时，做协议互转
-              └─ 7. 转发，SSE 逐块回传
+              ├─ 4. 选桶、打难度分、应用桶的模型覆盖、跑请求体变换
+              ├─ 5. 选上游：桶里指定的 > 模型前缀规则 > 池子默认
+              ├─ 6. 注入请求头与请求体参数
+              ├─ 7. 按上游的线协议做协议互转
+              └─ 8. 转发，SSE 逐块回传
 ```
 
-第 3～6 步的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
-别名解析之后，所以它只可能是真实 ID；注入放在倒数第二步，请求头里的 `{{model}}` 反映的是最终
+第 3～8 步的顺序是刻意排的：规则能同时看到客户端原始模型名和解析后的模型名；桶的模型覆盖落在
+别名解析之后，所以它只可能是真实 ID；**选上游必须早于协议互转**——上游决定了用哪套线协议、
+也决定了往哪个 host 发；注入放在倒数第二步，请求头里的 `{{model}}` 反映的是最终
 决定；**协议互转放在所有步骤之后**——变换与注入针对的是客户端协议下的字段名，等请求体定稿了，
 才整体翻译成上游的协议。
 
@@ -752,6 +933,8 @@ await proxy.stop();
 也可以只取零件：`createProxyServer`（自己控制生命周期）、`SessionStore`（会话表）、
 `renderTemplate`（模板引擎）、`buildConfig`（配置合并）、`resolveRoute` / `getBucket`（选桶）、
 `applyTransformers`（变换注册表）、`convertRequestBody` / `convertResponseJson`（协议互转）、
+`scoreRequest` / `resolveDifficulty`（难度打分器）、
+`resolvePoolUpstream` / `resolveWire`（上游池选路）、
 `diagnose`（`--dry-run` 与 `--doctor` 底层跑的就是它）。
 
 ---
@@ -804,6 +987,8 @@ Trae 之类客户端会按模型 ID 把流量分流到自己的云通道。
 - **`bufferBody: false` 时无法改写请求体**——模型重写和参数注入会失效，只能注入请求头、也只能靠请求头识别会话。
 - **内置别名表是发布时的快照，不是活的模型目录**——上游改模型名是常态；别名失效时会告警并且告诉你该补哪条，但不会自动去拉取。真实 ID 永远原样放行，所以别名过期不会致命。
 - **协议互转在边缘处刻意有损**——Anthropic 的 `thinking` / `signature` 流增量在 chat 里没有标准位置，会丢弃（日志里记名）；`messages ↔ responses` 经 chat 中转，不做直达转换器。保下来的是文本、工具调用、结束原因与 usage——客户端真正会用的就这些。
+- **难度打分评的是请求*形态*，不是语义难度**——它看得到体积、轮数、代码、diff、工具、文件与明确的推理意图。一句「把它改成幂等的」和任何一句短消息分数一样低。请把它当作廉价且可解释的启发式；你明确知道情况时，还是用字节数与模型前缀两个匹配条件。
+- **Copilot 的凭据来自你已有的 GitHub 登录态**——代理读一个 GitHub token（环境变量、`gh` CLI 或凭据文件）换 session token。`ghp_` classic PAT 用不了；Copilot 的「自带密钥」仍然是客户端侧的功能——代理能做的是把一部分请求走你的订阅、另一部分走你自己的 provider 密钥。
 - 本工具只做转发与参数修补，不缓存、不计费、不修改响应内容。
 
 ---
@@ -832,7 +1017,7 @@ as the model name. See the Chinese sections above for the full configuration ref
 3. 打一个同名 tag 并推送：
 
 ```bash
-git tag v0.2.2 && git push origin v0.2.2
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本一致，再用仓库 secrets 里的
@@ -848,9 +1033,13 @@ workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本�
   **已交付 v0.2.1：** 变换注册表与路由分桶。
   **已交付 v0.2.2：** 协议转换本体——chat / messages / responses 三套协议的请求体、响应体与
   SSE 逐事件转码。
-- **v0.3 — 可观测与可控。** Prometheus 格式指标、结构化 JSON 日志、token/成本统计端点、
+- **v0.3 — 按难度路由，以及 Copilot 与自有密钥混用。** 一个本地确定性打分器按请求形态评分并映射到
+  具名档位，规则于是可以写 `{ "bucket": "think", "difficulty": "hard" }`。另一条轴上，上游池让
+  一部分模型走你的 GitHub Copilot 订阅、另一部分走你自己的 provider 密钥。
+  **已交付 v0.3.0：** 打分器与档位、各自带凭据的上游池，以及作为第四种线协议的 Google Gemini。
+- **v0.4 — 可观测与可控。** Prometheus 格式指标、结构化 JSON 日志、token/成本统计端点、
   免构建的本地看板。
-- **v0.4 — 真实上游下的可靠性。** 熔断、上游健康检查、带抖动的重试、流空闲看门狗、优雅退出。
+- **v0.5 — 真实上游下的可靠性。** 熔断、上游健康检查、带抖动的重试、流空闲看门狗、优雅退出。
 - **v1.0 — 加固与分发。** 配置 schema 校验、按客户端的兼容性矩阵、随仓库的基准测试工具、
   单文件可执行产物。
 

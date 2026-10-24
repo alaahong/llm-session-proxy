@@ -94,7 +94,7 @@ test('diagnose 对默认配置给出完整分节，且没有问题也没有警�
   assert.deepEqual(diagnosis.warnings, []);
   assert.deepEqual(
     diagnosis.sections.map((section) => section.title),
-    ['Config', 'Upstream', 'Routing', 'Injection', 'Model', 'Router', 'Transformers', 'Protocol', 'Log'],
+    ['Config', 'Upstream', 'Routing', 'Injection', 'Model', 'Router', 'Transformers', 'Protocol', 'Upstream pool', 'Log'],
   );
   assert.equal(diagnosis.explanation.outcome, 'mapped');
 });
@@ -135,6 +135,42 @@ test('映射表为空且启用了前缀剥离时给出警告（自动取样不�
   assert.equal(diagnosis.problems.length, 0, '自动取样的未命中只算警告，不该让体检失败');
   assert.equal(diagnosis.warnings.length, 2, '空映射表 + 剥完无映射各一条');
   assert.ok(diagnosis.warnings.some((line) => /model\.map is empty/.test(line)));
+});
+
+test('监听端口落在 WHATWG 禁用清单里时给出警告（这种端口客户端按规范连不上）', () => {
+  // 6000 / 6666 / 10080 都在清单里：Node 绑得上，浏览器和 fetch 客户端却直接拒绝
+  for (const port of [6000, 6666, 10080]) {
+    const config = buildConfig({ env: ENV, flags: { listen: { port } } });
+    const diagnosis = diagnose(config, { env: ENV });
+
+    assert.equal(diagnosis.problems.length, 0, '端口占用与否另说，配置本身是合法的，不该判成问题');
+    const hit = diagnosis.warnings.find((line) => line.includes(`port ${port}`));
+    assert.ok(hit, `端口 ${port} 应当触发禁用端口告警: ${diagnosis.warnings.join(' | ')}`);
+    assert.match(hit, /forbidden-port list/);
+    assert.match(hit, /refuse to connect/);
+  }
+});
+
+test('默认端口与随机端口都不触发禁用端口告警', () => {
+  for (const port of [9355, 0]) {
+    const config = buildConfig({ env: ENV, flags: { listen: { port } } });
+    const diagnosis = diagnose(config, { env: ENV });
+    assert.deepEqual(
+      diagnosis.warnings.filter((line) => /forbidden-port/.test(line)),
+      [],
+      `端口 ${port} 不该触发禁用端口告警`,
+    );
+  }
+});
+
+test('禁用端口告警也出中文版', () => {
+  const config = buildConfig({ env: ENV, flags: { lang: 'zh', listen: { port: 6000 } } });
+  const diagnosis = diagnose(config, { env: ENV });
+
+  const hit = diagnosis.warnings.find((line) => line.includes('6000'));
+  assert.ok(hit, '中文告警里要点名端口');
+  assert.match(hit, /禁用端口清单/);
+  assert.match(hit, /浏览器/);
 });
 
 test('dry-run 模式不做任何网络检查', async () => {
@@ -352,5 +388,103 @@ test('中文报告里的新区块也成对出现，且不与既有的"路由"区
   // 规则行是 [「#序号」, 「<匹配式> -> <桶>」]，序号在标签列、桶在值列
   assert.ok(router.rows.some(([label]) => label === '#0'), '规则行要有序号标签');
   assert.ok(router.rows.some(([, value]) => value.includes('-> think')), '规则行要写明落进哪个桶');
+  setLang(DEFAULT_LANG);
+});
+
+// ---------- v0.3.0 难度打分与上游池区块 ----------
+
+function poolConfig(flags = {}) {
+  return buildConfig({
+    env: ENV,
+    flags: {
+      router: {
+        enabled: true,
+        scorers: { enabled: ['builtin-complexity'] },
+        bands: [
+          { name: 'easy', maxScore: 30 },
+          { name: 'hard', maxScore: 100 },
+        ],
+        buckets: {
+          easy: { model: 'gpt-4o-mini', upstream: 'cheap' },
+          hard: { model: 'gpt-5', upstream: 'strong' },
+        },
+        rules: [
+          { bucket: 'hard', difficulty: 'hard' },
+          { bucket: 'easy', difficulty: 'easy' },
+        ],
+      },
+      upstreams: {
+        providers: {
+          cheap: { type: 'openai', baseUrl: 'https://api.openai.com/v1', auth: { env: 'OPENAI_API_KEY' } },
+          strong: { type: 'copilot', baseUrl: 'https://api.githubcopilot.com' },
+        },
+        routes: [{ model: 'gpt-5', upstream: 'strong' }],
+        default: 'cheap',
+      },
+      ...flags,
+    },
+  });
+}
+
+test('Router 区块会列出打分器、档位与样例难度', () => {
+  const diagnosis = diagnose(poolConfig(), { env: ENV });
+  const router = diagnosis.sections.find((section) => section.title === 'Router');
+
+  const rows = router.rows.map(([label, value]) => `${label} :: ${value}`).join('\n');
+  assert.match(rows, /scorers :: builtin-complexity/);
+  assert.match(rows, /available scorers :: builtin-complexity/);
+  assert.match(rows, /bands :: easy<=30 {2}hard<=100/);
+  assert.match(rows, /sample difficulty :: \w+ \(score \d+\)/);
+});
+
+test('没配打分器时明确说「难度规则永远不会命中」', () => {
+  // 这是最容易踩的坑：规则写得好好的，但 difficulty 条件永远不参与判定
+  const diagnosis = diagnose(routerConfig(), { env: ENV });
+  const router = diagnosis.sections.find((section) => section.title === 'Router');
+  const scorers = router.rows.find(([label]) => label === 'scorers');
+
+  assert.ok(scorers, '应当有 scorers 这一行');
+  assert.match(scorers[1], /never match without a scorer/);
+});
+
+test('桶行里会带上 upstream=xxx', () => {
+  const diagnosis = diagnose(poolConfig(), { env: ENV });
+  const router = diagnosis.sections.find((section) => section.title === 'Router');
+  const rows = router.rows.map(([label, value]) => `${label} :: ${value}`).join('\n');
+
+  assert.match(rows, /bucket easy :: model=gpt-4o-mini upstream=cheap/);
+  assert.match(rows, /bucket hard :: model=gpt-5 upstream=strong/);
+});
+
+test('Upstream pool 区块列出 provider 的类型、协议与凭据来源', () => {
+  const diagnosis = diagnose(poolConfig(), { env: ENV });
+  const pool = diagnosis.sections.find((section) => section.title === 'Upstream pool');
+
+  assert.ok(pool, '应当有 Upstream pool 区块');
+  const rows = pool.rows.map(([label, value]) => `${label} :: ${value}`).join('\n');
+  assert.match(rows, /pool :: 2 provider\(s\)/);
+  assert.match(rows, /default :: cheap/);
+  assert.match(rows, /cheap :: type=openai wire=chat\|responses credential=env:OPENAI_API_KEY/);
+  assert.match(rows, /strong :: type=copilot/);
+  assert.match(rows, /#0 :: gpt-5 -> strong/);
+  assert.match(rows, /sample :: \w+ {2}\(\w+\)/);
+});
+
+test('上游池为空时明确说「只有一个上游，与之前完全一致」', () => {
+  const diagnosis = diagnose(enConfig(), { env: ENV });
+  const pool = diagnosis.sections.find((section) => section.title === 'Upstream pool');
+  const poolRow = pool.rows.find(([label]) => label === 'pool');
+
+  assert.ok(poolRow, '应当有 pool 这一行');
+  assert.match(poolRow[1], /empty/);
+});
+
+test('上游池的区块在中文里叫「上游池」，与「上游」不撞名', () => {
+  const diagnosis = diagnose(poolConfig({ lang: 'zh' }), { env: ENV, model: 'proxy-glm' });
+  const titles = diagnosis.sections.map((section) => section.title);
+
+  assert.ok(titles.includes('上游'), titles.join(','));
+  assert.ok(titles.includes('上游池'), titles.join(','));
+  assert.equal(new Set(titles).size, titles.length, '所有区块标题必须互不相同');
   setLang(DEFAULT_LANG);
 });

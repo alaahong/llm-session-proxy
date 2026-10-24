@@ -67,16 +67,25 @@ If your client already sends a session header, you do not need this tool (though
   unmapped, the proxy says so instead of quietly forwarding a model name that does not exist.
 - **Rule-based routing into buckets** — `default` / `background` / `think` / `longContext`, each with
   its own model override and body transforms. Rules match on path prefix, model prefix, a body field,
-  or request size; they run **top-down with first match winning**, and the conditions inside a single
-  rule are ANDed. Off by default, so upgrading changes nothing.
+  request size, **or request difficulty**; they run **top-down with first match winning**, and the
+  conditions inside a single rule are ANDed. Off by default, so upgrading changes nothing.
+- **Difficulty scoring** — a local, deterministic scorer grades each request by **shape** (body size,
+  conversation turns, code blocks, diff lines, tool count, attached files, reasoning intent) and maps
+  the result onto named bands (`easy` / `medium` / `hard`). Rules can then say
+  `{ "bucket": "think", "difficulty": "hard" }` instead of guessing byte thresholds by hand. It measures
+  request *shape*, not semantic difficulty — see [Limitations](#limitations).
+- **Multiple upstreams with per-provider credentials** — route different models to different upstreams:
+  your own API keys, a GitHub Copilot subscription, a local Ollama, all side by side. Each provider
+  declares its own endpoint paths, wire protocol and where its credential comes from. **Credentials are
+  read at runtime and never stored in the config file.**
 - **Composable body transformers** — five named, in-tree transforms (`drop-fields`,
   `drop-empty-fields`, `rename-fields`, `clamp-max-tokens`, `noop`) applied globally or per bucket, in
   a fixed order. The registry is a hard-coded list on purpose: **the proxy never loads code from a
   path**, which is what keeps "zero dependencies, loopback only" honest.
 - **Protocol conversion** — let a client that only speaks one protocol reach models that speak
-  another: OpenAI Chat Completions ↔ Anthropic Messages ↔ OpenAI Responses, both for request bodies
-  and for responses (including event-level SSE transcoding). Off by default; routed by model prefix
-  with the same top-down rule semantics as the router.
+  another: OpenAI Chat Completions ↔ Anthropic Messages ↔ OpenAI Responses ↔ Google Gemini, both for
+  request bodies and for responses (including event-level SSE transcoding). Off by default; routed by
+  model prefix with the same top-down rule semantics as the router.
 - **Request path rewriting** — map the `/v1` your client insists on to whatever path the upstream
   actually serves.
 - **Body parameter injection and removal** — add `temperature` or `metadata` to every request, or
@@ -234,10 +243,10 @@ alias turns into.
 | Qwen3.8 Flash | `proxy-qwen-flash` | `qwen3.8-flash` |
 | Qwen3.7 / 3.6 Plus | `proxy-qwen-plus` | `qwen3.6-plus` |
 
-> This proxy performs **no protocol translation**. If your client sends OpenAI-shaped bodies,
-> categories ② and ③ are unusable: the proxy fills headers, rewrites the model name, and reroutes
-> the path, but it will not turn a Chat Completions body into a Messages body. (This is the headline
-> item on the [roadmap](ROADMAP.md) for v0.2.2.)
+> This proxy performs **no protocol translation** unless you turn it on. By default it fills headers,
+> rewrites the model name, and reroutes the path — but it will not turn a Chat Completions body into a
+> Messages body. Protocol translation (and the Gemini protocol) shipped in v0.2.2 / v0.3.0; see
+> [`protocol`](#protocol) and the [roadmap](ROADMAP.md).
 >
 > Writing the real upstream ID directly (no alias, no prefix) also works — it is passed through.
 > The model list changes over time; treat the
@@ -256,7 +265,7 @@ Priority: **defaults < config file < environment variables < CLI flags**.
 | Field | Default | Description |
 | --- | --- | --- |
 | `host` | `127.0.0.1` | Bind address. Loopback only — do **not** use `0.0.0.0`, or anyone on your network can spend your quota |
-| `port` | `9355` | Port |
+| `port` | `9355` | Port. `0` picks a free port at random. Avoid the [WHATWG forbidden ports](#forbidden-listen-ports) — browsers and `fetch` clients refuse to connect to them |
 
 ### `upstream`
 
@@ -389,6 +398,7 @@ cannot be evaluated is not the same as a rule that matches everything.
 | `modelPrefix` | Either the model **the client sent** or the model **after rewriting** starts with this, so `proxy-think` and `glm-5.3` are both usable as rule material |
 | `bodyField` | That dot path exists and is non-empty (`0` and `false` count as non-empty). Add `bodyFieldValue` to require one exact value instead |
 | `minBytes` / `maxBytes` | Request body size, inclusive on both ends |
+| `difficulty` | The request's difficulty band equals this name. **Only takes part when a scorer is enabled** — see below |
 
 Rules are evaluated **top-down and the first match wins**, with the conditions inside one rule ANDed
 — so write them from specific to broad. Sizes are **bytes, not tokens**: estimating tokens would mean
@@ -418,29 +428,201 @@ A bucket's `model` is applied *after* alias rewriting and replaces whatever was 
 a real upstream model ID rather than a `proxy-` alias. Header templates referencing `{{model}}` see the
 bucket's value, because injection runs last.
 
+#### Difficulty scoring
+
+Byte thresholds are awkward: a 40 KB request might be one pasted file or fifty short messages. A
+**scorer** grades the request by *shape* instead, and **bands** turn that grade into a name you can
+match on.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `router.scorers.enabled` | `[]` | Scorers to run, by name. `builtin-complexity` is the only built-in. **Empty means no scoring, and `difficulty` rules then never match** |
+| `router.bands` | `easy` ≤ 30, `medium` ≤ 60, `hard` ≤ 100 | Band definitions, sorted by `maxScore` at load time. A band is `{ "name": "easy", "maxScore": 30 }` |
+
+`builtin-complexity` weighs nine signals, each normalised to 0–1 and then multiplied by its weight
+(weights sum to 100):
+
+| Signal | Weight | What it measures |
+| --- | --- | --- |
+| `bytes` | 22 | Request body size, on a **logarithmic** scale (`log2(len+1)/16`). Bodies under 512 bytes score **0** — a one-liner is not complex |
+| `turns` | 12 | Number of messages in the conversation |
+| `codeBlocks` | 15 | Fenced code blocks in the message text |
+| `diffLines` | 13 | Lines starting with `+` or `-` (file headers `+++`/`---` excluded) |
+| `tools` | 8 | Number of tool declarations |
+| `system` | 8 | Size of the system prompt |
+| `files` | 8 | Distinct file paths referenced (by extension) |
+| `reasoning` | 8 | An explicit reasoning intent (`reasoning_effort`, `thinking`, …) |
+| `maxTokens` | 6 | The requested output budget |
+
+```json
+"router": {
+  "enabled": true,
+  "scorers": { "enabled": ["builtin-complexity"] },
+  "bands": [
+    { "name": "easy",   "maxScore": 30 },
+    { "name": "medium", "maxScore": 60 },
+    { "name": "hard",   "maxScore": 100 }
+  ],
+  "buckets": {
+    "cheap": { "model": "glm-5.3-flash" },
+    "smart": { "model": "glm-5.3-think" }
+  },
+  "rules": [
+    { "bucket": "smart", "difficulty": "hard" },
+    { "bucket": "cheap", "difficulty": "easy" }
+  ]
+}
+```
+
+The scorer is **local and deterministic** — same request, same score, every time, on every machine.
+There is no model call, no network, no randomness. It is also deliberately an **in-tree named
+registry**, like the transformers: a config file cannot make the proxy load code.
+
+> **What it does not measure.** This grades *request shape*, not semantic difficulty. A one-line
+> "rewrite this function to be idempotent" scores low; a 30-character message that says the same
+> thing scores low too. Treat the bands as a **cheap, explainable heuristic** — and keep the
+> `minBytes` / `maxBytes` / `modelPrefix` matchers for the cases where you know better.
+
+### `upstreams`
+
+A pool of upstreams. `upstream` (the single one at the top level) still works exactly as before; the
+pool is **empty by default**, so an existing config changes nothing.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Master switch for the pool |
+| `providers` | `{}` | Named upstreams, each declaring its type, base URL, endpoint paths, wire protocol and credential source |
+| `routes` | `[]` | `{ "model": <prefix>, "upstream": <provider name> }`. Top-down, first match wins |
+| `default` | `null` | Provider used when no route matches |
+
+The upstream is chosen in this order: **the bucket's `upstream`** (if the router picked one) →
+**a `routes` entry matching the model prefix** → **`default`**. If none matches, the request falls
+back to the top-level `upstream`.
+
+The model prefix is matched against **both** the name the client sent and the name after alias
+rewriting, so `proxy-gpt-5` and `gpt-5` are both usable.
+
+A provider looks like this:
+
+```json
+"upstreams": {
+  "enabled": true,
+  "providers": {
+    "own": {
+      "type": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "auth": { "env": "OPENAI_API_KEY" }
+    },
+    "copilot": {
+      "type": "copilot",
+      "baseUrl": "https://api.githubcopilot.com"
+    },
+    "local": {
+      "type": "openai",
+      "baseUrl": "http://127.0.0.1:11434/v1"
+    }
+  },
+  "routes": [
+    { "model": "gpt-5",  "upstream": "copilot" },
+    { "model": "claude", "upstream": "own" }
+  ],
+  "default": "own"
+}
+```
+
+| Provider field | Description |
+| --- | --- |
+| `type` | `openai` / `anthropic` / `gemini` / `copilot` / `custom`. Decides the default endpoint paths, the default wire protocol and the default credential header |
+| `baseUrl` | Where to send it. The path part becomes the base path; the host becomes the connection target |
+| `paths` | Endpoint path per wire protocol, e.g. `{ "chat": "/chat/completions" }`. `{model}` and `{stream}` are substituted |
+| `wire` | Which protocols this provider speaks. Defaults per type |
+| `modelWire` | Per-model-prefix protocol override, e.g. `{ "gpt-5": "responses" }`. Longer prefixes win |
+| `headers` | Static request headers (no credential) |
+| `auth.env` | Environment variable(s) holding the API key, comma-separated for a fallback chain |
+| `auth.command` | A command whose **stdout** is the API key. Run with `execFile`, so it never goes through a shell |
+| `auth.header` / `auth.prefix` | Override the credential header name and prefix |
+| `auth.allowCommand` | `false` forbids running any command to fetch a credential |
+
+**Credentials are never read from the config file and never logged.** The config only says *where* the
+key comes from; the value is fetched at request time and goes straight into the header. Only the
+*source name* (`env:OPENAI_API_KEY`) is ever shown in `--doctor`.
+
+The default credential header follows the type: `Authorization: Bearer …` for OpenAI-compatible
+providers, `x-goog-api-key` for Gemini, `x-api-key` for Anthropic.
+
+#### GitHub Copilot as an upstream
+
+A `copilot` provider talks to `api.githubcopilot.com` using a **session token**, which is obtained by
+exchanging a GitHub token:
+
+```
+GitHub token  →  GET api.github.com/copilot_internal/v2/token  →  session token (~30 min)
+```
+
+The GitHub token is looked up in the order the official Copilot SDK uses:
+
+1. `COPILOT_GITHUB_TOKEN`
+2. `GH_TOKEN`
+3. `GITHUB_TOKEN`
+4. the `gh` CLI (`gh auth token`) — skipped when `auth.allowCommand` is `false`
+5. the credential file `~/.lsp/copilot-credentials.json` (mode `0600`) — where a previous device-flow
+   login was archived
+6. the **device flow**, and only when the provider sets `"auth": { "deviceFlow": true }`
+
+A provider may override the variable names with `auth.env` and the command with `auth.command`.
+
+The device flow is the official GitHub OAuth 2.0 Device Authorization Grant: the proxy asks GitHub
+for a short code, prints it with the verification URL, and waits for you to confirm in the browser.
+The resulting token is archived to the credential file, so this happens **once**, not on every
+request. It is off by default — a login that needs a human must never start behind your back.
+
+> **`ghp_` tokens are not supported.** The official SDK marks the classic PAT as deprecated; use a
+> fine-grained PAT (`github_pat_`) with the **Copilot Requests** permission, or an OAuth token.
+
+The session token is cached **in memory only** and refreshed five minutes before it expires. It is
+never written to disk. If no session token can be obtained, the request fails with a `502` and a clear
+message rather than reaching the upstream without a credential.
+
+The provider picks its endpoint by model: `gpt-5*`, `codex*` and `o1`–`o4` go to `/responses`, every
+other model goes to `/chat/completions`. Copilot also needs the fixed headers
+`Copilot-Integration-Id: copilot-developer-cli`, `Editor-Version`, `Editor-Plugin-Version`,
+`User-Agent` and `X-GitHub-Api-Version` — the proxy sets those for you.
+
+> **On BYOK.** Copilot's "bring your own key" mode is a *client* feature: the key lives in the
+> client's keychain and traffic goes straight to the provider, billed by that provider. The proxy
+> cannot intercept it. What the proxy offers is the other half of the picture — routing **some**
+> requests through your Copilot subscription and **others** through your own provider keys, decided
+> per model.
+
 ### `protocol`
 
 Protocol conversion. The proxy detects which protocol the client is speaking from the request path
-(`/chat/completions` → `chat`, `/messages` → `messages`, `/responses` → `responses`), and a route — or
-`forced` — decides which protocol the **upstream** speaks. When the two differ, the request body is
-converted before forwarding and the response is converted back before it reaches the client: JSON
-bodies are rewritten as a whole, SSE streams are transcoded **event by event** so streaming stays
-streaming. `enabled` is `false` by default.
+(`/chat/completions` → `chat`, `/messages` → `messages`, `/responses` → `responses`,
+`:generateContent` → `gemini`), and a route — or `forced` — decides which protocol the **upstream**
+speaks. When the two differ, the request body is converted before forwarding and the response is
+converted back before it reaches the client: JSON bodies are rewritten as a whole, SSE streams are
+transcoded **event by event** so streaming stays streaming. `enabled` is `false` by default.
 
 | Field | Default | Description |
 | --- | --- | --- |
 | `enabled` | `false` | Master switch. `--no-protocol` forces it off |
 | `forced` | `null` | Convert every request to this protocol, ignoring all routes (`--protocol <target>`). It outranks `enabled: false` as well |
-| `paths` | the three `/zen/go/v1/…` paths | The upstream path used for each target protocol. `paths.<target>` replaces the forwarded path **as a whole** (unlike `request.pathRewrite`, which patches the client's path) |
+| `paths` | the four `/zen/go/v1/…` paths | The upstream path used for each target protocol. `paths.<target>` replaces the forwarded path **as a whole** (unlike `request.pathRewrite`, which patches the client's path) |
 | `routes` | `[]` | `{ "model": <prefix, optional>, "target": <protocol>, "path": <upstream path, optional> }`. Top-down, first match wins; a route without `model` matches every request |
 
 Normalizations applied during conversion: `max_tokens` ↔ `max_completion_tokens` ↔
 `max_output_tokens`; `reasoning_effort` ↔ `thinking.budget_tokens` (fixed table
-low=1024 / medium=8192 / high=16384, and back: ≥16384 → high, ≥4096 → medium, else low); tool
-declarations and tool calls are reshaped between the three formats; `stop` ↔ `stop_sequences`;
-chat's system message ↔ Anthropic's top-level `system` ↔ Responses' `instructions`. Fields with no
-equivalent (`cache_control`, `response_format`, …) are dropped **by name**, and the conversion is
-logged as a `protocol:<from>-><to>` tag.
+low=1024 / medium=8192 / high=16384, and back: ≥16384 → high, ≥4096 → medium, else low) ↔ Gemini's
+`thinkingConfig.thinkingBudget`; tool declarations and tool calls are reshaped between the formats;
+`stop` ↔ `stop_sequences` ↔ `stopSequences`; chat's system message ↔ Anthropic's top-level `system` ↔
+Responses' `instructions` ↔ Gemini's `systemInstruction`. Fields with no equivalent
+(`cache_control`, `response_format`, …) are dropped **by name**, and the conversion is logged as a
+`protocol:<from>-><to>` tag.
+
+Gemini is the odd one out in two ways worth knowing: its model name lives in the **path**
+(`/v1beta/models/{model}:generateContent`), not in the body, and it distinguishes streaming by
+**method** (`:streamGenerateContent?alt=sse`) rather than by a body flag. The proxy handles both when
+a provider declares the `gemini` wire protocol.
 
 Two deliberate edge cases: Anthropic requires `max_tokens`, so a chat request without either
 `max_tokens` name gets a conservative `4096` (logged as `max_tokens:default(4096)`) instead of a 400
@@ -528,7 +710,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.2.2 — dry run
+llm-session-proxy v0.3.0 — dry run
 
 Config
   file                (none)
@@ -562,6 +744,7 @@ Model
 Router
   enabled             no
   default bucket      default
+  scorers             (none — "difficulty" rules never match without a scorer)
   bucket default      (none)
   bucket background   (none)
   bucket think        (none)
@@ -579,6 +762,10 @@ Protocol
   paths               chat=/zen/go/v1/chat/completions, messages=/zen/go/v1/messages, responses=/zen/go/v1/responses
   rules               (no rules)
   sample conversion   no conversion for the sample request
+
+Upstream pool
+  pool                (empty — a single upstream, same as before)
+  default             (none)
 
 Log
   file                ~/.lsp/logs/llm-session-proxy.log
@@ -660,6 +847,24 @@ Protocol
 
 In Chinese output the section is titled `协议互转`.
 
+The `Router` block shows the difficulty scorers, the bands and — when a scorer is enabled — the
+sample request's score. The `Upstream pool` block lists each provider's type, wire protocol and
+credential **source** (never the credential itself), plus which upstream the sample request would
+land on:
+
+```
+Upstream pool
+  pool                2 provider(s)
+  default             own
+  own                 type=openai wire=chat|responses credential=env:OPENAI_API_KEY
+  copilot             type=copilot wire=chat|responses
+  #0                  gpt-5 -> copilot
+  sample              own  (default)
+```
+
+In Chinese output the section is titled `上游池`, deliberately distinct from the pre-existing
+`上游` (the single upstream) section.
+
 `--doctor` runs the same report and then checks, in addition:
 
 - **DNS** resolution of `upstream.host`
@@ -667,6 +872,7 @@ In Chinese output the section is titled `协议互转`.
 - **TLS** handshake when the protocol is `https` — the certificate is reported if it is not trusted,
   rather than treated as a hard failure
 - whether `listen.port` is free (reported as a warning, since a running instance looks the same)
+- whether `listen.port` is on the WHATWG forbidden-port list (a warning — see below)
 - a reminder that the proxy never injects credentials
 
 It sends **no HTTP request** and no credentials: reachability is answered at the transport layer, so
@@ -676,6 +882,23 @@ something needs fixing, which makes it usable as a startup gate:
 ```bash
 llm-session-proxy --doctor && llm-session-proxy
 ```
+
+### Forbidden listen ports
+
+The Fetch specification — and every browser with it — carries a hard-coded list of **forbidden
+ports** (6000, 6666, 6667, 10080, 5060, …). A request aimed at one of them is rejected *before it is
+sent*, so nothing ever connects. Node's own `http`/`https` clients ignore that list, which makes this
+a confusing failure: the proxy binds the port fine, its logs stay clean, and yet every browser and
+`fetch`-based client reports "cannot connect".
+
+Two things follow, and both are deliberate:
+
+- `listen.port: 0` (pick a port for me) never lands on a forbidden port — the proxy re-binds until it
+  gets a usable one. Nobody asked for a specific port, so there is no intent to override.
+- A port you configure explicitly is respected as-is. If it happens to be forbidden, `--dry-run` and
+  `--doctor` warn about it instead of silently moving your service somewhere else.
+
+The warning names the port and the reason; pick another port and update the client's base URL.
 
 ---
 
@@ -714,7 +937,7 @@ llm-session-proxy --doctor && llm-session-proxy
 | `--transformer <name>` | Attach a named body transform, repeatable. **Replaces** `transformers.enabled` rather than appending to it, the same way `--model-prefix` replaces `stripPrefixes` |
 | `--router <bucket>` | Force every request through one bucket, ignoring the rules |
 | `--no-router` | Turn router buckets off, even if the config file enables them |
-| `--protocol <target>` | Convert every request to this protocol before forwarding (`chat` / `messages` / `responses`), overriding `protocol.routes` |
+| `--protocol <target>` | Convert every request to this protocol before forwarding (`chat` / `messages` / `responses` / `gemini`), overriding `protocol.routes` |
 | `--no-protocol` | Turn protocol conversion off, even if the config file enables it |
 | `--session-header <name>` / `--session-field <path>` | Add a session source, repeatable |
 | `--session-id-format <f>` / `--request-id-format <t>` | Session ID format / request-id template |
@@ -761,16 +984,19 @@ client ──▶ llm-session-proxy ──▶ upstream API
               ├─ 2. resolve the session: explicit > fingerprint > random
               ├─ 3. rewrite the model name: prefix stripping, then the alias table
               ├─ 4. pick a bucket, apply its model override, run the body transforms
-              ├─ 5. inject headers and body parameters
-              ├─ 6. convert the protocol if a route targets a different one
-              └─ 7. forward, streaming SSE chunks back as they arrive
+              ├─ 5. pick the upstream: the bucket's > a model-prefix rule > the pool default
+              ├─ 6. inject headers and body parameters
+              ├─ 7. convert the protocol to the upstream's wire protocol
+              └─ 8. forward, streaming SSE chunks back as they arrive
 ```
 
-The order of 3–6 is deliberate. Rules see the model name the client sent *and* the resolved one, the
-bucket's model override lands after alias resolution so it can only be a real upstream ID, injection
-comes last-but-one so `{{model}}` in a header reflects the final decision rather than the original
-request, and **protocol conversion runs last of all** — transforms and injection operate on the
-client's field names, and only the finished body is translated into the upstream's protocol.
+The order of 3–8 is deliberate. Rules see the model name the client sent *and* the resolved one, the
+bucket's model override lands after alias resolution so it can only be a real upstream ID, **the
+upstream is picked before any protocol conversion** — it decides both the wire protocol and the host
+to talk to — injection comes last-but-one so `{{model}}` in a header reflects the final decision
+rather than the original request, and **protocol conversion runs last of all** — transforms and
+injection operate on the client's field names, and only the finished body is translated into the
+upstream's protocol.
 
 The three-tier session resolution is what keeps IDs stable within a conversation:
 
@@ -805,7 +1031,9 @@ await proxy.stop();
 You can also take just the parts you need: `createProxyServer` (own the lifecycle),
 `SessionStore` (session table), `renderTemplate` (template engine), `buildConfig` (config merging),
 `resolveRoute` / `getBucket` (bucket selection), `applyTransformers` (the transform registry),
-`convertRequestBody` / `convertResponseJson` (protocol conversion), and
+`convertRequestBody` / `convertResponseJson` (protocol conversion),
+`scoreRequest` / `resolveDifficulty` (the difficulty scorer),
+`resolvePoolUpstream` / `resolveWire` (upstream-pool selection), and
 `diagnose` (what `--dry-run` and `--doctor` run under the hood).
 
 ---
@@ -869,6 +1097,15 @@ On `EADDRINUSE`, pick another port (`--port 9356`) and update the client's base 
   stream deltas have no chat equivalent and are dropped (by name, in the log); `messages ↔ responses`
   composes through chat rather than a direct converter. What survives is text, tool calls, finish
   reasons and usage — the parts clients actually act on.
+- **The difficulty scorer grades request *shape*, not meaning.** It sees size, turns, code, diffs,
+  tools, files and explicit reasoning intent. A one-line "make this idempotent" scores like any other
+  short message. Use it as a cheap, explainable heuristic — and keep the byte-size and model-prefix
+  matchers for the cases where you know better.
+- **Copilot credentials come from your existing GitHub login.** The proxy reads a GitHub token
+  (environment variable, `gh` CLI, or the credential file) and exchanges it for a session token. It
+  cannot use a `ghp_` classic PAT, and Copilot's "bring your own key" mode stays a client-side
+  feature — the proxy's part is routing some requests through your subscription and others through
+  your own provider keys.
 - The proxy only forwards and patches. It does not cache, meter usage, or modify responses.
 
 ---
@@ -883,7 +1120,7 @@ no local `npm login` required:
 3. Tag and push the matching tag:
 
 ```bash
-git tag v0.2.2 && git push origin v0.2.2
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 The workflow runs the full test suite, verifies the tag matches `package.json`, then publishes to
@@ -905,9 +1142,15 @@ start with `npx`. Everything on the roadmap has to fit that shape.
   `--dry-run` / `--doctor`. **Delivered — v0.2.1:** the transformer registry and router buckets.
   **Delivered — v0.2.2:** the protocol translation itself — request-body, response-body and
   event-level SSE conversion across chat / messages / responses.
-- **v0.3 — observability and control.** Prometheus-format metrics, structured JSON logs, a
+- **v0.3 — routing by difficulty, and mixing Copilot with your own keys.** A local deterministic
+  scorer grades each request by shape and maps it onto named bands, so rules can say
+  `{ "bucket": "think", "difficulty": "hard" }`. On the other axis, a pool of upstreams lets some
+  models go through your GitHub Copilot subscription and others through your own provider keys.
+  **Delivered — v0.3.0:** the scorer and the bands, the upstream pool with per-provider
+  credentials, and Google Gemini as a fourth wire protocol.
+- **v0.4 — observability and control.** Prometheus-format metrics, structured JSON logs, a
   cost/token accounting endpoint, and a zero-build local dashboard.
-- **v0.4 — reliability under real upstreams.** Circuit breaking, upstream health checks,
+- **v0.5 — reliability under real upstreams.** Circuit breaking, upstream health checks,
   retry with jitter, stream idle watchdogs, graceful drain on shutdown.
 - **v1.0 — hardening and distribution.** Config schema validation, a compatibility matrix per
   client, a checked-in benchmark harness, and single-file binaries.

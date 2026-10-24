@@ -8,10 +8,13 @@ import { logDetail } from './logger.js';
 import { t } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
 import { describeProtocolRoute, detectProtocol, resolveProtocolRoute } from './protocol.js';
+import { isForbiddenPort } from './ports.js';
 import { composeTransformers, describeBuckets, describeRule, getBucket, resolveRoute } from './router.js';
+import { listScorers } from './scoring.js';
 import { generateId } from './session.js';
 import { createContext, renderTemplate } from './template.js';
 import { listTransformers } from './transformers.js';
+import { describeProvider, resolveUpstream as resolvePoolUpstream } from './upstreams.js';
 
 /**
  * 配置体检与路由预演。
@@ -257,10 +260,37 @@ export function diagnose(config, { model = null, env = process.env, name = 'llm-
     ]);
   }
   routeRows.push([t('doctor.label.defaultBucket'), config.router.defaultBucket || 'default']);
+
+  // 难度打分器与档位（v0.3.0）。这一段最要紧的是「配了没有」——
+  // 没配打分器时 difficulty 规则永远不命中，而规则看上去完全正常。
+  const scorerNames = Array.isArray(config.router.scorers?.enabled) ? config.router.scorers.enabled : [];
+  if (scorerNames.length) {
+    routeRows.push([t('doctor.label.scorers'), scorerNames.join(', ')]);
+    routeRows.push([t('doctor.label.availableScorers'), listScorers().join(', ')]);
+    const bands = Array.isArray(config.router.bands) ? config.router.bands : [];
+    routeRows.push([
+      t('doctor.label.bands'),
+      bands.length ? bands.map((b) => `${b.name}<=${b.maxScore}`).join('  ') : t('doctor.value.none'),
+    ]);
+    if (route.difficulty) {
+      routeRows.push([
+        t('doctor.label.sampleDifficulty'),
+        t('doctor.value.sampleDifficulty', {
+          band: route.difficulty,
+          score: route.score ?? 0,
+          signals: route.signals || {},
+        }),
+      ]);
+    }
+  } else {
+    routeRows.push([t('doctor.label.scorers'), t('doctor.value.noScorers')]);
+  }
+
   for (const entry of describeBuckets(config.router)) {
     const bits = [];
     if (entry.model) bits.push(`model=${entry.model}`);
     if (entry.transformers.length) bits.push(`transformers=${entry.transformers.join(',')}`);
+    if (entry.upstream) bits.push(`upstream=${entry.upstream}`);
     routeRows.push([t('doctor.label.bucketRow', { name: entry.name }), bits.join(' ') || t('doctor.value.none')]);
   }
   const rules = config.router.rules || [];
@@ -345,6 +375,53 @@ export function diagnose(config, { model = null, env = process.env, name = 'llm-
   }
   sections.push({ title: t('doctor.section.protocol'), rows: protoRows });
 
+  // ---- 上游池（v0.3.0）----
+  // 池子是空的 = 只有一个上游，行为与 v0.2 完全一样。
+  // 有池子时要说清「哪个模型走哪个上游」「凭据从哪来」「用什么协议」。
+  const pool = config.upstreams || {};
+  const poolProviders = pool.providers && typeof pool.providers === 'object' ? pool.providers : {};
+  const poolNames = Object.keys(poolProviders);
+  const poolRows = [];
+  if (!poolNames.length) {
+    poolRows.push([t('doctor.label.upstreamPool'), t('doctor.value.poolEmpty')]);
+    poolRows.push([t('doctor.label.poolDefault'), config.upstream.hostHeader || t('doctor.value.none')]);
+  } else {
+    poolRows.push([t('doctor.label.upstreamPool'), t('doctor.value.poolSize', { count: poolNames.length })]);
+    poolRows.push([
+      t('doctor.label.poolDefault'),
+      pool.default ? `${pool.default}` : t('doctor.value.poolNoDefault'),
+    ]);
+    for (const name of poolNames) {
+      const provider = poolProviders[name];
+      const info = describeProvider(provider);
+      const bits = [`type=${info.type}`, `wire=${info.wire.join('|') || '-'}`];
+      if (info.credential) bits.push(`credential=${info.credential}`);
+      poolRows.push([t('doctor.label.poolProvider', { name }), bits.join(' ')]);
+    }
+    const poolRoutes = Array.isArray(pool.routes) ? pool.routes : [];
+    if (poolRoutes.length) {
+      poolRoutes.forEach((rule, index) => {
+        poolRows.push([`#${index}`, `${rule.model || '*'} -> ${rule.upstream}`]);
+      });
+    } else {
+      poolRows.push([t('doctor.label.rules'), t('doctor.value.noRules')]);
+    }
+    // 样例请求会落到哪个上游
+    const picked = resolvePoolUpstream({
+      model: explanation.resolved,
+      clientModel: sample,
+      bucketUpstream: bucket.upstream,
+      upstreamConfig: pool,
+    });
+    poolRows.push([
+      t('doctor.label.poolSample'),
+      picked.name
+        ? t('doctor.value.poolSample', { name: picked.name, source: picked.source })
+        : t('doctor.value.poolNone'),
+    ]);
+  }
+  sections.push({ title: t('doctor.section.upstreams'), rows: poolRows });
+
   const resolvedLog = resolveLogFile(config.log, { name, env });
   sections.push({
     title: t('doctor.section.log'),
@@ -370,6 +447,11 @@ export function diagnose(config, { model = null, env = process.env, name = 'llm-
       // 互转层开着却没有一条规则，等于每次请求白查一遍表
       warnings.push(t('doctor.warn.protocolEmpty'));
     }
+  }
+  if (isForbiddenPort(config.listen?.port)) {
+    // 这种端口 Node 绑得上，浏览器和 fetch 客户端却按 WHATWG 规范直接拒绝——
+    // 服务起来了但谁都连不上，且日志里一点痕迹都没有，所以体检要明说。
+    warnings.push(t('doctor.warn.forbiddenPort', { port: config.listen.port }));
   }
   if (explanation.outcome === 'stripped-unmapped') {
     const message = t('doctor.fail.unresolvedAlias', {
@@ -432,9 +514,19 @@ export function probeTls({ host, port, timeoutMs = 8000 }) {
     const finish = (result) => {
       if (settled) return;
       settled = true;
-      socket.destroy();
+      clearTimeout(hardTimer);
+      try {
+        socket.destroy();
+      } catch {
+        /* ignore */
+      }
       resolve(result);
     };
+    // socket.setTimeout 只在「一段时间没有活动」时触发——对端连上但一直不说话时，
+    // 握手会永远挂着。所以这里另起一个**硬超时**：到点必结，不看 socket 状态。
+    // 没有它，探测一个明文端口就能让整个 doctor 体检卡死。
+    // 刻意**不** unref——探测期间必须让事件循环保持活着，否则定时器会被跳过。
+    const hardTimer = setTimeout(() => finish({ ok: false, timeout: true }), timeoutMs);
     socket.setTimeout(timeoutMs);
     socket.once('secureConnect', () =>
       finish({
@@ -457,6 +549,7 @@ export function checkListenPort({ host, port }) {
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      clearTimeout(hardTimer);
       try {
         server.close();
       } catch {
@@ -464,6 +557,9 @@ export function checkListenPort({ host, port }) {
       }
       resolve(result);
     };
+    // 与 probeTls 同一个道理：listen 到 listening 之间可能既不报错也不就绪，
+    // 没有硬超时就可能永远挂着，体检卡死。同样不 unref。
+    const hardTimer = setTimeout(() => finish({ ok: false, message: 'listen probe timed out' }), 8000);
     server.once('error', (error) => finish({ ok: false, code: error.code, message: error.message }));
     server.once('listening', () => finish({ ok: true }));
     try {

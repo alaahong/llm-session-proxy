@@ -253,3 +253,55 @@ test('阈值写成字符串也能用，负数与非数字会被归一化丢掉',
   assert.equal(normalizeRule({ bucket: 'x', minBytes: 'abc' }).minBytes, undefined);
   assert.equal(normalizeRule({ bucket: 'x', maxBytes: -5 }).maxBytes, -5, '负数留给校验去报错');
 });
+
+// ---------------------------------------------------------------- 难度条件与边角
+
+test('配了 difficulty 条件但没配打分器时该条件不参与判定', () => {
+  // 没有打分器就定不出档位，difficulty 条件只能弃权——规则因此不命中，
+  // 而不是「猜一个档位」或者「命中一切」。
+  const config = routerConfig({
+    rules: [{ bucket: 'think', difficulty: 'hard' }],
+  });
+  delete config.scorers;
+  const route = resolveRoute({ path: '/v1/chat', body: { model: 'm' }, clientModel: 'm' }, config);
+  assert.equal(route.bucket, 'default', '定不出档位就不该命中这条规则');
+  assert.equal(route.source, 'default');
+  assert.equal(route.difficulty, null);
+});
+
+test('describeRule 只配 difficulty 时输出难度匹配式', () => {
+  assert.equal(describeRule(normalizeRule({ bucket: 'think', difficulty: 'hard' })), 'difficulty=hard');
+});
+
+test('describeRule 一个匹配条件都没有时明说不匹配', () => {
+  assert.equal(describeRule(normalizeRule({ bucket: 'think' })), '(no matcher — this rule never applies)');
+});
+
+test('applyBucketModel 目标模型与当前相同时报没有改动', () => {
+  const body = { model: 'glm-5.3-think' };
+  const result = applyBucketModel(body, { model: 'glm-5.3-think' });
+  assert.equal(result.changed, false);
+  assert.equal(result.from, 'glm-5.3-think');
+  assert.equal(result.to, 'glm-5.3-think');
+  assert.equal(body.model, 'glm-5.3-think', '不改动就不该碰 body');
+});
+
+test('applyBucketModel 的 body 不是对象时原地不动', () => {
+  assert.equal(applyBucketModel('nope', { model: 'x' }).changed, false);
+  assert.equal(applyBucketModel(null, { model: 'x' }).changed, false);
+});
+
+test('composeTransformers 忽略全局列表里的非字符串条目', () => {
+  const merged = composeTransformers({ enabled: ['drop-empty-fields', 42, '', null] }, { transformers: ['clamp-max-tokens'] });
+  assert.deepEqual(merged, ['drop-empty-fields', 'clamp-max-tokens']);
+});
+
+test('composeTransformers 桶里重复挂全局已有的变换时只出现一次', () => {
+  const merged = composeTransformers({ enabled: ['drop-empty-fields'] }, { transformers: ['drop-empty-fields'] });
+  assert.deepEqual(merged, ['drop-empty-fields']);
+});
+
+test('getBucket 查一个没有声明过的桶名时退化成空桶', () => {
+  const bucket = getBucket(routerConfig(), 'no-such-bucket');
+  assert.deepEqual(bucket, emptyBucket());
+});

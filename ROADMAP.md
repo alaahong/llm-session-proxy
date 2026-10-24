@@ -4,36 +4,41 @@
 exists to fix one thing well: clients that cannot send the headers an upstream demands. Everything
 below has to fit that shape.
 
-- **Scope:** one developer machine, one upstream (a few at v0.4+), one process.
+- **Scope:** one developer machine, one process. One upstream by default; a pool of upstreams since v0.3.0.
 - **Non-negotiable:** `dependencies` in `package.json` stays empty. Features that would need a
   library get re-implemented on Node built-ins, or they do not ship.
-- **Status:** v0.2.x — the session/header injection core works and is hardened; model aliasing,
-  `--dry-run` / `--doctor`, the transform registry, routing buckets and protocol conversion have
-  shipped. Everything else is on this page.
+- **Status:** v0.3.0 — the session/header injection core works and is hardened; model aliasing,
+  `--dry-run` / `--doctor`, the transform registry, routing buckets, protocol conversion, difficulty
+  scoring and the multi-upstream pool have shipped. Everything else is on this page.
 
 ---
 
 ## 1. Where it stands today
 
-### Working (v0.2.2)
+### Working (v0.3.0)
 
 | Area | What ships now |
 | --- | --- |
 | Sessions | Three-tier resolution: explicit client identifier → content fingerprint (`system` + first user message) → one-off random. Stable per conversation, so upstream prompt caching works. |
 | Injection | Arbitrary request headers and body fields, templated (`{{session.id}}`, `{{uuid}}`, `{{env.HOME}}`, …), with dot-path support and an `overwrite` switch. |
 | Rewriting | Model aliases (exact map + prefix stripping, composable) and request paths (regex rules). A curated OpenCode Go alias table now ships **in the box**, so the `proxy-` prefix the README prescribes resolves without a config file; an alias that strips down to something unmapped is reported by name instead of being forwarded silently. |
-| Routing | Four buckets (`default` / `background` / `think` / `longContext`), each with its own model override and transform list. Rules match on path prefix, model prefix, body field or request size, evaluate **top-down with the first match winning**, and AND the conditions inside one rule. **Off by default**, so upgrading changes nothing. |
+| Routing | Four buckets (`default` / `background` / `think` / `longContext`), each with its own model override and transform list. Rules match on path prefix, model prefix, body field, request size or **difficulty band**, evaluate **top-down with the first match winning**, and AND the conditions inside one rule. **Off by default**, so upgrading changes nothing. |
+| Difficulty | A named in-tree **scorer registry** (`builtin-complexity`) turns the request's shape into a 0–100 score and a band (`easy` / `medium` / `hard`), which the router can match on. Nine weighted signals, deterministic, no network, no model call. Measures the *shape* of a request, not its semantic difficulty. |
+| Upstreams | A **pool** of upstreams (`openai` / `anthropic` / `gemini` / `copilot` / `custom`), each with its own base URL, endpoint paths, wire protocol and credential source. The bucket picks the upstream explicitly, otherwise the model name picks it by prefix, otherwise the pool default does. Request bodies are converted to whichever **wire protocol** the chosen upstream speaks. |
+| Copilot | GitHub Copilot as a first-class upstream: GitHub login → short-lived Copilot session token → `api.githubcopilot.com`, with the official `Copilot-Integration-Id` header and per-model endpoint selection. Credentials are read from the environment, the `gh` CLI or a device-flow login, and **never written to config or to logs**. |
 | Transforms | Five named in-tree body transforms (`noop`, `drop-fields`, `drop-empty-fields`, `rename-fields`, `clamp-max-tokens`), attachable globally or per bucket, applied in a fixed order. Selected **by name, never by path**, so a config file cannot make the proxy execute code. |
-| Protocol | Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses: request bodies converted before forwarding, JSON responses rewritten, SSE streams transcoded **event by event** so streaming stays streaming. Off by default, routed by model prefix; upstream 4xx/5xx error bodies are never converted. |
-| Diagnostics | `--dry-run` prints the effective routing, the **rendered** injection table, the model-resolution chain and the bucket/transform decision with no network I/O; `--doctor` adds DNS/TCP/TLS reachability and listen-port checks and exits non-zero on problems. |
+| Protocol | Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses ↔ **Google Gemini**: request bodies converted before forwarding, JSON responses rewritten, SSE streams transcoded **event by event** so streaming stays streaming. Off by default, routed by model prefix; upstream 4xx/5xx error bodies are never converted. |
+| Diagnostics | `--dry-run` prints the effective routing, the **rendered** injection table, the model-resolution chain, the bucket/transform decision, the difficulty score and the upstream pool with no network I/O; `--doctor` adds DNS/TCP/TLS reachability, listen-port checks (free? on the WHATWG forbidden-port list?) and exits non-zero on problems. |
 | Streaming | SSE is piped chunk by chunk, never buffered. Upstream 4xx bodies come back verbatim. |
-| Operations | `/__llm_session_proxy__/status` and `/sessions`, **log-to-disk on by default** (`~/.lsp/logs`) with size/date rotation and 30-day archival, four-layer config merge (defaults < file < env < CLI). |
-| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **281 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
+| Operations | `/__llm_session_proxy__/status` and `/sessions`, **log-to-disk on by default** (`~/.lsp/logs`) with size/date rotation and 30-day archival, four-layer config merge (defaults < file < env < CLI). Auto-assigned listen ports (`listen.port: 0`) never land on a WHATWG forbidden port; a port you configure explicitly is respected and reported by `--doctor` instead. |
+| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **906 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
 | Language | Console output and log messages are **English by default**, switchable to Chinese with `--lang zh` / `PROXY_LANG=zh`. |
 
 ### Known gaps (stated plainly)
 
-1. **One upstream, no fallback.** No retry, no health check, no circuit breaker.
+1. **No retry, no health check, no circuit breaker.** The upstream pool can *choose* between upstreams,
+   but it cannot fall back on its own: a 429 or a 5xx is returned to the client as-is. Fallback and
+   retry are v0.5 work.
 2. **No machine-readable observability.** Human-readable log lines only: no metrics endpoint, no
    structured log mode, no trace export.
 3. **The transform registry is a fixed list.** Five in-tree transforms, and no way to load one from a
@@ -43,6 +48,13 @@ below has to fit that shape.
    whether it did.
 5. **Protocol conversion is lossy at the edges, by design.** Anthropic `thinking` / `signature` stream
    deltas are dropped when converting to chat; `messages ↔ responses` composes through chat.
+6. **The difficulty scorer reads the request, not the task.** A three-word question in a 30 KB
+   context scores as `hard`; a 40-line refactor with three files scores as `medium`. It is a
+   *shape* heuristic, and it is documented as one.
+7. **Copilot BYOK stays a client feature.** GitHub's own BYOK keeps the key in the client's keychain
+   and bills the provider directly — the proxy cannot change that, so mixing Copilot-hosted models
+   with your own keys is done here by **adding your own provider as an upstream**, not by asking
+   Copilot to use your key.
 
 ---
 
@@ -55,7 +67,7 @@ The category splits into five families. We are deliberately in the smallest one.
 | **[LiteLLM](https://github.com/BerriAI/litellm)** | Python | The default self-hosted gateway: 100+ providers, one OpenAI-shaped API | Provider breadth, virtual keys, budgets, team spend tracking, load balancing | The *shape* of the config surface; the lesson that one OpenAI-compatible endpoint is what clients actually want | Virtual keys, budgets, a database, an admin panel — all of it is multi-tenant SaaS machinery |
 | **[claude-code-router](https://github.com/musistudio/claude-code-router)** | Node.js | Local router for Claude Code: buckets (`default` / `background` / `think` / `longContext`), a transformer plugin system, Anthropic↔OpenAI conversion | Protocol translation, rule/bucket routing, per-provider transformers, a Web UI | Router buckets and the transformer registry **as a config-driven concept**; `longContextThreshold`-style policy | Its plugin loading model, and its single-client focus |
 | **[one-api](https://github.com/songquanpeng/one-api) / [new-api](https://github.com/Calcium-Ion/new-api)** | Go | Relay panel: multi-channel, quota, token billing, China-friendly | Channel pools, quota and billing, a management UI | Nothing structural — it is a service, we are a CLI | The whole billing/quota model |
-| **[gpt-load](https://github.com/tbphp/gpt-load)** | Go | Key-pool + load balancer for upstream keys | Key rotation, weighted balancing across many keys | Key-pool rotation (v0.4, only if it stays file-based) | Databases, a Web admin |
+| **[gpt-load](https://github.com/tbphp/gpt-load)** | Go | Key-pool + load balancer for upstream keys | Key rotation, weighted balancing across many keys | Key-pool rotation (v0.5, only if it stays file-based) | Databases, a Web admin |
 | **[Portkey](https://github.com/Portkey-AI/gateway) / [Bifrost](https://github.com/maximhq/bifrost) / [Envoy AI Gateway](https://github.com/envoyproxy/ai-gateway)** | Node / Go / Envoy | Production gateways built for throughput, guardrails and governance | Measured low-single-digit-millisecond overhead, guardrail chains, circuit breaking, Kubernetes-native policy | Guardrail primitive design; passive health checks; the discipline of publishing a benchmark harness | Envoy/K8s deployment weight, and chasing microsecond benchmarks |
 | **[Cloudflare](https://developers.cloudflare.com/ai-gateway/) / [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) / Helicone / Langfuse** | hosted | Managed gateways and observability platforms | Zero ops, DLP/PII scanning, cost dashboards, trace UIs | The metric set worth exposing (TTFT, added latency, token counts, prefix reuse) | Sending prompts anywhere |
 
@@ -76,9 +88,10 @@ microseconds.** Provider TTFT runs 500 ms–5 s, so gateway overhead is a roundi
 therefore sets targets we can actually measure and reproduce, and section 7 says how.
 
 **2. Feature breadth is not winnable, and it is not the point.** LiteLLM has 100+ provider
-integrations and a team behind it. We have one upstream per process and a config file. Our advantage
-has to be **fidelity on the small thing**: bind to the conversation correctly, keep the upstream's
-prompt cache warm, inject exactly the headers the upstream wants, and pass bytes through untouched.
+integrations and a team behind it. We have a config file and, since v0.3.0, a small pool of
+upstreams we can route between. Our advantage has to be **fidelity on the small thing**: bind to the
+conversation correctly, keep the upstream's prompt cache warm, inject exactly the headers the
+upstream wants, and pass bytes through untouched.
 
 **3. Supply-chain surface is a feature.** LiteLLM published twelve advisories in 2026 — including a
 pre-auth SQL injection and an unauthenticated RCE that reached CISA's known-exploited list (both
@@ -190,7 +203,52 @@ bisecting it apart from routing changes is far easier than bisecting both at onc
       <sub>**v0.2.0.** `src/doctor.js`. Stops at the transport layer on purpose — no HTTP request, no
       credentials — so a doctor run cannot burn rate-limit quota or leak a key.</sub>
 
-### v0.3 — Observability and control
+### v0.3 — Difficulty routing and upstream reach <sub>(the "one client, every model, every key" release)</sub>
+
+Two orthogonal axes. The first decides **which model** a request should use; the second decides
+**where the request goes**. Neither one is optional for the other, so they ship together.
+
+- [x] **Difficulty scorer:** a local, deterministic, in-tree scorer that grades a request by
+      *shape* and maps it onto named bands.
+      <sub>**v0.3.0.** `src/scoring.js` — a named registry (`builtin-complexity`) with nine weighted
+      signals: bytes 22, turns 12, code blocks 15, diff lines 13, tools 8, system 8, files 8,
+      reasoning 8, max tokens 6. Bytes use a log scale and anything under 512 bytes scores 0; diff
+      lines exclude `+++` / `---` file headers. Bands default to `easy ≤ 30` / `medium ≤ 60` /
+      `hard ≤ 100`. The router matches on a band like any other condition. **Deliberately not a
+      model call and deliberately not a plugin loader:** a network round-trip per request would
+      defeat the purpose, and letting a config file point at code would break the zero-dependency,
+      loopback-only security story. The scorer reads the request, not the task — a short question in
+      a huge context still scores high.</sub>
+- [x] **Upstream pool:** several upstreams in one process, each with its own base URL, endpoint
+      paths, wire protocol and credential source.
+      <sub>**v0.3.0.** `src/upstreams.js` — provider types `openai` / `anthropic` / `gemini` /
+      `copilot` / `custom`. Selection order: the bucket's explicit `upstream` → the model-name
+      prefix table → the pool default → the legacy single `upstream` config. Matching uses **both**
+      the client-facing model name and the resolved one, because alias rewriting strips the
+      `proxy-` prefix. Credentials are resolved per provider (env → command → stored file) and the
+      resolved value never reaches the log.</sub>
+- [x] **GitHub Copilot as an upstream:** Copilot-hosted models, authenticated the official way.
+      <sub>**v0.3.0.** `src/copilot.js` — GitHub token → `copilot_internal/v2/token` → short-lived
+      session token → `api.githubcopilot.com`. The GitHub token comes from `COPILOT_GITHUB_TOKEN` →
+      `GH_TOKEN` → `GITHUB_TOKEN` → the `gh` CLI → the archived credential file → the device flow,
+      i.e. the official chain rather than a private scrape. The device flow (GitHub's OAuth 2.0
+      Device Authorization Grant) is **off by default** and only runs when the provider sets
+      `auth.deviceFlow` — a login that needs a human must never start behind your back; the code and
+      the verification URL are printed, and the resulting token is archived to
+      `~/.lsp/copilot-credentials.json` (mode 0600) so it happens once. `ghp_` classic PATs are
+      explicitly **not** supported (GitHub deprecated them for Copilot); `github_pat_` / `ghu_` /
+      `gho_` / `ghs_` are. The session token lives in memory only and refreshes five minutes before
+      expiry. `Copilot-Integration-Id` is pinned to `copilot-developer-cli`, the value GitHub accepts
+      for both OAuth tokens and PATs.</sub>
+- [x] **Gemini as a fourth wire protocol:** the native `generateContent` shape, not an OpenAI-shaped
+      imitation.
+      <sub>**v0.3.0.** `src/converters.js`, `src/replies.js` and `src/stream.js` grow from six
+      conversion directions to twelve (six direct, six through chat as the pivot). Gemini carries the
+      model name and the streaming flag **in the path** (`/v1beta/models/{model}:streamGenerateContent?alt=sse`),
+      which is why the proxy captures both before conversion moves them. Auth is
+      `x-goog-api-key`, with no `Bearer` prefix.</sub>
+
+### v0.4 — Observability and control
 
 - [ ] **Prometheus text-format `/metrics`** on the local prefix: request counts by upstream/status,
       added-latency histograms, session table size, cache-reuse counters, bytes in/out.
@@ -205,9 +263,10 @@ bisecting it apart from routing changes is far easier than bisecting both at onc
 - [ ] **Zero-build dashboard:** one hand-written HTML page served locally, reading the local
       endpoints. No bundler, no framework, no npm install.
 
-### v0.4 — Reliability under real upstreams
+### v0.5 — Reliability under real upstreams
 
-- [ ] **Multiple upstreams** with priority/weighted selection.
+- [ ] **Weighted / priority selection inside the pool** — the pool chooses by rule today, not by
+      observed health.
 - [ ] **Fallback and retry:** retry on 429/5xx/timeout with jitter and a hard attempt cap, never
       retrying a request whose streamed body was already partially delivered. (Production telemetry
       surveys in 2026 attributed roughly a third of LLM API errors to rate limiting — this is where
@@ -220,7 +279,7 @@ bisecting it apart from routing changes is far easier than bisecting both at onc
 - [ ] **Optional session persistence:** a small append-only file so a restart does not break
       conversation binding. Off by default.
 
-### v0.5 — Safety and hygiene
+### v0.6 — Safety and hygiene
 
 - [ ] **Secret hygiene in logs:** never log credential values (today we log presence only — keep it
       that way), plus a redaction pass for anything that looks like a key.
@@ -250,6 +309,8 @@ Ranked by (reach × differentiation) ÷ effort.
 | --- | --- | --- | --- | --- |
 | Protocol translation | Very high | High | High | ✅ shipped in v0.2.2 |
 | `model.map` default + docs fix | High | Low | Very low | ✅ shipped in v0.2.0 |
+| Difficulty scoring | High | **High** | Medium | ✅ shipped in v0.3.0 |
+| Upstream pool + Copilot / BYOK mixing | High | **High** | High | ✅ shipped in v0.3.0 |
 | `/metrics` + JSON logs | High | Low | Low | **P1** |
 | Doctor / dry-run | High | Medium | Low | ✅ shipped in v0.2.0 |
 | Transformer registry + router buckets | High | Medium | Medium | ✅ shipped in v0.2.1 |
@@ -264,7 +325,7 @@ Ranked by (reach × differentiation) ÷ effort.
 
 ## 7. How we measure
 
-`scripts/bench.mjs` (to be added later in v0.2.x, once the translation layer stops moving) will:
+`scripts/bench.mjs` (to be added later in v0.4.x, once the translation layer stops moving) will:
 
 1. start a deterministic mock upstream with configurable latency and streaming,
 2. replay a fixed request corpus at a stated concurrency against both the upstream directly and
@@ -304,6 +365,10 @@ Rules for using it:
   the first case: v0.2.0 shipped the map gap and the doctor, v0.2.1 shipped routing, and v0.2.2
   shipped the protocol translation. Each minor version is independently installable and independently
   verified.
+- v0.3.0 shipped as one release because the two axes it introduces are useless apart: a difficulty
+  band only helps if something can route on it, and an upstream pool only pays off if traffic
+  reaches it. The milestone numbers after v0.3 were **renumbered** (v0.4 is now observability,
+  v0.5 reliability, v0.6 safety) to keep one milestone per release train.
 - From `v1.0`: semver. Breaking config changes require `--migrate-config`.
 - Releases go out through `.github/workflows/publish.yml` on a `v*` tag, with the pack check and the
   end-to-end install verification run first.

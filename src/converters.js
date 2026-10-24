@@ -18,12 +18,26 @@ function asArray(value) {
   return [value];
 }
 
-function safeJsonParse(value) {
-  if (typeof value !== 'string' || value === '') return undefined;
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * 工具参数 → 对象。
+ *
+ * 解析不出来时**记名**报给调用方，不静默塞一个空对象——「静默丢掉」是这个项目
+ * 最忌讳的行为。响应侧（replies.js）用的是同一个标签，两边对得上。
+ */
+function toolArgumentsToObject(raw) {
+  if (raw === undefined || raw === null) return { value: {}, dropped: null };
+  if (typeof raw === 'object') return { value: raw, dropped: null };
+  if (typeof raw !== 'string' || raw === '') return { value: {}, dropped: 'tool_calls:arguments_not_json' };
   try {
-    return JSON.parse(value);
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return { value: {}, dropped: 'tool_calls:arguments_not_json' };
+    return { value: parsed, dropped: null };
   } catch {
-    return undefined;
+    return { value: {}, dropped: 'tool_calls:arguments_not_json' };
   }
 }
 
@@ -199,11 +213,13 @@ function chatToMessages(body) {
       const text = textFromChatContent(msg.content);
       if (text) blocks.push({ type: 'text', text });
       for (const call of msg.tool_calls) {
+        const parsed = toolArgumentsToObject(call.function?.arguments);
+        if (parsed.dropped) dropped.push(parsed.dropped);
         blocks.push({
           type: 'tool_use',
           id: call.id,
           name: call.function?.name,
-          input: safeJsonParse(call.function?.arguments) ?? {},
+          input: parsed.value,
         });
       }
       messages.push({ role: 'assistant', content: blocks });
@@ -437,23 +453,266 @@ function responsesToChat(body) {
         break;
       }
       case 'function_call': {
+        // Responses 的一轮输出可以是「assistant 文本 + 若干 function_call」，
+        // 那是**同一条** assistant 消息（chat 协议里 content 与 tool_calls 并存）。
+        // 拆成两条 assistant 消息会改变对话结构——转 Anthropic 时角色不交替会被 400。
         const last = out.messages[out.messages.length - 1];
         const call = { id: item.call_id, type: 'function', function: { name: item.name, arguments: item.arguments || '{}' } };
-        if (last?.role === 'assistant' && Array.isArray(last.tool_calls)) last.tool_calls.push(call);
-        else out.messages.push({ role: 'assistant', content: null, tool_calls: [call] });
+        if (last?.role === 'assistant') {
+          if (!Array.isArray(last.tool_calls)) last.tool_calls = [];
+          last.tool_calls.push(call);
+        } else {
+          out.messages.push({ role: 'assistant', content: null, tool_calls: [call] });
+        }
         changes.push('function_call->tool_calls');
         break;
       }
-      case 'function_call_output':
-        out.messages.push({ role: 'tool', tool_call_id: item.call_id, content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? '') });
+      case 'function_call_output': {
+        // output 可能是字符串，也可能是对象（要序列化成 JSON 文本）。
+        // 缺失或 null 时给**空串**，不是 JSON 编码后的 `""`——后者会把两个字面引号
+        // 当成工具输出塞给模型，看着像内容，其实是编码事故。
+        let content;
+        if (typeof item.output === 'string') content = item.output;
+        else if (item.output === undefined || item.output === null) content = '';
+        else content = JSON.stringify(item.output);
+        out.messages.push({ role: 'tool', tool_call_id: item.call_id, content });
         changes.push('function_call_output->tool:message');
         break;
+      }
       case 'reasoning':
         dropped.push('reasoning:item');
         break;
       default:
         dropped.push(`item:${item?.type || 'unknown'}`);
     }
+  }
+
+  return { body: out, changes, dropped };
+}
+
+// ---------------------------------------------------------------- chat → gemini
+
+/**
+ * chat → Gemini 原生。
+ *
+ * Gemini 的形状和另外两家都不一样：
+ *   - 消息是 contents[{role, parts[]}]，role 只有 user / model；
+ *   - system 是顶层 systemInstruction（不是 messages 里的一条）；
+ *   - 参数装在 generationConfig 里；
+ *   - 工具装在 tools[].functionDeclarations[] 里。
+ */
+function chatToGemini(body) {
+  const changes = [];
+  const dropped = [];
+  const out = {};
+
+  // system / developer 提示 → systemInstruction
+  const systemParts = [];
+  const contents = [];
+
+  for (const msg of Array.isArray(body.messages) ? body.messages : []) {
+    const role = msg?.role;
+    if (role === 'system' || role === 'developer') {
+      const text = textFromChatContent(msg.content);
+      if (text) systemParts.push({ text });
+      continue;
+    }
+
+    // tool 结果 → functionResponse，放在一条 user 内容里
+    if (role === 'tool') {
+      contents.push({
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              name: msg.tool_call_id || '',
+              response: { content: textFromChatContent(msg.content) },
+            },
+          },
+        ],
+      });
+      changes.push('tool:message->functionResponse');
+      continue;
+    }
+
+    // assistant 的工具调用 → model 内容里的 functionCall
+    if (role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+      const parts = [];
+      const text = textFromChatContent(msg.content);
+      if (text) parts.push({ text });
+      for (const call of msg.tool_calls) {
+        const parsed = toolArgumentsToObject(call.function?.arguments);
+        if (parsed.dropped) dropped.push(parsed.dropped);
+        parts.push({
+          functionCall: {
+            name: call.function?.name || '',
+            args: parsed.value,
+          },
+        });
+      }
+      contents.push({ role: 'model', parts });
+      changes.push('tool_calls->functionCall');
+      continue;
+    }
+
+    // 普通消息
+    const parts = [];
+    const content = msg?.content;
+    if (typeof content === 'string') {
+      if (content) parts.push({ text: content });
+    } else {
+      for (const part of Array.isArray(content) ? content : []) {
+        if (part?.type === 'text') {
+          if (part.text) parts.push({ text: part.text });
+        } else if (part?.type === 'image_url') {
+          const url = part.image_url?.url || '';
+          const match = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+          if (match) {
+            parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+          } else {
+            parts.push({ fileData: { fileUri: url } });
+          }
+        } else if (part) {
+          dropped.push(`part:${part.type || 'unknown'}`);
+        }
+      }
+    }
+    contents.push({ role: role === 'assistant' ? 'model' : 'user', parts });
+  }
+
+  out.contents = contents;
+  if (systemParts.length) {
+    out.systemInstruction = { parts: systemParts };
+    changes.push('system:moved');
+  }
+
+  // 参数 → generationConfig
+  const config = {};
+  const maxTokens = body.max_tokens ?? body.max_completion_tokens;
+  if (maxTokens != null) config.maxOutputTokens = maxTokens;
+  if (typeof body.temperature === 'number') config.temperature = body.temperature;
+  if (typeof body.top_p === 'number') config.topP = body.top_p;
+  if (body.stop != null) {
+    config.stopSequences = asArray(body.stop);
+    changes.push('stop->stopSequences');
+  }
+  if (typeof body.reasoning_effort === 'string' && REASONING_TO_BUDGET[body.reasoning_effort]) {
+    config.thinkingConfig = { thinkingBudget: REASONING_TO_BUDGET[body.reasoning_effort] };
+    changes.push(`reasoning_effort->thinkingBudget(${REASONING_TO_BUDGET[body.reasoning_effort]})`);
+  } else if (body.reasoning_effort != null) {
+    dropped.push(`reasoning_effort:${body.reasoning_effort}`);
+  }
+  if (Object.keys(config).length) out.generationConfig = config;
+
+  // 工具 → functionDeclarations
+  if (Array.isArray(body.tools) && body.tools.length) {
+    const declarations = body.tools.map((tool) => {
+      const fn = tool?.function || tool;
+      return {
+        name: fn?.name,
+        description: fn?.description,
+        parameters: fn?.parameters || { type: 'object' },
+      };
+    });
+    out.tools = [{ functionDeclarations: declarations }];
+    changes.push('tools:functionDeclarations');
+  }
+
+  if (body.stream != null) out.stream = body.stream;
+  // model 不在 body 里——它在上游路径上（/v1beta/models/{model}:generateContent）
+  if (body.model) changes.push('model:->path');
+  for (const key of CHAT_ONLY_FIELDS) if (key in body) dropped.push(key);
+
+  return { body: out, changes, dropped };
+}
+
+// ---------------------------------------------------------------- gemini → chat
+
+/** Gemini 的 parts → chat 的 content / tool_calls。 */
+function geminiToChat(body) {
+  const changes = [];
+  const dropped = [];
+  const out = { messages: [] };
+
+  if (typeof body.systemInstruction === 'object') {
+    const text = textFromChatContent(body.systemInstruction?.parts);
+    if (text) {
+      out.messages.push({ role: 'system', content: text });
+      changes.push('system:moved');
+    }
+  }
+
+  for (const content of Array.isArray(body.contents) ? body.contents : []) {
+    const role = content?.role === 'model' ? 'assistant' : 'user';
+    const textParts = [];
+    const toolCalls = [];
+    const toolResults = [];
+
+    for (const part of Array.isArray(content?.parts) ? content.parts : []) {
+      if (typeof part?.text === 'string') {
+        textParts.push(part.text);
+        continue;
+      }
+      if (part?.functionCall) {
+        toolCalls.push({
+          id: `call_${toolCalls.length}`,
+          type: 'function',
+          function: { name: part.functionCall.name || '', arguments: JSON.stringify(part.functionCall.args ?? {}) },
+        });
+        continue;
+      }
+      if (part?.functionResponse) {
+        toolResults.push(part.functionResponse);
+        continue;
+      }
+      if (part) dropped.push(`part:${Object.keys(part)[0] || 'unknown'}`);
+    }
+
+    // functionResponse → chat 的独立 tool 消息
+    if (toolResults.length) {
+      for (const result of toolResults) {
+        const payload = result.response;
+        const text = typeof payload === 'string' ? payload : payload?.content ?? JSON.stringify(payload ?? '');
+        out.messages.push({ role: 'tool', tool_call_id: result.name || '', content: text });
+      }
+      changes.push('functionResponse->tool:message');
+    }
+
+    const text = textParts.join('');
+    if (toolCalls.length) {
+      out.messages.push({ role: 'assistant', content: text || null, tool_calls: toolCalls });
+      changes.push('functionCall->tool_calls');
+    } else if (text) {
+      out.messages.push({ role, content: text });
+    }
+  }
+
+  const config = isPlainObject(body.generationConfig) ? body.generationConfig : {};
+  if (config.maxOutputTokens != null) out.max_tokens = config.maxOutputTokens;
+  if (typeof config.temperature === 'number') out.temperature = config.temperature;
+  if (typeof config.topP === 'number') out.top_p = config.topP;
+  if (Array.isArray(config.stopSequences) && config.stopSequences.length) {
+    out.stop = config.stopSequences;
+    changes.push('stopSequences->stop');
+  }
+  if (typeof config.thinkingConfig?.thinkingBudget === 'number') {
+    out.reasoning_effort = budgetToReasoning(config.thinkingConfig.thinkingBudget);
+    changes.push(`thinkingBudget->reasoning_effort(${out.reasoning_effort})`);
+  }
+
+  // 工具声明 → chat 的 tools
+  const declarations = [];
+  for (const tool of Array.isArray(body.tools) ? body.tools : []) {
+    for (const fn of Array.isArray(tool?.functionDeclarations) ? tool.functionDeclarations : []) {
+      declarations.push({
+        type: 'function',
+        function: { name: fn.name, description: fn.description, parameters: fn.parameters || { type: 'object' } },
+      });
+    }
+  }
+  if (declarations.length) {
+    out.tools = declarations;
+    changes.push('functionDeclarations->tools');
   }
 
   return { body: out, changes, dropped };
@@ -466,10 +725,22 @@ const DIRECT = {
   'messages->chat': messagesToChat,
   'chat->responses': chatToResponses,
   'responses->chat': responsesToChat,
+  'chat->gemini': chatToGemini,
+  'gemini->chat': geminiToChat,
 };
 
-/** messages↔responses 走 chat 中转：这一对没有直达转换器。 */
-const VIA_CHAT = { 'messages->responses': ['messages->chat', 'chat->responses'], 'responses->messages': ['responses->chat', 'chat->messages'] };
+/**
+ * 没有直达对的方向走 chat 中转。
+ * messages↔responses 从来就没有直达对；gemini 与另外两家的差异更大，同样经 chat。
+ */
+const VIA_CHAT = {
+  'messages->responses': ['messages->chat', 'chat->responses'],
+  'responses->messages': ['responses->chat', 'chat->messages'],
+  'messages->gemini': ['messages->chat', 'chat->gemini'],
+  'gemini->messages': ['gemini->chat', 'chat->messages'],
+  'responses->gemini': ['responses->chat', 'chat->gemini'],
+  'gemini->responses': ['gemini->chat', 'chat->responses'],
+};
 
 export function listConverters() {
   return [...Object.keys(DIRECT), ...Object.keys(VIA_CHAT)];

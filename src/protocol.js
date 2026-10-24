@@ -15,13 +15,15 @@ import { t } from './messages.js';
  * 加载插件**——和 transformers.js 同一个取舍：配置文件不能指向代码。
  */
 
-export const PROTOCOLS = ['chat', 'messages', 'responses'];
+export const PROTOCOLS = ['chat', 'messages', 'responses', 'gemini'];
 
 /** 路径 → 协议。按后缀识别，顺序即优先级（chat 最具体，放最前）。 */
 const PATH_MARKERS = [
   ['chat', '/chat/completions'],
   ['responses', '/responses'],
   ['messages', '/messages'],
+  ['gemini', '/generatecontent'],
+  ['gemini', ':streamgeneratecontent'],
 ];
 
 /** 从请求路径推断协议；认不出来返回 null（那就按既有行为原样转发）。 */

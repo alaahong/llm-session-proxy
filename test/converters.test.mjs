@@ -308,13 +308,19 @@ test('同协议或非法输入不转换，原样返回', () => {
   assert.deepEqual(convertRequestBody('str', 'chat', 'messages').changed, false);
 });
 
-test('注册表：四个直达对 + 两个经 chat 中转的对', () => {
+test('注册表：六个直达对 + 六个经 chat 中转的对', () => {
   assert.deepEqual(listConverters().sort(), [
+    'chat->gemini',
     'chat->messages',
     'chat->responses',
+    'gemini->chat',
+    'gemini->messages',
+    'gemini->responses',
     'messages->chat',
+    'messages->gemini',
     'messages->responses',
     'responses->chat',
+    'responses->gemini',
     'responses->messages',
   ]);
   assert.equal(isConverter('chat->messages'), true);

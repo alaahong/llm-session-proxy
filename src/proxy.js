@@ -5,11 +5,23 @@ import { convertRequestBody } from './converters.js';
 import { applyBodyInject, buildInjectHeaders, rewriteModel, rewritePath } from './inject.js';
 import { detectProtocol, resolveProtocolRoute, upstreamPathFor } from './protocol.js';
 import { convertResponseJson } from './replies.js';
+import { listenUntilUsablePort } from './ports.js';
 import { applyBucketModel, composeTransformers, getBucket, resolveRoute } from './router.js';
 import { resolveSession, SessionStore } from './session.js';
 import { createStreamTranscoder } from './stream.js';
 import { createContext } from './template.js';
 import { applyTransformers } from './transformers.js';
+import { createCopilotSessionManager } from './copilot.js';
+import {
+  credentialHeaderSpec,
+  normalizeUpstreams,
+  parseProviderBaseUrl,
+  providerHeaders,
+  resolveApiKey,
+  resolveUpstream as resolvePoolUpstream,
+  resolveWire,
+  upstreamPathFor as poolPathFor,
+} from './upstreams.js';
 import { t } from './messages.js';
 
 /** 逐跳头不能转发给上游，也不能回给客户端。 */
@@ -58,7 +70,10 @@ function sanitizeResponseHeaders(headers, onDrop) {
     if (Array.isArray(value)) {
       const kept = value.filter((item) => isValidHeaderValue(item));
       if (kept.length) clean[key] = kept;
-      else if (kept.length !== value.length) onDrop(key);
+      // 只要丢了一部分就要记名，哪怕还剩得下几个。
+      // 「部分丢弃」比「整组丢弃」更难查：客户端收到的是一份被悄悄改过的头，
+      // 而上游到底发了什么，日志里一个字都没有 —— 那就等于静默吞掉。
+      if (kept.length !== value.length) onDrop(key);
       continue;
     }
     if (isValidHeaderValue(value)) clean[key] = value;
@@ -84,7 +99,10 @@ function readBody(req, maxBytes) {
         const error = new Error(t('proxy.err.bodyTooLarge', { maxBytes }));
         error.code = 'E_TOO_LARGE';
         fail(error);
-        req.destroy();
+        // 不再收 body，但**不要**在这里 destroy 请求流——
+        // destroy 会连带毁掉 socket，客户端就只看到「连接被重置」，
+        // 收不到本来该给它的 413 答复。答复由调用方写，写完再断开。
+        req.pause();
         return;
       }
       chunks.push(chunk);
@@ -124,10 +142,39 @@ export function createProxyServer({ config, logger }) {
   const warnedModels = new Set();
   const WARNED_MODELS_MAX = 256;
 
-  const agent =
-    upstream.protocol === 'https'
-      ? new https.Agent({ keepAlive: true, maxSockets: 128, keepAliveMsecs: 30000 })
-      : new http.Agent({ keepAlive: true, maxSockets: 128, keepAliveMsecs: 30000 });
+  // 上游池做一次防御性归一化。
+  //
+  // 为什么不直接信 config.upstreams：createProxyServer 是公开 API，
+  // 调用方（尤其是内嵌用法）可能自己拼一份配置进来，跳过了 config.js 的
+  // normalize()。那时 provider.paths / provider.wire 都不存在，
+  // 路径替换会静默失效——请求原样打出去，症状是「路径没变」。
+  // 这里补一次归一化，等于把「必须经过 config.js」这条隐含约定变成显式保证。
+  const upstreamPool = normalizeUpstreams(config.upstreams);
+
+  // agent 按 protocol://host:port 缓存。上游池意味着可能有多个上游，
+  // 每个都要有自己的连接池——共用一个会让 keepAlive 打到别的 host 上。
+  const agents = new Map();
+  const getAgent = (protocol) => {
+    const key = protocol === 'https' ? 'https' : 'http';
+    if (!agents.has(key)) {
+      agents.set(
+        key,
+        key === 'https'
+          ? new https.Agent({ keepAlive: true, maxSockets: 128, keepAliveMsecs: 30000 })
+          : new http.Agent({ keepAlive: true, maxSockets: 128, keepAliveMsecs: 30000 }),
+      );
+    }
+    return agents.get(key);
+  };
+
+  // Copilot 的 session token 管理器：内存缓存 + 到期前自动刷新。
+  // allowCommand 默认开着（官方链的最后一环是 gh CLI）；
+  // 某个 provider 配了 auth.allowCommand: false 就单独关掉它。
+  const copilotSession = createCopilotSessionManager({
+    allowCommand: true,
+  });
+
+  const agent = getAgent(upstream.protocol);
 
   const log = {
     error: (...a) => logger.error(...a),
@@ -280,7 +327,14 @@ export function createProxyServer({ config, logger }) {
 
     if (url.pathname.startsWith(LOCAL_PREFIX)) {
       if (handleLocal(req, res, url)) return;
-      respondJson(res, 404, { error: { message: t('proxy.err.unknownEndpoint', { pathname: url.pathname }) } });
+      // 错误体必须带 type：客户端按 type 分支处理，只给一句 message 的话
+      // 客户端只能靠猜——「404 的 body 长得不一样」这种约定不是约定。
+      respondJson(res, 404, {
+        error: {
+          type: 'unknown_endpoint',
+          message: t('proxy.err.unknownEndpoint', { pathname: url.pathname }),
+        },
+      });
       return;
     }
 
@@ -297,7 +351,7 @@ export function createProxyServer({ config, logger }) {
       : Promise.resolve({ buffer: null });
 
     bodyPromise
-      .then(({ buffer, error }) => {
+      .then(async ({ buffer, error }) => {
         if (error) {
           stats.errors += 1;
           const tooLarge = error.code === 'E_TOO_LARGE';
@@ -308,6 +362,15 @@ export function createProxyServer({ config, logger }) {
               message: error.message,
             },
           });
+          // 请求体超限时读侧已经暂停，socket 不能一直挂着——
+          // 答复发出去之后立刻断开。
+          if (tooLarge) {
+            try {
+              res.on('finish', () => req.destroy());
+            } catch {
+              /* ignore */
+            }
+          }
           return;
         }
 
@@ -343,22 +406,29 @@ export function createProxyServer({ config, logger }) {
           query: Object.fromEntries(url.searchParams),
         });
 
-        // ---- 重写路径 ----
-        let targetPath = rewritePath(req.url, config.request.pathRewrite);
-        if (upstream.basePath) {
-          targetPath = `${upstream.basePath.replace(/\/+$/, '')}${
-            targetPath.startsWith('/') ? targetPath : `/${targetPath}`
-          }`;
-        }
-
-        // ---- 重写模型名 / 路由分桶 / 变换 / 注入请求体参数 / 协议互转 ----
+        // ---- 重写模型名 / 路由分桶 / 变换 / 注入请求体参数 ----
         let outBuffer = buffer;
         let modelNote = '';
         let routeNote = '';
         let protocolNote = '';
         let protocolInfo = null; // 非空 = 请求被转写，响应要按 from -> to 转回来
+        let upstreamNote = '';
         const bodyChanges = [];
+
+        // 最终的上游与路径。默认走旧的 config.upstream，
+        // 命中上游池时会被替换成 provider 的连接信息与端点。
+        let targetUpstream = upstream;
+        let targetPath = rewritePath(req.url, config.request.pathRewrite);
+        let targetPathReplaced = false; // 协议互转 / 上游池替换过路径（那些路径自带前缀）
+        let targetProvider = null;
+        let targetProviderName = null;
+
         if (parsedBody) {
+          // 客户端要不要流式。必须在任何协议转换**之前**取：
+          // Gemini 的流式是靠路径上的 :streamGenerateContent 表达的，
+          // 而 chat→gemini 转换会把 stream 挪到 body 的别处。
+          const clientStream = parsedBody.stream === true;
+
           const modelResult = rewriteModel(parsedBody, config.model, { logger: log });
           if (modelResult.changed) {
             modelNote = ` model=${modelResult.from}->${modelResult.to}`;
@@ -393,12 +463,43 @@ export function createProxyServer({ config, logger }) {
           );
           const bucket = getBucket(config.router, route.bucket);
           routeNote = ` route=${route.bucket}${route.source === 'default' ? '' : `(${route.source})`}`;
+          if (route.difficulty) routeNote += `[${route.difficulty}:${route.score ?? 0}]`;
 
           // 桶指定的模型覆盖。放在注入之前，这样 {{model}} 模板看到的是最终名字。
           const override = applyBucketModel(parsedBody, bucket, config.model);
           if (override.changed) {
             context.model = override.to;
             modelNote = ` model=${override.from}->${override.to}(bucket:${route.bucket})`;
+          }
+
+          // ---- 选上游（v0.3.0）。这一步必须在协议互转之前：
+          //      上游决定了用哪套 wire 协议，也决定了往哪个 host 发。 ----
+          const poolEnabled = upstreamPool?.enabled !== false;
+          if (poolEnabled) {
+            const picked = resolvePoolUpstream({
+              model: typeof parsedBody.model === 'string' ? parsedBody.model : '',
+              clientModel: modelResult.from,
+              bucketUpstream: bucket.upstream,
+              upstreamConfig: upstreamPool,
+            });
+            if (picked.missing) {
+              // 池里点名了但没这个 provider —— 报错比默默发去默认上游强
+              log.warn(t('proxy.log.upstreamMissing', { name: picked.name }));
+            } else if (picked.provider) {
+              targetProvider = picked.provider;
+              targetProviderName = picked.name;
+              const conn = parseProviderBaseUrl(picked.provider.baseUrl);
+              if (conn) {
+                targetUpstream = {
+                  protocol: conn.protocol,
+                  host: conn.host,
+                  port: conn.port,
+                  hostHeader: conn.hostHeader,
+                  basePath: conn.basePath,
+                };
+              }
+              upstreamNote = ` upstream=${picked.name}(${picked.source})`;
+            }
           }
 
           // 变换：全局 enabled + 命中桶挂载的，按顺序执行
@@ -416,6 +517,11 @@ export function createProxyServer({ config, logger }) {
 
           const bodyResult = applyBodyInject(parsedBody, config.inject, context);
           if (bodyResult.changed) bodyChanges.push(...bodyResult.changes);
+
+          // 最终要发给上游的模型名。在协议互转**之前**取——
+          // chat→gemini 转换会把 model 从 body 里挪走（它在上游路径上），
+          // 那时候就再也取不到了。
+          const finalModel = typeof parsedBody.model === 'string' ? parsedBody.model : '';
 
           // ---- 协议互转（v0.2.2）。刻意放在最后：变换与注入针对的是客户端
           //      协议下的字段，整体转成目标协议必须在所有字段级操作完成之后。
@@ -436,7 +542,10 @@ export function createProxyServer({ config, logger }) {
                   const hitRoute =
                     protoRoute.index != null ? (config.protocol.routes || [])[protoRoute.index] : null;
                   const upstreamPath = upstreamPathFor(protoRoute.target, config.protocol, hitRoute?.path);
-                  if (upstreamPath) targetPath = upstreamPath;
+                  if (upstreamPath) {
+                    targetPath = upstreamPath;
+                    targetPathReplaced = true;
+                  }
                   bodyChanges.push(`protocol:${sourceProtocol}->${protoRoute.target}`);
                   parsedBody = converted.body;
                   // 响应侧要按 target -> source 转回来
@@ -455,6 +564,67 @@ export function createProxyServer({ config, logger }) {
             }
           }
 
+          // ---- 上游池的 wire 协议（v0.3.0）。provider 知道自己说什么协议，
+          //      按模型挑（Copilot 的 gpt-5 家族走 responses，其余走 chat）。
+          //      这一层在协议互转**之后**：provider 的 wire 是硬约束，
+          //      客户端说什么协议都得迁就上游。 ----
+          if (targetProvider) {
+            const wire = resolveWire(targetProvider, typeof parsedBody.model === 'string' ? parsedBody.model : '');
+
+            // 端点路径取自 provider 自己的 paths 表（而不是 config.protocol.paths）：
+            // provider 是「发到哪」的决定者，它的路径表才权威。
+            // 模型名与流式意图都取自**转换前**的值 —— chat→gemini 转换会把
+            // model 挪到路径上、body 里就不再有了。
+            const providerPath = poolPathFor(targetProvider, wire.wire, {
+              model: finalModel,
+              stream: clientStream,
+            });
+            if (providerPath) {
+              const prefix = targetUpstream.basePath ? `${targetUpstream.basePath.replace(/\/+$/, '')}` : '';
+              targetPath = `${prefix}${providerPath}`;
+              targetPathReplaced = true;
+            }
+
+            // 请求体当前所处的协议：
+            //   - v0.2.2 互转过 → protocolInfo.from（body 已经是那个形状）
+            //   - 没互转过     → 客户端自己说的那个（sourceProtocol）
+            // provider 的 wire 是硬约束：两者不等就把 body 转过去，
+            // 响应侧再按 { from: wire, to: 客户端协议 } 转回来。
+            const bodyProtocol = protocolInfo ? protocolInfo.from : sourceProtocol;
+            const clientProtocol = protocolInfo ? protocolInfo.to : sourceProtocol;
+
+            if (bodyProtocol && bodyProtocol !== wire.wire) {
+              try {
+                const converted = convertRequestBody(parsedBody, bodyProtocol, wire.wire, {});
+                if (converted.changed && converted.body && typeof converted.body === 'object') {
+                  bodyChanges.push(`protocol:${bodyProtocol}->${wire.wire}`);
+                  parsedBody = converted.body;
+                  protocolInfo = { from: wire.wire, to: clientProtocol };
+                }
+              } catch (error) {
+                // 互转失败就按原样转发：转换层绝不变成新的故障面
+                log.warn(
+                  t('proxy.log.protocolFailed', {
+                    from: bodyProtocol,
+                    to: wire.wire,
+                    message: error.message,
+                  }),
+                );
+              }
+            } else if (!bodyProtocol) {
+              // 认不出客户端用什么协议 → body 没法转。上游会自己回一个
+              // 「看不懂的请求体」，比在这里猜一个协议强。
+              log.warn(
+                t('proxy.log.protocolUnknown', {
+                  upstream: targetProviderName,
+                  wire: wire.wire,
+                  path: req.url,
+                }),
+              );
+            }
+            upstreamNote += ` wire=${wire.wire}(${wire.source})`;
+          }
+
           if (modelResult.changed || override.changed || bodyChanges.length) {
             // 改了 body 就必须重算长度，交给 http 模块自动处理
             outBuffer = Buffer.from(JSON.stringify(parsedBody), 'utf8');
@@ -463,6 +633,15 @@ export function createProxyServer({ config, logger }) {
             // 转换后上游必须用明文回包：gzip 的 SSE 没法按事件切分
             protocolNote = ` proto=${protocolInfo.from}->${protocolInfo.to}`;
           }
+        }
+
+        // ---- 拼 basePath 前缀 ----
+        // 协议互转与上游池都用**绝对路径**替换了 targetPath（那两条路径自带前缀），
+        // 只有原样转发时才需要在这里补 upstream.basePath。
+        if (targetUpstream.basePath && !targetPathReplaced) {
+          targetPath = `${targetUpstream.basePath.replace(/\/+$/, '')}${
+            targetPath.startsWith('/') ? targetPath : `/${targetPath}`
+          }`;
         }
 
         // ---- 组装上游请求头 ----
@@ -484,33 +663,55 @@ export function createProxyServer({ config, logger }) {
 
         Object.assign(outHeaders, buildInjectHeaders(config.inject, context, headersLower));
 
+        // ---- 上游池的请求头与凭据（v0.3.0）----
+        if (targetProvider) {
+          // provider 的固定头（Copilot 的必需头等）
+          for (const [key, value] of Object.entries(providerHeaders(targetProvider))) {
+            outHeaders[key] = value;
+          }
+          // 凭据：值在运行时现取，绝不从配置读、绝不进日志
+          try {
+            await applyProviderCredential(outHeaders, targetProvider, { log, copilotSession });
+          } catch (error) {
+            stats.errors += 1;
+            log.error(t('proxy.log.credentialFailed', { upstream: targetProviderName, message: error.message }));
+            respondJson(res, 502, {
+              error: {
+                type: 'proxy_credential_error',
+                message: t('proxy.err.credentialFailed', { upstream: targetProviderName, message: error.message }),
+              },
+            });
+            return;
+          }
+        }
+
         // 协议互转后上游必须用明文回包：gzip 的 SSE 没法按事件边界切分
         if (protocolInfo) outHeaders['accept-encoding'] = 'identity';
 
-        const hostValue =
-          config.upstream.rewriteHost === false ? req.headers.host || upstream.hostHeader : upstream.hostHeader;
-        outHeaders.host = hostValue;
+        // Host 头指向真正要发往的那个上游
+        outHeaders.host = targetUpstream.hostHeader;
 
         log.info(
           `[req] ${req.method} ${req.url} | session=${session.id} req=${session.requestId} source=${session.source} ` +
             `sessions=${store.size} auth=${headersLower.has('authorization') ? 'present' : 'MISSING'}` +
-            `${modelNote}${routeNote}${protocolNote}${bodyChanges.length ? ` body=${bodyChanges.join('|')}` : ''}`,
+            `${modelNote}${routeNote}${protocolNote}${upstreamNote}${bodyChanges.length ? ` body=${bodyChanges.join('|')}` : ''}`,
         );
         log.debug(`[req-headers] ${JSON.stringify(outHeaders, null, 0)}`);
 
         // ---- 发起上游请求 ----
-        const transport = upstream.protocol === 'https' ? https : http;
+        const transport = targetUpstream.protocol === 'https' ? https : http;
+        const targetAgent = getAgent(targetUpstream.protocol);
         let proxyReq;
         try {
           proxyReq = transport.request(
             {
-              protocol: `${upstream.protocol}:`,
-              host: upstream.host,
-              port: upstream.port,
+              protocol: `${targetUpstream.protocol}:`,
+              host: targetUpstream.host,
+              port: targetUpstream.port,
               method: req.method,
               path: targetPath,
               headers: outHeaders,
-              agent,
+              agent: targetAgent,
             },
             (proxyRes) =>
               handleUpstreamResponse({ proxyRes, res, req, session, startedAt, targetPath, protocolInfo }),
@@ -523,7 +724,7 @@ export function createProxyServer({ config, logger }) {
             error: {
               type: 'proxy_request_build_error',
               message: t('proxy.err.buildUpstream', { message: error.message }),
-              upstream: `${upstream.protocol}://${upstream.hostHeader}${targetPath}`,
+              upstream: `${targetUpstream.protocol}://${targetUpstream.hostHeader}${targetPath}`,
             },
           });
           return;
@@ -633,7 +834,14 @@ export function createProxyServer({ config, logger }) {
 
     // ---- 响应侧协议互转的判定 ----
     // 错误体（4xx/5xx）永不转写：上游的错误结构只有它自己能解释，与请求侧约定一致。
-    const proto = protocolInfo && status < 400 ? protocolInfo : null;
+    //
+    // from === to 时同样不转写：那是恒等变换，上游回的就是客户端要的原样。
+    // 之所以要显式挡一道，是因为转码器对 from === to 是**直接抛错**的
+    // （见 src/stream.js），而这个判定落在 http 的 'response' 事件回调里——
+    // 没有任何人接得住，异常会变成 uncaughtException，整个进程直接消失。
+    // 这种组合真实存在：协议路由把 chat 转成 messages，上游池的 wire 又要求 chat，
+    // 两次互转正好绕回客户端本来说的那套协议。
+    const proto = protocolInfo && protocolInfo.from !== protocolInfo.to && status < 400 ? protocolInfo : null;
     const contentType = String(proxyRes.headers['content-type'] || '').toLowerCase();
     const convertJson = Boolean(proto && contentType.includes('json'));
     const convertSse = Boolean(proto && contentType.includes('text/event-stream'));
@@ -662,9 +870,24 @@ export function createProxyServer({ config, logger }) {
             }
           },
         });
+        let transcodeFailed = false;
         proxyRes.on('data', (chunk) => {
           capture(chunk);
-          transcoder.push(chunk);
+          if (transcodeFailed) return;
+          try {
+            transcoder.push(chunk);
+          } catch (error) {
+            // 转码器在事件回调里抛错，没人接得住 —— 异常会逃出去变成
+            // uncaughtException，整个进程直接消失。
+            // 与下面的 transcoder.end() 同一个处理：记名，然后把这一条流收掉。
+            transcodeFailed = true;
+            log.warn(t('proxy.log.protocolFailed', { from: proto.from, to: proto.to, message: error.message }));
+            try {
+              res.destroy();
+            } catch {
+              /* ignore */
+            }
+          }
         });
         proxyRes.on('end', () => {
           try {
@@ -801,6 +1024,56 @@ export function createProxyServer({ config, logger }) {
     });
   }
 
+  /**
+   * 给请求头装上 provider 的凭据。
+   *
+   * 值在运行时现取，**绝不从配置文件读、绝不进日志**：
+   * - Copilot：GitHub token → session token（内存缓存，到期前刷新）；
+   * - 其余 provider：从环境变量或命令取 API key。
+   *
+   * 三种情况不加凭据头，都不算错：
+   * - provider 压根没配 auth —— 本地 Ollama / LM Studio 这类端点不需要 key；
+   * - 配了 auth 但环境变量里没值 —— 放行，让上游回它自己的 401，
+   *   比在这里猜「用户是不是漏配了」要准。
+   *
+   * 但 Copilot 是例外：它的凭据走内置的 GitHub token 链，与 provider.auth
+   * 无关。没配 auth 的 Copilot provider **不代表**「这是一个免鉴权端点」——
+   * 放行只会让上游回一个语焉不详的 401，不如在这里说清楚「没拿到 session token」。
+   */
+  async function applyProviderCredential(headers, provider, { log: logger2, copilotSession: sessionMgr }) {
+    const spec = credentialHeaderSpec(provider);
+
+    if (provider.type === 'copilot') {
+      // Copilot 必须有 session token：没有它上游只会回一个语焉不详的 401。
+      const auth = provider.auth && typeof provider.auth === 'object' ? provider.auth : {};
+      const session = await sessionMgr.get({
+        envNames: typeof auth.env === 'string' ? auth.env.split(',').map((s) => s.trim()).filter(Boolean) : [],
+        command: typeof auth.command === 'string' ? auth.command : null,
+        allowCommand: auth.allowCommand !== false,
+        // 设备流登录需要人参与，所以只有 provider 明确写了 auth.deviceFlow 才启用。
+        allowDeviceFlow: auth.deviceFlow === true,
+        // 设备码要给人看：把它写到控制台与日志里（只有码和地址，没有 token）。
+        onDeviceCode: auth.deviceFlow === true
+          ? ({ userCode, verificationUri }) => {
+            logger2.info(t('copilot.log.deviceCode', { code: userCode, url: verificationUri }));
+          }
+          : null,
+      });
+      headers[spec.header] = `${spec.prefix}${session.token}`;
+      return;
+    }
+
+    const auth = provider.auth;
+    if (!auth || typeof auth !== 'object') return;
+
+    const resolved = await resolveApiKey(provider);
+    if (!resolved) {
+      logger2?.debug(t('copilot.log.noApiKey', { upstream: provider.name || provider.type }));
+      return;
+    }
+    headers[spec.header] = `${spec.prefix}${resolved.value}`;
+  }
+
   const server = http.createServer(handle);
   server.keepAliveTimeout = 65000;
   server.headersTimeout = 70000;
@@ -835,26 +1108,29 @@ export function createProxyServer({ config, logger }) {
     config,
     agent,
     listen(port = config.listen.port, host = config.listen.host) {
-      return new Promise((resolve, reject) => {
-        const onStartupError = (error) => {
-          server.removeListener('error', onStartupError);
-          reject(error);
-        };
-        server.once('error', onStartupError);
-        server.listen(port, host, () => {
-          server.removeListener('error', onStartupError);
-          // 启动成功后挂常驻错误处理：监听之后再冒出来的 error 事件
-          // 若无人接管，一样会直接终止进程
-          server.on('error', (error) => {
-            stats.errors += 1;
-            log.error(t('proxy.log.serverError', { detail: error?.stack || error?.message || error }));
-          });
-          resolve(server.address());
+      // 自动分配的端口（port === 0）有可能被 OS 扔到 WHATWG 禁用端口上
+      // （6000 / 6666 / 10080 …）。那种端口 Node 绑得上，浏览器和 fetch 客户端
+      // 却按规范直接拒绝——服务起来了但谁都连不上。用户没点名要哪个端口，
+      // 所以这里换一个能用的；用户显式写下的端口则原样尊重，由 doctor 提醒。
+      return listenUntilUsablePort(server, {
+        port,
+        host,
+        onAbandon: (rejected) => log.debug(t('proxy.log.autoPortRetry', { port: rejected })),
+        onGiveUp: (forced) => log.warn(t('proxy.log.autoPortForbidden', { port: forced })),
+      }).then((address) => {
+        // 启动成功后挂常驻错误处理：监听之后再冒出来的 error 事件
+        // 若无人接管，一样会直接终止进程
+        server.on('error', (error) => {
+          stats.errors += 1;
+          log.error(t('proxy.log.serverError', { detail: error?.stack || error?.message || error }));
         });
+        return address;
       });
     },
     close() {
-      agent.destroy();
+      // 上游池可能有多个连接池，全部销毁
+      for (const cached of agents.values()) cached.destroy();
+      agents.clear();
       return new Promise((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections?.();

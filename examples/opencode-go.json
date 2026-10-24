@@ -11,6 +11,10 @@
   // 想按请求性质分桶（长上下文 / 后台任务 / 思考型）、统一删掉某些请求体字段、
   // 或把一种协议的客户端接到另一种协议的模型上时，
   // 见 README 的 transformers / router / protocol 三节，以及 examples/opencode-go-models.json 末尾。
+  //
+  // 从 v0.3.0 起还可以按请求难度分桶（router.scorers + router.bands），
+  // 以及把请求发到不同的上游（upstreams 段——Copilot 托管的模型和你自己付费的模型
+  // 可以放进同一个池子）。见 examples/opencode-go-models.json 末尾。
 
   "listen": { "host": "127.0.0.1", "port": 9355 },
 

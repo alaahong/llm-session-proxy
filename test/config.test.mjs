@@ -384,7 +384,11 @@ test('router 深合并：桶里的键逐个覆盖，内置四桶始终在', () =
   assert.equal(config.router.enabled, true);
   assert.equal(config.router.buckets.think.model, 'glm-think');
   assert.deepEqual(config.router.buckets.think.transformers, ['noop']);
-  assert.deepEqual(config.router.buckets.default, { model: null, transformers: [] }, '没动的桶保持默认');
+  assert.deepEqual(
+    config.router.buckets.default,
+    { model: null, transformers: [], upstream: null },
+    '没动的桶保持默认',
+  );
   assert.equal(config.router.rules.length, 1);
   assert.equal(config.router.rules[0].modelPrefix, 'proxy-think');
 });
