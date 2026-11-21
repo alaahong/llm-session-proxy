@@ -86,7 +86,7 @@ If your client already sends a session header, you do not need this tool (though
   another: OpenAI Chat Completions ↔ Anthropic Messages ↔ OpenAI Responses ↔ Google Gemini, both for
   request bodies and for responses (including event-level SSE transcoding). Off by default; routed by
   model prefix with the same top-down rule semantics as the router.
-- **Usage accounting by model and source** — token counts, cache reads, latency, throughput and
+- **Usage accounting by model, source and session** — token counts, cache reads, latency, throughput and
   success rates are sampled from a copy of the response bytes; the client receives exactly the same
   bytes as before. Records go to an append-only `usage.jsonl` that survives restarts, `--usage`
   prints an offline summary, and each request adds one `[usage] ...` line to the normal log. Costs
