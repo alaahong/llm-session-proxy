@@ -8,6 +8,8 @@ import { NAME, VERSION } from './index.js';
 import { Logger, logDetail } from './logger.js';
 import { MESSAGES, getLang, normalizeLang, setLang, t } from './messages.js';
 import { createProxyServer } from './proxy.js';
+import { loadPresetModels, renderModelTable } from './model-catalog.js';
+import { SETUP_PRESETS, runSetup, updateConfigModels } from './setup.js';
 
 /** 帮助文本用到的默认值快照。 */
 const HELP_DEFAULTS = {
@@ -123,6 +125,15 @@ export function parseArgv(argv) {
   let doctor = false;
   let doctorModel = null;
   let loginCopilot = false;
+  let setupRequested = false;
+  let setupPreset = null;
+  let setupOutput = null;
+  let setupTokenEnv = null;
+  let modelsRequested = false;
+  let modelsPreset = 'opencode-go';
+  let modelsUpdate = null;
+  let modelsInPlace = false;
+  let noModels = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const raw = argv[i];
@@ -164,6 +175,37 @@ export function parseArgv(argv) {
         break;
       case '--login-copilot':
         loginCopilot = true;
+        break;
+      case '--setup':
+        setupRequested = true;
+        if (inlineValue !== undefined) {
+          setupPreset = inlineValue;
+        } else if (argv[i + 1] && !argv[i + 1].startsWith('-')) {
+          i += 1;
+          setupPreset = argv[i];
+        }
+        break;
+      case '--setup-out':
+        setupOutput = takeValue();
+        break;
+      case '--setup-env':
+        setupTokenEnv = takeValue();
+        break;
+      case '--models':
+        modelsRequested = true;
+        modelsPreset = inlineValue !== undefined
+          ? inlineValue
+          : (argv[i + 1] && !argv[i + 1].startsWith('-') ? (i += 1, argv[i]) : 'opencode-go');
+        break;
+      case '--models-update':
+        modelsRequested = true;
+        modelsUpdate = takeValue();
+        break;
+      case '--in-place':
+        modelsInPlace = true;
+        break;
+      case '--no-models':
+        noModels = true;
         break;
       case '--init': {
         initRequested = true;
@@ -289,7 +331,11 @@ export function parseArgv(argv) {
     }
   }
 
-  return { flags, configFile, printConfig, initRequested, initFile, dryRun, doctor, model: doctorModel, loginCopilot };
+  return {
+    flags, configFile, printConfig, initRequested, initFile, dryRun, doctor, model: doctorModel,
+    loginCopilot, setupRequested, setupPreset, setupOutput, setupTokenEnv,
+    modelsRequested, modelsPreset, modelsUpdate, modelsInPlace, noModels,
+  };
 }
 
 /**
@@ -465,6 +511,53 @@ export async function runCli(argv = process.argv.slice(2)) {
     // 登录只写凭据文件，不读配置、不起服务
     const result = await runCopilotLogin();
     if (!result.ok) process.exitCode = 1;
+    return;
+  }
+  if (parsed.setupRequested) {
+    // 向导：可选拉一次官方公开的模型清单（GET，无凭据），再生成配置 + 本地凭据探测。
+    // --no-models 可跳过网络；失败只降级，不阻塞配置生成。
+    let modelResult = null;
+    if (!parsed.noModels && parsed.setupPreset !== 'copilot') {
+      modelResult = await loadPresetModels({ preset: parsed.setupPreset });
+      if (!modelResult.ok) {
+        process.stderr.write(`${t('models.note.unavailable', { error: modelResult.error })}\n`);
+      }
+    } else if (parsed.setupPreset === 'copilot' && !parsed.noModels) {
+      process.stderr.write(`${t('models.note.setupCopilot')}\n`);
+    }
+    const result = await runSetup({
+      preset: parsed.setupPreset,
+      target: parsed.setupOutput,
+      tokenEnv: parsed.setupTokenEnv,
+      port: parsed.flags.listen?.port ?? DEFAULT_CONFIG.listen.port,
+      modelResult,
+    });
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
+  if (parsed.modelsRequested) {
+    // --models 列清单；--models-update <file> 用清单刷新既有配置。
+    const result = await loadPresetModels({ preset: parsed.modelsPreset });
+    if (!result.ok) {
+      process.stderr.write(`${result.error}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    if (result.source === 'cache') {
+      process.stderr.write(`${t('models.note.stale', { error: result.refreshError })}\n`);
+    }
+    if (parsed.modelsUpdate) {
+      const updated = updateConfigModels({
+        target: parsed.modelsUpdate,
+        modelResult: result,
+        inPlace: parsed.modelsInPlace,
+      });
+      if (!updated.ok) process.exitCode = 1;
+      return;
+    }
+    const when = new Date(result.fetchedAt).toISOString().slice(0, 16).replace('T', ' ');
+    process.stdout.write(`${t('models.heading', { count: result.models.length, source: result.source, when })}\n\n`);
+    process.stdout.write(`${renderModelTable(result.models)}\n`);
     return;
   }
 

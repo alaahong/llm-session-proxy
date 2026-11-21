@@ -7,15 +7,16 @@ below has to fit that shape.
 - **Scope:** one developer machine, one process. One upstream by default; a pool of upstreams since v0.3.0.
 - **Non-negotiable:** `dependencies` in `package.json` stays empty. Features that would need a
   library get re-implemented on Node built-ins, or they do not ship.
-- **Status:** v0.3.1 — the session/header injection core works and is hardened; model aliasing,
+- **Status:** v0.3.2 — the session/header injection core works and is hardened; model aliasing,
   `--dry-run` / `--doctor`, the transform registry, routing buckets, protocol conversion, difficulty
-  scoring and the multi-upstream pool have shipped. Everything else is on this page.
+  scoring, the multi-upstream pool, a one-command setup wizard and a live model catalogue have shipped.
+  Everything else is on this page.
 
 ---
 
 ## 1. Where it stands today
 
-### Working (v0.3.0)
+### Working (v0.3.2)
 
 | Area | What ships now |
 | --- | --- |
@@ -26,12 +27,14 @@ below has to fit that shape.
 | Difficulty | A named in-tree **scorer registry** (`builtin-complexity`) turns the request's shape into a 0–100 score and a band (`easy` / `medium` / `hard`), which the router can match on. Nine weighted signals, deterministic, no network, no model call. Measures the *shape* of a request, not its semantic difficulty. |
 | Upstreams | A **pool** of upstreams (`openai` / `anthropic` / `gemini` / `copilot` / `custom`), each with its own base URL, endpoint paths, wire protocol and credential source. The bucket picks the upstream explicitly, otherwise the model name picks it by prefix, otherwise the pool default does. Request bodies are converted to whichever **wire protocol** the chosen upstream speaks. |
 | Copilot | GitHub Copilot as a first-class upstream: the GitHub token goes **straight** to `api.githubcopilot.com` as the Bearer credential (OMP-style; the `copilot_internal/v2/token` exchange is opt-in via `auth.tokenMode: "session"`), with the official `Copilot-Integration-Id` and API-version headers and per-model endpoint selection. Credentials are read from the environment, the `gh` CLI, an archived file or a device-flow login, and **never written to config or to logs**. |
+| Setup | `--setup opencode-go` / `--setup copilot` write a ready-to-use config that records a credential **source**, never a credential value, and print what to prepare, how traffic flows and how to verify it. OpenCode Go is an **officially supported** preset — the upstream requires a stable `x-opencode-session` header, which is exactly this proxy's job; the Copilot preset is labelled a **community HTTP path**, because GitHub publishes authentication and a JSON-RPC SDK but no general third-party chat-completions contract. |
+| Model catalogue | `--models` lists the current Go models (id / name / context / recommended API) from the official credential-free endpoint, cached in `~/.lsp/model-catalog.json` for six hours with a labelled stale fallback — never invented data. `--setup opencode-go` writes the live IDs into `model.map`; `--models-update` refreshes an existing config while keeping your aliases, and `--in-place` leaves a `.bak`. Copilot has no public model-list API and the wizard says so. |
 | Transforms | Five named in-tree body transforms (`noop`, `drop-fields`, `drop-empty-fields`, `rename-fields`, `clamp-max-tokens`), attachable globally or per bucket, applied in a fixed order. Selected **by name, never by path**, so a config file cannot make the proxy execute code. |
 | Protocol | Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses ↔ **Google Gemini**: request bodies converted before forwarding, JSON responses rewritten, SSE streams transcoded **event by event** so streaming stays streaming. Off by default, routed by model prefix; upstream 4xx/5xx error bodies are never converted. |
 | Diagnostics | `--dry-run` prints the effective routing, the **rendered** injection table, the model-resolution chain, the bucket/transform decision, the difficulty score and the upstream pool with no network I/O; `--doctor` adds DNS/TCP/TLS reachability, listen-port checks (free? on the WHATWG forbidden-port list?) and exits non-zero on problems. |
 | Streaming | SSE is piped chunk by chunk, never buffered. Upstream 4xx bodies come back verbatim. |
 | Operations | `/__llm_session_proxy__/status` and `/sessions`, **log-to-disk on by default** (`~/.lsp/logs`) with size/date rotation and 30-day archival, four-layer config merge (defaults < file < env < CLI). Auto-assigned listen ports (`listen.port: 0`) never land on a WHATWG forbidden port; a port you configure explicitly is respected and reported by `--doctor` instead. |
-| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **925 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
+| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **962 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
 | Language | Console output and log messages are **English by default**, switchable to Chinese with `--lang zh` / `PROXY_LANG=zh`. |
 
 ### Known gaps (stated plainly)
@@ -250,6 +253,28 @@ Two orthogonal axes. The first decides **which model** a request should use; the
       model name and the streaming flag **in the path** (`/v1beta/models/{model}:streamGenerateContent?alt=sse`),
       which is why the proxy captures both before conversion moves them. Auth is
       `x-goog-api-key`, with no `Bearer` prefix.</sub>
+- [x] **One-command setup wizard:** generate a working config for the two upstreams people actually
+      ask about, and state plainly what is official and what is not.
+      <sub>**v0.3.2.** `src/setup.js` — `SETUP_PRESETS = ['opencode-go', 'copilot']`. Each preset writes a
+      JSONC config (no overwrite of an existing file) with the credential **source** name only, the
+      endpoint paths, the session/request header injection and a `model.map` seeded from the live
+      catalogue. The Go preset uses the official `https://opencode.ai/inference/go` endpoints and
+      prints the `oc_sk_...` key requirement and the client Base URL; the Copilot preset prints an
+      `IMPORTANT LIMIT` because GitHub documents authentication and a JSON-RPC SDK, not a general
+      HTTP chat-completions contract for third-party proxies. The wizard does not claim a connection
+      it has not tested — verification is `--doctor`, then a real model call.</sub>
+- [x] **Live model catalogue and config refresh:** stop shipping a frozen model table as the only
+      answer to "which model do I configure?".
+      <sub>**v0.3.2.** `src/model-catalog.js` — `GET https://opencode.ai/inference/go/v1/models` is
+      public and credential-free; `normalizeModels` keeps id / name / family / context / recommended
+      API, and `--models` prints them with the recommended API so people know when Responses or
+      Messages is required. Results are cached in `~/.lsp/model-catalog.json` for six hours; a failed
+      live fetch falls back to a cached copy explicitly marked **stale**, or reports the failure —
+      it never fabricates a list. `--models-update <file>` appends `id -> id` entries while **keeping
+      every existing alias**, writes `<file>.updated.json` by default, and only overwrites the
+      original with `--in-place` after saving a `.bak`. `--no-models` skips the network entirely;
+      Copilot returns `no-public-endpoint` rather than guessing. Zero dependencies: all of it is
+      `fetch` plus in-tree JSON handling.</sub>
 
 ### v0.4 — Observability and control
 
@@ -370,8 +395,10 @@ Rules for using it:
   verified.
 - v0.3.0 shipped as one release because the two axes it introduces are useless apart: a difficulty
   band only helps if something can route on it, and an upstream pool only pays off if traffic
-  reaches it. The milestone numbers after v0.3 were **renumbered** (v0.4 is now observability,
-  v0.5 reliability, v0.6 safety) to keep one milestone per release train.
+  reaches it. v0.3.1 (Copilot direct-by-default) and v0.3.2 (setup wizard and live model catalogue)
+  followed as additive releases: neither changes the forwarding core, so both are independently
+  installable and independently verified. The milestone numbers after v0.3 were **renumbered**
+  (v0.4 is now observability, v0.5 reliability, v0.6 safety) to keep one milestone per release train.
 - From `v1.0`: semver. Breaking config changes require `--migrate-config`.
 - Releases go out through `.github/workflows/publish.yml` on a `v*` tag, with the pack check and the
   end-to-end install verification run first.

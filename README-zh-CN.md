@@ -175,7 +175,8 @@ npx llm-session-proxy --path-rewrite "^/v1/=>/zen/go/v1/"
 > 见 [`protocol`](#protocol) 与 [Roadmap](ROADMAP.zh-CN.md)。
 >
 > 直接写上游真实 ID（不加别名、不加前缀）也能用，代理会原样放行。
-> 模型清单随时可能变，以[上游文档](https://opencode.ai/docs/go/)和 `https://opencode.ai/zen/go/v1/models` 为准。
+> 模型清单随时可能变，用 `--models` 或[上游文档](https://opencode.ai/docs/go/)（免鉴权端点
+> `https://opencode.ai/inference/go/v1/models`）为准。
 > 换到别的上游时，内置别名对不上它的模型名——请你提供自己的 `model.map`，
 > 并留意下面提到的「别名未命中」告警。
 
@@ -223,6 +224,52 @@ npx llm-session-proxy -c llm-session-proxy.config.json
 [`examples/generic-openai.json`](examples/generic-openai.json)。
 
 ---
+
+## 一键接入向导：预设配置
+
+`--setup` 会生成一份可直接用的配置，并明确列出「需要准备什么 / 流量怎么走 / 怎么验证」。
+凭据**永远不会写进配置文件** —— 那里只写来源名。
+
+```bash
+npx llm-session-proxy --setup opencode-go --setup-out ./proxy.config.json
+npx llm-session-proxy --setup copilot
+```
+
+| 预设 | 状态 | 需要准备 | 客户端 Base URL |
+| --- | --- | --- | --- |
+| `opencode-go` | **官方支持** | Go / Go Plus / Go Teams 订阅 + `oc_sk_...` Console API key，导出为 `OPENCODE_API_KEY`（可用 `--setup-env` 改环境变量名） | `http://127.0.0.1:9355/inference/go/openai/v1` |
+| `copilot` | **社区路径，不是官方一键集成** | Copilot 套餐 + `copilot login`（官方设备流），或 `gh auth login`，或带 *Copilot Requests* 权限的 fine-grained PAT | `http://127.0.0.1:9355` |
+
+这么区分的原因：OpenCode 的 [Go 文档](https://opencode.ai/docs/console/go/) 明确要求稳定的
+`x-opencode-session` 头，并公开了 `https://opencode.ai/inference/go` 端点 —— 这正是本代理补的缺口。
+不带该头的 POST 会被 `MissingSessionID` 拒绝，生成的预设会自动注入。GitHub 一侧则只文档化了
+Copilot 的认证方式（CLI 登录、环境变量 token、`gho_` / `ghu_` / `github_pat_`；`ghp_` 传统 PAT
+不支持）和 JSON-RPC SDK，**没有公开给第三方代理通用的 HTTP chat-completions 契约**。所以 Copilot
+预设走社区 HTTP 路径，运行时会如实提示；如果你用的就是 OpenCode，优先用内置的
+`/connect → GitHub Copilot`。
+
+### 实时模型清单与刷新配置
+
+```bash
+npx llm-session-proxy --models                       # 当前 Go 模型：id / 名称 / 上下文 / API
+npx llm-session-proxy --setup opencode-go            # 拉清单并把每个 id 写进 model.map
+npx llm-session-proxy --models-update ./proxy.config.json
+npx llm-session-proxy --models-update ./proxy.config.json --in-place
+```
+
+Go 清单来自官方**无需凭据**的 `GET https://opencode.ai/inference/go/v1/models`（撰写时 31 个）。
+`--models` 还会显示每个模型的 `recommended_api`，据此就知道某模型该走 Responses 或 Messages，
+而不是 chat-completions。结果缓存到 `~/.lsp/model-catalog.json`，有效期 6 小时；实时拉取失败时
+回落缓存并明确提示，**绝不编造数据**。Copilot 没有公开模型列表 API —— 向导会照实说明，
+并指向 `copilot` CLI 的 `/model`。
+
+`--models-update` 保留 `model.map` 里已有的每条别名，只为当前清单追加 `id -> id` 映射，
+默认写到 `<文件>.updated.json`；`--in-place` 会先留 `.bak` 再覆盖原文件。`--setup` 配
+`--no-models` 可完全跳过网络。
+
+验证：先跑 `--doctor`（本地 + 传输层检查，不发模型请求）。Go 可用
+`GET https://opencode.ai/inference/go/v1/models` 看实时模型清单（撰写时 31 个）。Copilot 这条路是否
+真的通，只有经代理发一次真实模型请求才能证明。
 
 ## 配置详解
 
@@ -636,7 +683,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.3.1 —— 试运行
+llm-session-proxy v0.3.2 —— 试运行
 
 配置
   文件            （无）
@@ -1040,7 +1087,7 @@ as the model name. See the Chinese sections above for the full configuration ref
 3. 打一个同名 tag 并推送：
 
 ```bash
-git tag v0.3.1 && git push origin v0.3.1
+git tag v0.3.2 && git push origin v0.3.2
 ```
 
 workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本一致，再用仓库 secrets 里的
@@ -1062,6 +1109,9 @@ workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本�
   **已交付 v0.3.0：** 打分器与档位、各自带凭据的上游池，以及作为第四种线协议的 Google Gemini。
   **已交付 v0.3.1：** Copilot 改走直连——GitHub token 本身即 Bearer 凭据，不再强制交换 session
   token——并新增 `--login-copilot` 与 `--doctor` 里的真实凭据探测。
+  **已交付 v0.3.2：** 一键接入向导（`--setup opencode-go` / `--setup copilot`，明确区分官方支持与
+  社区路径），以及 `--models` / `--models-update` 实时 Go 模型清单——缓存 6 小时，实时失败时回退到
+  缓存并标为 stale。
 - **v0.4 — 可观测与可控。** Prometheus 格式指标、结构化 JSON 日志、token/成本统计端点、
   免构建的本地看板。
 - **v0.5 — 真实上游下的可靠性。** 熔断、上游健康检查、带抖动的重试、流空闲看门狗、优雅退出。

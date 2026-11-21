@@ -200,6 +200,55 @@ Ready-made configs: [`examples/opencode-go.json`](examples/opencode-go.json),
 
 ---
 
+## Setup wizard: one-command presets
+
+`--setup` writes a ready-to-use config and prints exactly what to prepare, how traffic flows,
+and how to verify it. Credentials are **never** written into the config — only the source name is.
+
+```bash
+npx llm-session-proxy --setup opencode-go --setup-out ./proxy.config.json
+npx llm-session-proxy --setup copilot
+```
+
+| Preset | Status | What you need | Client Base URL |
+| --- | --- | --- | --- |
+| `opencode-go` | **Officially supported** | Go / Go Plus / Go Teams subscription + `oc_sk_...` Console API key, exported as `OPENCODE_API_KEY` (override with `--setup-env`) | `http://127.0.0.1:9355/inference/go/openai/v1` |
+| `copilot` | **Community path, not an official one-click integration** | Copilot plan + `copilot login` (official device flow), or `gh auth login`, or a fine-grained PAT with *Copilot Requests* | `http://127.0.0.1:9355` |
+
+Why the distinction: OpenCode's [Go docs](https://opencode.ai/docs/console/go/) explicitly
+require a stable `x-opencode-session` header and publish the
+`https://opencode.ai/inference/go` endpoints — exactly the gap this proxy fills. A POST without
+that header is rejected with `MissingSessionID`, and the generated preset injects it
+automatically. GitHub, by contrast, documents Copilot authentication (CLI login, env tokens,
+`gho_` / `ghu_` / `github_pat_`; `ghp_` classic PATs are not supported) and a JSON-RPC SDK, but
+**does not publish a general HTTP chat-completions contract for third-party proxies**. The Copilot
+preset therefore uses the community HTTP path and says so at runtime; if you use OpenCode itself,
+prefer its built-in `/connect → GitHub Copilot`.
+
+### Live model list and refreshing a config
+
+```bash
+npx llm-session-proxy --models                       # current Go models, id / name / context / API
+npx llm-session-proxy --setup opencode-go            # fetches the list and adds every id to model.map
+npx llm-session-proxy --models-update ./proxy.config.json
+npx llm-session-proxy --models-update ./proxy.config.json --in-place
+```
+
+The Go list comes from the official, **credential-free** `GET https://opencode.ai/inference/go/v1/models`
+(31 models at the time of writing). `--models` also shows each model's `recommended_api`, which
+is how you know a model needs Responses or Messages rather than chat-completions. Results are
+cached in `~/.lsp/model-catalog.json` for six hours; a failed live fetch falls back to the cache
+and says so instead of inventing data. Copilot has no public model-list API — the wizard says so
+and points you to `copilot` CLI's `/model`.
+
+`--models-update` keeps every existing alias in `model.map`, appends `id -> id` entries for the
+current list, and writes `<file>.updated.json` by default. `--in-place` overwrites the original
+after saving a `.bak`. Use `--no-models` with `--setup` to skip the network entirely.
+
+Verification: run `--doctor` first (local + transport checks, no model request). For Go,
+`GET https://opencode.ai/inference/go/v1/models` lists the live model IDs (31 at the time of
+writing). A real model call through the proxy is the only proof that the Copilot route works.
+
 ## OpenCode Go model reference
 
 Upstream splits models across three endpoints. **What your client can speak matters more than the
@@ -250,8 +299,8 @@ alias turns into.
 > [`protocol`](#protocol) and the [roadmap](ROADMAP.md).
 >
 > Writing the real upstream ID directly (no alias, no prefix) also works — it is passed through.
-> The model list changes over time; treat the
-> [upstream docs](https://opencode.ai/docs/go/) as the source of truth. If you point the proxy at a
+> The model list changes over time; use `--models` (or the
+> [upstream docs](https://opencode.ai/docs/go/)) as the source of truth. If you point the proxy at a
 > different upstream, the built-in aliases will not match its model names — supply your own
 > `model.map` and watch for the unmatched-alias warning described below.
 
@@ -732,7 +781,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.3.1 — dry run
+llm-session-proxy v0.3.2 — dry run
 
 Config
   file                (none)
@@ -1148,7 +1197,7 @@ no local `npm login` required:
 3. Tag and push the matching tag:
 
 ```bash
-git tag v0.3.1 && git push origin v0.3.1
+git tag v0.3.2 && git push origin v0.3.2
 ```
 
 The workflow runs the full test suite, verifies the tag matches `package.json`, then publishes to
@@ -1178,6 +1227,9 @@ start with `npx`. Everything on the roadmap has to fit that shape.
   credentials, and Google Gemini as a fourth wire protocol. **Delivered — v0.3.1:** Copilot takes
   the direct route — the GitHub token itself is the Bearer credential, no session exchange — plus
   `--login-copilot` and a real credential probe in `--doctor`.
+  **Delivered — v0.3.2:** a one-command setup wizard (`--setup opencode-go` / `--setup copilot`) with
+  an explicit official-vs-community boundary, plus `--models` / `--models-update` for the live Go
+  model catalogue with six-hour caching and a labelled stale fallback.
 - **v0.4 — observability and control.** Prometheus-format metrics, structured JSON logs, a
   cost/token accounting endpoint, and a zero-build local dashboard.
 - **v0.5 — reliability under real upstreams.** Circuit breaking, upstream health checks,

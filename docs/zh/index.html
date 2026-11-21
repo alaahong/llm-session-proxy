@@ -21,6 +21,7 @@
     <nav class="nav-links">
       <a href="#problem">解决什么</a>
       <a href="#start">快速开始</a>
+      <a href="#setup">一键接入</a>
       <a href="#models">模型速查</a>
       <a href="#config">配置</a>
       <a href="#cli">命令</a>
@@ -87,6 +88,16 @@
         <div class="tag">model</div>
         <h4>模型别名重写</h4>
         <p>前缀剥离（<code>proxy-glm</code> → <code>glm-5.3</code>）与精确映射双管齐下，两种写法可以叠加。OpenCode Go 的别名表已内置，客户端必须带的 <code>proxy-</code> 前缀真能解析出结果；别名剥完却对不上任何条目时，会<b>按名字报出来</b>，而不是静默转发。</p>
+      </div>
+      <div class="card">
+        <div class="tag">setup</div>
+        <h4>一键接入向导</h4>
+        <p><code>--setup opencode-go</code> 与 <code>--setup copilot</code> 直接写出可用配置，并打印该准备什么、流量怎么走、如何验证。配置里只记凭据<b>来源名</b>，绝不写凭据值。Go 是官方支持的路径；Copilot 的 HTTP 转发明确标成社区路径。</p>
+      </div>
+      <div class="card">
+        <div class="tag">models</div>
+        <h4>实时模型清单与刷新</h4>
+        <p><code>--models</code> 从官方免鉴权端点读取当前 Go 模型，并打印每个模型推荐的 API。结果缓存 6 小时，实时失败时明确标为 stale 再回退。<code>--models-update</code> 把最新 ID 追加到 <code>model.map</code>，同时保留你已有的每一条别名。</p>
       </div>
       <div class="card">
         <div class="tag">router</div>
@@ -216,6 +227,42 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
         </tbody>
       </table>
     </div>
+  </section>
+
+  <section id="setup">
+    <h2>一键接入与实时模型</h2>
+    <p class="sub">让命令行替你写配置、拉当前模型 ID。凭据值永远不会写进文件。</p>
+    <pre><code><span class="cmt"># 为 OpenCode Go（官方）或 Copilot（社区 HTTP 路径）生成配置</span>
+npx llm-session-proxy --setup opencode-go --setup-out ./proxy.config.json
+npx llm-session-proxy --setup copilot
+
+<span class="cmt"># 查看实时 Go 模型清单，再用最新 ID 刷新配置</span>
+npx llm-session-proxy --models
+npx llm-session-proxy --models-update ./proxy.config.json
+npx llm-session-proxy --models-update ./proxy.config.json --in-place</code></pre>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>预设</th><th>支持情况</th><th>你要准备什么</th></tr></thead>
+        <tbody>
+          <tr><td><code>opencode-go</code></td><td><b>官方支持</b></td><td>Go / Go Plus / Go Teams 订阅，以及放在 <code>OPENCODE_API_KEY</code> 里的 <code>oc_sk_...</code> Console API key（用 <code>--setup-env</code> 改变量名）。客户端 Base URL：<code>http://127.0.0.1:9355/inference/go/openai/v1</code>。</td></tr>
+          <tr><td><code>copilot</code></td><td>社区路径，<b>不是官方一键集成</b></td><td>Copilot 订阅，再加上 <code>copilot login</code>、<code>gh auth login</code>，或带 <i>Copilot Requests</i> 权限的细粒度 PAT。GitHub 公开的是认证方式与 JSON-RPC SDK，并没有给第三方代理一份通用 HTTP 契约——向导运行时会明确打印这条限制。</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Go 清单来自官方免鉴权的
+      <code>GET https://opencode.ai/inference/go/v1/models</code>；<code>--models</code> 会显示每个模型的
+      <code>recommended_api</code>，一眼看出它该走 Responses、Messages 还是 chat completions。
+      结果在 <code>~/.lsp/model-catalog.json</code> 缓存 6 小时。实时拉取失败时回退到缓存并明确标为
+      <b>stale</b>，或者直接报错——绝不编造模型。Copilot 没有公开的模型列表 API，向导会直说。
+    </p>
+    <h3>刷新已有配置</h3>
+    <p>
+      <code>--models-update</code> 会保留 <code>model.map</code> 里你已有的全部别名，只追加当前清单的
+      <code>id -&gt; id</code> 条目。默认写 <code>&lt;file&gt;.updated.json</code>；<code>--in-place</code>
+      会在存下 <code>.bak</code> 后覆盖原文件。配合 <code>--setup</code> 使用 <code>--no-models</code>
+      可完全跳过网络。验证用 <code>--doctor</code>——真要证明某条链路可用，还得打一次真实模型请求。
+    </p>
   </section>
 
   <section id="models">
@@ -635,6 +682,12 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--dry-run</code></td><td>校验配置并打印路由、分桶、注入与模型解析结果，不走任何网络</td></tr>
           <tr><td><code>--doctor</code></td><td>在 <code>--dry-run</code> 基础上追加 DNS/TCP/TLS 连通性与监听端口检查（是否空闲、是否为禁用端口）；有问题时退出码非零</td></tr>
           <tr><td><code>--model &lt;id&gt;</code></td><td><code>--dry-run</code> / <code>--doctor</code> 用于演示的样例模型名</td></tr>
+          <tr><td><code>--login-copilot</code></td><td>单独跑一次 GitHub 设备流并存档 Copilot 凭据（代理自身默认绝不启动它）</td></tr>
+          <tr><td><code>--setup &lt;preset&gt;</code></td><td>写出预设配置（<code>opencode-go</code> / <code>copilot</code>），并打印该准备什么、如何验证。绝不写入凭据值</td></tr>
+          <tr><td><code>--setup-out &lt;file&gt;</code> / <code>--setup-env &lt;name&gt;</code></td><td>生成配置的输出路径 / 存放凭据的环境变量名</td></tr>
+          <tr><td><code>--models [preset]</code></td><td>打印实时模型清单（默认 <code>opencode-go</code>）：id、名称、上下文与推荐 API</td></tr>
+          <tr><td><code>--models-update &lt;file&gt;</code> / <code>--in-place</code></td><td>用实时清单刷新 <code>model.map</code> 且保留已有别名。默认写 <code>&lt;file&gt;.updated.json</code>；<code>--in-place</code> 会先存 <code>.bak</code> 再覆盖原文件</td></tr>
+          <tr><td><code>--no-models</code></td><td>完全跳过模型清单拉取——离线用 <code>--setup</code> 时很有用</td></tr>
         </tbody>
       </table>
     </div>
@@ -672,7 +725,7 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       所以模板写错了会在这里暴露，而不是等上游回一个 400。
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.3.1 —— 试运行
+llm-session-proxy v0.3.2 —— 试运行
 
 模型
   样例            proxy-glm
@@ -886,6 +939,7 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
         <tr><td><code>v0.2.2</code> ✓</td><td>协议覆盖</td><td>Anthropic ↔ OpenAI ↔ Responses 互转与字段归一化，含流式——请求体、JSON 响应与 SSE 逐事件转码。从这个版本起，客户端用哪套协议不再决定它能用到哪些模型。</td></tr>
         <tr><td><code>v0.3.0</code> ✓</td><td>难度路由与上游覆盖</td><td>一个本地确定性打分器按请求<i>形态</i>打分并映射到档位（<code>easy</code> / <code>medium</code> / <code>hard</code>）供规则匹配；加上一个上游池——每个上游各有自己的端点、线协议与凭据来源——其中包括用官方方式认证的 GitHub Copilot。Google Gemini 作为第四种线格式加入协议集合。</td></tr>
         <tr><td><code>v0.3.1</code> ✓</td><td>Copilot 覆盖</td><td>GitHub token 像 OMP 一样直接发给 <code>api.githubcopilot.com</code>（session 交换改为可选），<code>--login-copilot</code> 通过设备流存档凭据，<code>--doctor</code> 用一次只读的 <code>/models</code> 调用验证每个 Copilot 上游。Copilot API 版本头固定为 <code>2026-08-01</code>。</td></tr>
+        <tr><td><code>v0.3.2</code> ✓</td><td>一键接入与实时模型</td><td><code>--setup</code> 为 OpenCode Go（官方支持）或 GitHub Copilot（社区 HTTP 路径，明确标注）写出可用配置，只记凭据<b>来源</b>、不记值。<code>--models</code> 读取官方免鉴权的 Go 清单与推荐 API，缓存 6 小时，失败时回退到明确标注的 stale 副本；<code>--models-update</code> 刷新配置但保留你的别名。</td></tr>
         <tr><td><code>v0.4</code></td><td>可观测与可控</td><td>Prometheus <code>/metrics</code>、JSON 日志模式、OTLP/JSON 导出、会话与提示词缓存检查器、token 与成本统计、免构建的本地看板。</td></tr>
         <tr><td><code>v0.5</code></td><td>真实上游下的可靠性</td><td>带抖动重试的兜底、熔断、超时拆分与流空闲看门狗、退出时优雅排空。</td></tr>
         <tr><td><code>v0.6</code></td><td>安全与卫生</td><td>日志脱敏、正则护栏、精确到行的配置 schema 报错、CI 用的 <code>--check-config</code>。</td></tr>

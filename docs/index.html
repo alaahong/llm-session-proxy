@@ -21,6 +21,7 @@
     <nav class="nav-links">
       <a href="#problem">Problem</a>
       <a href="#start">Quick start</a>
+      <a href="#setup">Setup</a>
       <a href="#models">Models</a>
       <a href="#config">Config</a>
       <a href="#cli">CLI</a>
@@ -90,6 +91,16 @@
         <div class="tag">model</div>
         <h4>Model alias rewriting</h4>
         <p>Prefix stripping (<code>proxy-glm</code> → <code>glm-5.3</code>) and exact mapping, and the two compose. The OpenCode Go alias table ships built in, so the <code>proxy-</code> prefix the client needs actually resolves — and an alias that strips down to nothing is reported by name instead of being forwarded silently.</p>
+      </div>
+      <div class="card">
+        <div class="tag">setup</div>
+        <h4>One-command setup</h4>
+        <p><code>--setup opencode-go</code> and <code>--setup copilot</code> write a working config and print what to prepare, how traffic flows and how to verify it. Credentials are never written into the config — only the source name. Go is an official path; the Copilot HTTP route is explicitly labelled a community one.</p>
+      </div>
+      <div class="card">
+        <div class="tag">models</div>
+        <h4>Live model list and refresh</h4>
+        <p><code>--models</code> reads the official credential-free Go endpoint and prints each model's recommended API. Results are cached for six hours with a labelled stale fallback. <code>--models-update</code> adds the newest IDs to <code>model.map</code> while keeping every alias you already have.</p>
       </div>
       <div class="card">
         <div class="tag">router</div>
@@ -221,6 +232,45 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
         </tbody>
       </table>
     </div>
+  </section>
+
+  <section id="setup">
+    <h2>One-command setup and live models</h2>
+    <p class="sub">Let the CLI write the config and fetch the current model IDs. Credentials are never written into a file.</p>
+    <pre><code><span class="cmt"># Write a config for OpenCode Go (official) or Copilot (community HTTP path)</span>
+npx llm-session-proxy --setup opencode-go --setup-out ./proxy.config.json
+npx llm-session-proxy --setup copilot
+
+<span class="cmt"># See the live Go model list, then refresh a config with the newest IDs</span>
+npx llm-session-proxy --models
+npx llm-session-proxy --models-update ./proxy.config.json
+npx llm-session-proxy --models-update ./proxy.config.json --in-place</code></pre>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Preset</th><th>Status</th><th>What you need</th></tr></thead>
+        <tbody>
+          <tr><td><code>opencode-go</code></td><td><b>Officially supported</b></td><td>A Go / Go Plus / Go Teams subscription and an <code>oc_sk_...</code> Console API key in <code>OPENCODE_API_KEY</code> (<code>--setup-env</code> overrides the variable name). Client Base URL: <code>http://127.0.0.1:9355/inference/go/openai/v1</code>.</td></tr>
+          <tr><td><code>copilot</code></td><td>Community path, <b>not an official one-click integration</b></td><td>A Copilot plan plus <code>copilot login</code>, <code>gh auth login</code>, or a fine-grained PAT with <i>Copilot Requests</i>. GitHub publishes authentication and a JSON-RPC SDK, not a general HTTP contract for third-party proxies — the wizard prints that limit at runtime.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The Go list comes from the official credential-free
+      <code>GET https://opencode.ai/inference/go/v1/models</code>; <code>--models</code> shows each
+      model's <code>recommended_api</code>, which tells you whether it needs Responses or Messages
+      rather than chat-completions. Results are cached in <code>~/.lsp/model-catalog.json</code> for six
+      hours. A failed live fetch falls back to the cache and says it is <b>stale</b> — or reports the
+      failure; it never invents a model. Copilot has no public model-list API, so the wizard says so.
+    </p>
+    <h3>Refreshing an existing config</h3>
+    <p>
+      <code>--models-update</code> keeps every alias you already have in <code>model.map</code> and
+      appends <code>id -&gt; id</code> entries for the current list. It writes
+      <code>&lt;file&gt;.updated.json</code> by default; <code>--in-place</code> overwrites the original
+      after saving a <code>.bak</code>. Use <code>--no-models</code> with <code>--setup</code> to skip
+      the network entirely. Verify with <code>--doctor</code> first — then a real model call, which is
+      the only proof that a route works.
+    </p>
   </section>
 
   <section id="models">
@@ -651,6 +701,12 @@ npx llm-session-proxy -c llm-session-proxy.config.json</code></pre>
           <tr><td><code>--dry-run</code></td><td>Validate the config and print routing, injection and model resolution. No network I/O</td></tr>
           <tr><td><code>--doctor</code></td><td><code>--dry-run</code> plus DNS/TCP/TLS reachability and listen-port checks (free? forbidden?); exits non-zero on problems</td></tr>
           <tr><td><code>--model &lt;id&gt;</code></td><td>Sample model name used by <code>--dry-run</code> / <code>--doctor</code></td></tr>
+          <tr><td><code>--login-copilot</code></td><td>Run the GitHub device flow once and archive a Copilot credential (the proxy itself never starts it by default)</td></tr>
+          <tr><td><code>--setup &lt;preset&gt;</code></td><td>Write a preset config (<code>opencode-go</code> / <code>copilot</code>) and print what to prepare and how to verify it. Credential values are never written</td></tr>
+          <tr><td><code>--setup-out &lt;file&gt;</code> / <code>--setup-env &lt;name&gt;</code></td><td>Output path for the generated config / name of the environment variable holding the credential</td></tr>
+          <tr><td><code>--models [preset]</code></td><td>Print the live model list (default <code>opencode-go</code>): id, name, context and recommended API</td></tr>
+          <tr><td><code>--models-update &lt;file&gt;</code> / <code>--in-place</code></td><td>Refresh <code>model.map</code> from the live list while keeping existing aliases. Writes <code>&lt;file&gt;.updated.json</code> by default; <code>--in-place</code> overwrites the original after saving a <code>.bak</code></td></tr>
+          <tr><td><code>--no-models</code></td><td>Skip the model-list fetch entirely — useful with <code>--setup</code> when offline</td></tr>
         </tbody>
       </table>
     </div>
@@ -692,7 +748,7 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       a 400 from the upstream.
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.3.1 — dry run
+llm-session-proxy v0.3.2 — dry run
 
 Model
   sample              proxy-glm
@@ -941,6 +997,7 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
         <tr><td><code>v0.2.2</code> ✓</td><td>Protocol reach</td><td>Anthropic ↔ OpenAI ↔ Responses translation with field normalisation, streaming included — request bodies, JSON responses and event-by-event SSE transcoding. The release that stops a client&rsquo;s protocol from deciding which models it can reach.</td></tr>
         <tr><td><code>v0.3.0</code> ✓</td><td>Difficulty routing and upstream reach</td><td>A local deterministic scorer that grades a request by <i>shape</i> and maps it onto bands (<code>easy</code> / <code>medium</code> / <code>hard</code>) that rules can match on, plus a pool of upstreams — each with its own endpoints, wire protocol and credential source — including GitHub Copilot authenticated the official way. Google Gemini joins the protocol set as a fourth wire format.</td></tr>
         <tr><td><code>v0.3.1</code> ✓</td><td>Copilot reach</td><td>The GitHub token goes straight to <code>api.githubcopilot.com</code> the way OMP does (the session exchange becomes opt-in), a <code>--login-copilot</code> device-flow login archives a credential, and <code>--doctor</code> verifies each Copilot provider with a read-only <code>/models</code> call. The Copilot API version header is pinned to <code>2026-08-01</code>.</td></tr>
+        <tr><td><code>v0.3.2</code> ✓</td><td>Setup and live models</td><td>A <code>--setup</code> wizard writes a working config for OpenCode Go (officially supported) or GitHub Copilot (community HTTP path, labelled as such), recording the credential <b>source</b> but never its value. <code>--models</code> reads the official credential-free Go catalogue with recommended APIs, caches it for six hours, and falls back to a clearly marked stale copy; <code>--models-update</code> refreshes a config while keeping your aliases.</td></tr>
         <tr><td><code>v0.4</code></td><td>Observability and control</td><td>Prometheus <code>/metrics</code>, JSON log mode, OTLP/JSON export, a session and prompt-cache inspector, token and cost accounting, and a zero-build local dashboard.</td></tr>
         <tr><td><code>v0.5</code></td><td>Reliability under real upstreams</td><td>Fallback with jittered retry, circuit breaking, separated timeouts with a stream idle watchdog, graceful drain on shutdown.</td></tr>
         <tr><td><code>v0.6</code></td><td>Safety and hygiene</td><td>Log redaction, regex guardrails, line-precise config schema errors, and <code>--check-config</code> for CI.</td></tr>

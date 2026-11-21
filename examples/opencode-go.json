@@ -15,6 +15,10 @@
   // 从 v0.3.0 起还可以按请求难度分桶（router.scorers + router.bands），
   // 以及把请求发到不同的上游（upstreams 段——Copilot 托管的模型和你自己付费的模型
   // 可以放进同一个池子）。见 examples/opencode-go-models.json 末尾。
+  //
+  // 从 v0.3.2 起不必手抄这份配置：跑 `llm-session-proxy --setup opencode-go`
+  // 会按官方端点生成一份，并把 `llm-session-proxy --models` 拉到的实时模型 ID
+  // 写进 model.map；以后用 `--models-update <file>` 刷新即可（保留你自己的别名）。
 
   "listen": { "host": "127.0.0.1", "port": 9355 },
 

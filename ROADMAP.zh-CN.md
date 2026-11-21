@@ -6,14 +6,14 @@
 - **范围**：一台开发机、一个进程。默认一个上游；v0.3.0 起支持上游池。
 - **不可妥协**：`package.json` 里的 `dependencies` 永远为空。需要第三方库的功能，要么用 Node 内置模块
   重新实现，要么不上。
-- **当前状态**：v0.3.1 —— 会话与请求头注入的核心已可用且做过加固；模型别名、`--dry-run` / `--doctor`、
-  变换注册表、路由分桶、协议互转、难度打分与多上游池都已交付。其余都在这一页上。
+- **当前状态**：v0.3.2 —— 会话与请求头注入的核心已可用且做过加固；模型别名、`--dry-run` / `--doctor`、
+  变换注册表、路由分桶、协议互转、难度打分、多上游池、一键接入向导与实时模型清单都已交付。其余都在这一页上。
 
 ---
 
 ## 1. 现在到哪了
 
-### 已经能用（v0.3.0）
+### 已经能用（v0.3.2）
 
 | 方面 | 现状 |
 | --- | --- |
@@ -24,12 +24,14 @@
 | 难度 | 一个具名的内置**打分器注册表**（`builtin-complexity`）把请求的**形态**换算成 0–100 分与档位（`easy` / `medium` / `hard`），路由器可以按档位匹配。九个加权信号，确定性，不发网络请求，不调模型。衡量的是请求的**形态**，不是语义难度。 |
 | 上游 | 一个**上游池**（`openai` / `anthropic` / `gemini` / `copilot` / `custom`），每个上游各有自己的 base URL、端点路径、线协议与凭据来源。桶可以显式指定上游，否则按模型名前缀挑，再否则用池子的默认项。请求体会按选中上游说的**线协议**转换。 |
 | Copilot | GitHub Copilot 作为一等公民上游：GitHub token **直接**作为 Bearer 发给 `api.githubcopilot.com`（与 OMP 一致；`copilot_internal/v2/token` 交换改为 `auth.tokenMode: "session"` 显式启用），带上官方要求的 `Copilot-Integration-Id` 与 API 版本头，并按模型选端点。凭据从环境变量、`gh` CLI、存档文件或设备流登录取得，**绝不写进配置、绝不进日志**。 |
+| 接入向导 | `--setup opencode-go` / `--setup copilot` 直接写出可用配置，里面只记凭据**来源**、绝不写凭据值，并打印该准备什么、流量怎么走、怎么验证。OpenCode Go 是**官方支持**的预设——上游明确要求稳定的 `x-opencode-session` 头，正是本代理的用武之地；Copilot 预设明确标成**社区 HTTP 路径**，因为 GitHub 公开的是认证方式与 JSON-RPC SDK，并没有给第三方代理一份通用的 chat completions HTTP 契约。 |
+| 模型清单 | `--models` 从官方免鉴权端点列出当前 Go 模型（id / 名称 / 上下文 / 推荐 API），结果在 `~/.lsp/model-catalog.json` 缓存 6 小时，实时失败时回退到缓存并标为 **stale**，绝不编造数据。`--setup opencode-go` 把实时 ID 写进 `model.map`；`--models-update` 刷新已有配置但**保留你的别名**，`--in-place` 才覆盖并留 `.bak`。Copilot 没有公开模型列表 API，向导会直说。 |
 | 变换 | 五个内置命名变换（`noop`、`drop-fields`、`drop-empty-fields`、`rename-fields`、`clamp-max-tokens`），可全局挂也可按桶挂，按固定顺序执行。**按名字选，绝不按路径选**，所以配置文件无法让代理执行代码。 |
 | 协议 | Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses ↔ **Google Gemini**：请求体转发前整体转换，JSON 响应整包改写，SSE 流**按事件逐条**转码、流式体验不降级。默认关闭，按模型前缀路由；上游 4xx/5xx 错误体永不转换。 |
 | 体检 | `--dry-run` 打印生效的路由、**渲染后**的注入表、模型解析链路、分桶/变换决定、难度分数与上游池，不产生任何网络请求；`--doctor` 另加 DNS/TCP/TLS 可达性与监听端口检查（是否空闲、是否落在 WHATWG 禁用端口清单里），有问题时退出码非 0。 |
 | 流式 | SSE 逐块管道转发，从不整体缓冲。上游 4xx 响应体原样回传。 |
 | 运维 | `/__llm_session_proxy__/status` 与 `/sessions` 本地端点、**默认落盘**的日志（`~/.lsp/logs`，支持按大小/按日期轮转与 30 天归档）、四层配置合并（默认值 < 配置文件 < 环境变量 < 命令行）。`listen.port: 0` 自动分配的端口永远不会落在 WHATWG 禁用端口上；用户显式写下的端口原样尊重，由 `--doctor` 负责提醒。 |
-| 稳定性 | 单个畸形请求打不死进程；未捕获异常会落进日志文件；**925 个测试**，其中 9 条专攻畸形输入与半开连接（非法 `Host`、上游 reason phrase 与响应头里的控制字符、畸形请求行、超大请求头、请求体没读完就断开、上游掐掉空闲 keep-alive）。 |
+| 稳定性 | 单个畸形请求打不死进程；未捕获异常会落进日志文件；**962 个测试**，其中 9 条专攻畸形输入与半开连接（非法 `Host`、上游 reason phrase 与响应头里的控制字符、畸形请求行、超大请求头、请求体没读完就断开、上游掐掉空闲 keep-alive）。 |
 | 语言 | 控制台与日志文案**默认英文**，`--lang zh` / `PROXY_LANG=zh` 切中文。 |
 
 ### 已知缺口（直说）
@@ -211,6 +213,21 @@ v0.2.2 交付协议转换本身。这样切分的理由：双向 SSE 转码是�
       扩到 12 个（6 个直达 + 6 个经 chat 中转）。Gemini 把模型名与流式标志放在**路径**里
       （`/v1beta/models/{model}:streamGenerateContent?alt=sse`），所以代理必须在转换把它们挪走**之前**
       把两者取出来。认证头是 `x-goog-api-key`，不带 `Bearer` 前缀。</sub>
+- [x] **一键接入向导：** 为最常被问到的两个上游生成可用配置，并直说哪些是官方支持、哪些不是。
+      <sub>**v0.3.2 已完成。** 见 `src/setup.js`——`SETUP_PRESETS = ['opencode-go', 'copilot']`。每个预设写出
+      一份 JSONC 配置（已存在的文件绝不覆盖），里面只写凭据**来源名**、端点路径、会话/请求号注入，以及
+      用实时清单初始化的 `model.map`。Go 预设走官方 `https://opencode.ai/inference/go` 端点，打印
+      `oc_sk_...` 密钥要求与客户端 Base URL；Copilot 预设会打印 `IMPORTANT LIMIT`，因为 GitHub
+      公开的是认证方式与 JSON-RPC SDK，并没有给第三方代理一份通用的 HTTP chat completions 契约。
+      向导不会冒充已经验证过连接——验证手段是 `--doctor`，再打一次真实模型请求。</sub>
+- [x] **实时模型清单与配置刷新：** 别再让一份冻结的模型表充当「我该配哪个模型」的唯一答案。
+      <sub>**v0.3.2 已完成。** 见 `src/model-catalog.js`——`GET https://opencode.ai/inference/go/v1/models`
+      公开且免鉴权；`normalizeModels` 保留 id / 名称 / family / 上下文 / 推荐 API，`--models` 连推荐 API
+      一起打印，让人一眼看出某个模型需要 Responses 还是 Messages。结果在 `~/.lsp/model-catalog.json`
+      缓存 6 小时；实时拉取失败时回退到缓存并明确标为 **stale**，或者报告失败——绝不编造清单。
+      `--models-update <file>` 追加 `id -> id` 条目但**保留每一条已有别名**，默认写 `<file>.updated.json`，
+      只有 `--in-place` 才在原文件存下 `.bak` 后覆盖。`--no-models` 完全跳过网络；Copilot 返回
+      `no-public-endpoint` 而不是瞎猜。全程零依赖：只有 `fetch` 和仓库内的 JSON 处理。</sub>
 
 ### v0.4 — 可观测与可控
 
@@ -311,8 +328,9 @@ v0.2.2 交付协议转换本身。这样切分的理由：双向 SSE 转码是�
   v0.2.0 交付映射表缺口与 doctor，v0.2.1 交付路由，v0.2.2 交付协议转换。每个小版本都能独立安装、
   独立验证。
 - v0.3.0 合成一次发布，因为它引入的两条轴单独都没用：难度档位得有东西可以按它路由，上游池也得有
-  流量真的流过去才划算。v0.3 之后的里程碑编号**重新排过**（v0.4 现在是可观测、v0.5 可靠性、
-  v0.6 安全），保证一个里程碑对应一条发布线。
+  流量真的流过去才划算。v0.3.1（Copilot 默认直连）与 v0.3.2（接入向导 + 实时模型清单）是追加式发布：
+  两者都不改转发核心，因此各自可独立安装、独立验证。v0.3 之后的里程碑编号**重新排过**（v0.4 现在是
+  可观测、v0.5 可靠性、v0.6 安全），保证一个里程碑对应一条发布线。
 - 从 `v1.0` 起走语义化版本；破坏性配置变更必须配 `--migrate-config`。
 - 发布走 `.github/workflows/publish.yml`，打 `v*` 标签触发，发布前先跑打包自检与安装后
   端到端验证。

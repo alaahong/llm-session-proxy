@@ -25,6 +25,10 @@
   //  见下面注释掉的 "router" 段），以及把请求发到不同的上游（upstreams 段，
   //  可以把 Copilot 托管的模型和你自己付费的模型放进同一个池子）。
   //
+  //  从 v0.3.2 起可以用 `llm-session-proxy --models` 拉官方实时模型清单，
+  //  再用 `--models-update examples/opencode-go-models.json` 把最新 ID 追加进
+  //  model.map（你已有的别名会保留）；生成一份全新的配置用 `--setup opencode-go`。
+  //
   //  启动：llm-session-proxy -c examples/opencode-go-models.json
   // ════════════════════════════════════════════════════════════════════
 
