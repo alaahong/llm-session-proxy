@@ -188,9 +188,19 @@ export function normalizeUpstreams(upstreams) {
  * 匹配用**两个候选**：客户端原始名与解析后的真实 ID。
  * 用户写规则时心里想的可能是 `proxy-gpt-5`，也可能是 `gpt-5`——两个都试。
  */
-export function resolveUpstream({ model, clientModel, bucketUpstream, upstreamConfig }) {
+export function resolveUpstream({ model, clientModel, bucketUpstream, upstreamConfig, forcedUpstream = null }) {
   const pool = upstreamConfig || {};
   const providers = isPlainObject(pool.providers) ? pool.providers : {};
+
+  // 客户端在模型名里点名的来源（如 copilot:gpt-5）优先级最高：
+  // 桶是服务端策略，来源前缀是每条请求自带的显式指令。
+  if (typeof forcedUpstream === 'string' && forcedUpstream) {
+    const provider = providers[forcedUpstream];
+    if (provider) {
+      return { name: forcedUpstream, provider, source: 'model-prefix', index: null };
+    }
+    return { name: forcedUpstream, provider: null, source: 'model-prefix', index: null, missing: true };
+  }
 
   if (typeof bucketUpstream === 'string' && bucketUpstream) {
     const provider = providers[bucketUpstream];

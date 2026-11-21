@@ -10,6 +10,11 @@ import { applyBucketModel, composeTransformers, getBucket, resolveRoute } from '
 import { resolveSession, SessionStore } from './session.js';
 import { createStreamTranscoder } from './stream.js';
 import { createContext } from './template.js';
+import { parseModelSource, resolveSourceProvider } from './model-prefix.js';
+import { UsageStore, createResponseUsageProbe, formatUsageLog } from './usage.js';
+import { MetricsCollector, inspectSessionPrefixes } from './metrics.js';
+import { renderDashboard } from './dashboard.js';
+import { createExporter } from './export.js';
 import { applyTransformers } from './transformers.js';
 import { createCopilotSessionManager } from './copilot.js';
 import {
@@ -138,6 +143,27 @@ export function createProxyServer({ config, logger }) {
   const store = new SessionStore(config.session);
   const upstream = resolveUpstream(config);
   const stats = { startedAt: Date.now(), requests: 0, errors: 0, handledErrors: 0, bytesIn: 0, bytesOut: 0 };
+  // 用量统计：旁路采集，任何写盘/解析失败都不能影响转发。
+  const usageStore = config.usage?.enabled === false
+    ? null
+    : new UsageStore({
+        file: config.usage?.file,
+        prices: config.usage?.prices,
+        currency: config.usage?.currency,
+        maxEntries: config.usage?.maxEntries,
+        maxBytes: config.usage?.maxBytes,
+      });
+  const metrics = new MetricsCollector({
+    startedAt: stats.startedAt,
+    getSessions: () => ({ active: store.size, hits: store.hits, misses: store.misses }),
+  });
+  const exporter = createExporter({
+    enabled: config.export?.enabled === true,
+    endpoint: config.export?.endpoint,
+    headers: config.export?.headers,
+    timeoutMs: config.export?.timeoutMs,
+  });
+  const dashboardHtml = renderDashboard();
   // 未命中的模型别名只喊一次：同一个错别名可能被打上千次，逐条告警会把日志淹掉。
   const warnedModels = new Set();
   const WARNED_MODELS_MAX = 256;
@@ -182,6 +208,15 @@ export function createProxyServer({ config, logger }) {
     warn: (...a) => logger.warn(...a),
     info: (...a) => logger.info(...a),
     debug: (...a) => logger.debug(...a),
+    // 逐请求的文本行在 json 模式下折叠进同一条结构化记录，避免一个请求三行。
+    // 测试与内嵌调用方可能只提供经典 logger 四件套，这里做兼容。
+    text: (level, ...args) => {
+      if (typeof logger.text === 'function') logger.text(level, ...args);
+      else if (typeof logger[level] === 'function') logger[level](...args);
+    },
+    structured: (level, fields) => {
+      if (typeof logger.structured === 'function') logger.structured(level, fields);
+    },
   };
 
   const guard = (req) => req.socket?.remoteAddress;
@@ -206,6 +241,31 @@ export function createProxyServer({ config, logger }) {
         res.destroy();
       } catch {
         /* 已经没了就算了 */
+      }
+    }
+  }
+
+  /** 文本响应：/metrics 与看板用；写失败照旧吞掉。 */
+  function respondText(res, status, contentType, body) {
+    try {
+      if (res.writableEnded || res.destroyed) return;
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      const payload = Buffer.from(body, 'utf8');
+      res.writeHead(status, {
+        'content-type': contentType,
+        'content-length': String(payload.length),
+        'cache-control': 'no-store',
+      });
+      res.end(payload);
+    } catch (error) {
+      log.debug(t('proxy.log.respondFailed', { message: error.message }));
+      try {
+        res.destroy();
+      } catch {
+        /* 已经没了 */
       }
     }
   }
@@ -246,7 +306,36 @@ export function createProxyServer({ config, logger }) {
     }
   }
 
+  function isLoopbackAddress(address) {
+    if (typeof address !== 'string' || !address) return false;
+    const value = address.replace(/^::ffff:/, '').toLowerCase();
+    return value === '::1' || value === 'localhost' || value === '127.0.0.1' || value.startsWith('127.');
+  }
+
   function handleLocal(req, res, url) {
+    // 只读 + 仅回环：即使有人把 listen.host 改成 0.0.0.0，这些端点也不对外泄露状态。
+    if (req.method !== 'GET') {
+      respondJson(res, 405, { error: { type: 'local_method_not_allowed', message: t('proxy.err.localMethod') } });
+      return true;
+    }
+    if (!isLoopbackAddress(guard(req))) {
+      respondJson(res, 403, { error: { type: 'local_forbidden', message: t('proxy.err.localForbidden') } });
+      return true;
+    }
+    if (url.pathname === `${LOCAL_PREFIX}/metrics`) {
+      if (config.metrics?.enabled === false) return false;
+      respondText(res, 200, 'text/plain; version=0.0.4; charset=utf-8', metrics.render());
+      return true;
+    }
+    if (url.pathname === `${LOCAL_PREFIX}/dashboard`) {
+      if (config.metrics?.enabled === false || config.dashboard?.enabled === false) return false;
+      respondText(res, 200, 'text/html; charset=utf-8', dashboardHtml);
+      return true;
+    }
+    if (url.pathname === `${LOCAL_PREFIX}/sessions/prefix`) {
+      respondJson(res, 200, inspectSessionPrefixes({ store, entries: usageStore?.entries || [] }));
+      return true;
+    }
     if (url.pathname === `${LOCAL_PREFIX}/health` || url.pathname === `${LOCAL_PREFIX}/status`) {
       respondJson(res, 200, {
         ok: true,
@@ -275,6 +364,72 @@ export function createProxyServer({ config, logger }) {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 统一观察点：指标 / 导出 / 用量落盘 / 日志全在这里收口。
+   * 任何一路失败都吞掉，绝不把「统计写不进去」变成「请求失败」。
+   */
+  function observe(meta) {
+    metrics.observe(meta);
+    try {
+      if (exporter.enabled) {
+        Promise.resolve(exporter.export({ ...meta, event: 'request', ts: new Date().toISOString() })).catch(() => {});
+      }
+    } catch {
+      /* 导出失败不影响请求 */
+    }
+    const u = meta.usage && typeof meta.usage === 'object' ? meta.usage : {};
+    const status = Number.isFinite(Number(meta.status)) ? Number(meta.status) : 0;
+    log.structured('info', {
+      event: 'request',
+      method: meta.method || null,
+      path: meta.path || null,
+      sessionId: meta.sessionId || null,
+      sessionKey: meta.sessionKey || null,
+      sessionSource: meta.sessionSource || null,
+      status,
+      ok: status >= 200 && status < 400,
+      durationMs: Number(meta.durationMs) || 0,
+      model: meta.model || '(unknown)',
+      source: meta.source || 'upstream',
+      upstream: meta.upstream || null,
+      providerType: meta.providerType || null,
+      protocol: meta.protocol || null,
+      bytesIn: Number(meta.bytesIn) || 0,
+      bytesOut: Number(meta.bytesOut) || 0,
+      error: meta.error || null,
+      usage: {
+        promptTokens: Number(u.promptTokens) || 0,
+        completionTokens: Number(u.completionTokens) || 0,
+        totalTokens: Number(u.totalTokens) || 0,
+        cacheReadTokens: Number(u.cacheReadTokens) || 0,
+        cacheWriteTokens: Number(u.cacheWriteTokens) || 0,
+        reasoningTokens: Number(u.reasoningTokens) || 0,
+      },
+    });
+
+    if (!usageStore) return;
+    try {
+      const entry = usageStore.record({
+        model: meta.model || '(unknown)',
+        source: meta.source || 'upstream',
+        providerType: meta.providerType || null,
+        sessionId: meta.sessionId || null,
+        sessionKey: meta.sessionKey || null,
+        status: meta.status,
+        durationMs: meta.durationMs,
+        usage: meta.usage || null,
+        protocol: meta.protocol || null,
+        error: meta.error || null,
+        bytesOut: meta.bytesOut || 0,
+      });
+      if (entry && config.usage?.logEachRequest !== false) {
+        log.text('info', formatUsageLog(entry));
+      }
+    } catch (error) {
+      log.debug(`[usage] record failed: ${error.message}`);
+    }
   }
 
   /**
@@ -414,6 +569,24 @@ export function createProxyServer({ config, logger }) {
         let protocolNote = '';
         let protocolInfo = null; // 非空 = 请求被转写，响应要按 from -> to 转回来
         let upstreamNote = '';
+        let sourcePrefixName = null; // 客户端点名的来源（用于展示与统计）
+        let forcedUpstream = null; // 模型名里的来源 -> 上游 provider
+        let sourcePrefixChanged = false; // 剥过来源段：必须重算 outBuffer
+        let sourceNote = '';
+        // 用量上下文：响应回来之前就已经知道模型与来源，错误路径也要能记账
+        const usageMeta = {
+          model: '',
+          source: sourcePrefixName || 'upstream',
+          providerType: null,
+          protocol: null,
+          method: req.method,
+          path: req.url,
+          sessionId: session.id || null,
+          sessionKey: session.key || null,
+          sessionSource: session.source || null,
+          upstream: null,
+          bytesIn: 0,
+        };
         const bodyChanges = [];
 
         // 最终的上游与路径。默认走旧的 config.upstream，
@@ -423,12 +596,41 @@ export function createProxyServer({ config, logger }) {
         let targetPathReplaced = false; // 协议互转 / 上游池替换过路径（那些路径自带前缀）
         let targetProvider = null;
         let targetProviderName = null;
+        let wireInfo = null;
 
         if (parsedBody) {
           // 客户端要不要流式。必须在任何协议转换**之前**取：
           // Gemini 的流式是靠路径上的 :streamGenerateContent 表达的，
           // 而 chat→gemini 转换会把 stream 挪到 body 的别处。
           const clientStream = parsedBody.stream === true;
+
+          // 来源前缀（v0.4）：copilot:gpt-5 点名上游。必须在 rewriteModel 之前
+          // 剥掉来源段，否则别名表会拿 "copilot:gpt-5" 去查而报未命中。
+          const modelField = config.model?.field || 'model';
+          if (config.model?.sourcePrefix?.enabled === true) {
+            const clientModel = typeof parsedBody[modelField] === 'string' ? parsedBody[modelField] : '';
+            const parsed = parseModelSource(
+              clientModel,
+              config.model.sourcePrefix,
+              upstreamPool?.providers,
+              config.model.stripPrefixes,
+            );
+            if (parsed.matched) {
+              const exists = resolveSourceProvider(parsed.source, upstreamPool?.providers);
+              if (exists) {
+                forcedUpstream = exists;
+                sourcePrefixName = exists;
+                parsedBody[modelField] = parsed.model;
+                sourcePrefixChanged = true;
+                sourceNote = ` source=${exists}(model-prefix)`;
+              } else {
+                // 来源不存在：告警后按常规路由走，不能默默发去默认上游
+                log.warn(
+                  t('proxy.log.sourcePrefixUnknown', { source: parsed.source, model: clientModel }),
+                );
+              }
+            }
+          }
 
           const modelResult = rewriteModel(parsedBody, config.model, { logger: log });
           if (modelResult.changed) {
@@ -482,6 +684,7 @@ export function createProxyServer({ config, logger }) {
               clientModel: modelResult.from,
               bucketUpstream: bucket.upstream,
               upstreamConfig: upstreamPool,
+              forcedUpstream,
             });
             if (picked.missing) {
               // 池里点名了但没这个 provider —— 报错比默默发去默认上游强
@@ -489,6 +692,8 @@ export function createProxyServer({ config, logger }) {
             } else if (picked.provider) {
               targetProvider = picked.provider;
               targetProviderName = picked.name;
+              usageMeta.source = picked.name;
+              usageMeta.providerType = picked.provider.type || null;
               const conn = parseProviderBaseUrl(picked.provider.baseUrl);
               if (conn) {
                 targetUpstream = {
@@ -502,6 +707,8 @@ export function createProxyServer({ config, logger }) {
               upstreamNote = ` upstream=${picked.name}(${picked.source})`;
             }
           }
+
+          usageMeta.upstream = targetProviderName || targetUpstream.hostHeader || 'upstream';
 
           // 变换：全局 enabled + 命中桶挂载的，按顺序执行
           const transformerNames = composeTransformers(config.transformers, bucket);
@@ -523,6 +730,12 @@ export function createProxyServer({ config, logger }) {
           // chat→gemini 转换会把 model 从 body 里挪走（它在上游路径上），
           // 那时候就再也取不到了。
           const finalModel = typeof parsedBody.model === 'string' ? parsedBody.model : '';
+          // 统计里的模型名带来源前缀：同名模型（如两家都有的 gpt-5）在报表里也能区分。
+          // 只有选中的具名 provider 才会加前缀；旧的单上游保持原名。
+          usageMeta.model = targetProviderName && finalModel
+            ? `${targetProviderName}:${finalModel}`
+            : finalModel;
+          usageMeta.providerType = targetProvider?.type || null;
 
           // ---- 协议互转（v0.2.2）。刻意放在最后：变换与注入针对的是客户端
           //      协议下的字段，整体转成目标协议必须在所有字段级操作完成之后。
@@ -571,6 +784,7 @@ export function createProxyServer({ config, logger }) {
           //      客户端说什么协议都得迁就上游。 ----
           if (targetProvider) {
             const wire = resolveWire(targetProvider, typeof parsedBody.model === 'string' ? parsedBody.model : '');
+            wireInfo = wire;
 
             // 端点路径取自 provider 自己的 paths 表（而不是 config.protocol.paths）：
             // provider 是「发到哪」的决定者，它的路径表才权威。
@@ -626,7 +840,7 @@ export function createProxyServer({ config, logger }) {
             upstreamNote += ` wire=${wire.wire}(${wire.source})`;
           }
 
-          if (modelResult.changed || override.changed || bodyChanges.length) {
+          if (modelResult.changed || override.changed || sourcePrefixChanged || bodyChanges.length) {
             // 改了 body 就必须重算长度，交给 http 模块自动处理
             outBuffer = Buffer.from(JSON.stringify(parsedBody), 'utf8');
           }
@@ -692,12 +906,15 @@ export function createProxyServer({ config, logger }) {
         // Host 头指向真正要发往的那个上游
         outHeaders.host = targetUpstream.hostHeader;
 
-        log.info(
+        log.text(
+          'info',
           `[req] ${req.method} ${req.url} | session=${session.id} req=${session.requestId} source=${session.source} ` +
             `sessions=${store.size} auth=${headersLower.has('authorization') ? 'present' : 'MISSING'}` +
-            `${modelNote}${routeNote}${protocolNote}${upstreamNote}${bodyChanges.length ? ` body=${bodyChanges.join('|')}` : ''}`,
+            `${modelNote}${routeNote}${protocolNote}${upstreamNote}${sourceNote}${bodyChanges.length ? ` body=${bodyChanges.join('|')}` : ''}`,
         );
         log.debug(`[req-headers] ${JSON.stringify(outHeaders, null, 0)}`);
+
+        usageMeta.protocol = protocolInfo ? protocolInfo.from : (wireInfo?.wire || null);
 
         // ---- 发起上游请求 ----
         const transport = targetUpstream.protocol === 'https' ? https : http;
@@ -715,11 +932,12 @@ export function createProxyServer({ config, logger }) {
               agent: targetAgent,
             },
             (proxyRes) =>
-              handleUpstreamResponse({ proxyRes, res, req, session, startedAt, targetPath, protocolInfo }),
+              handleUpstreamResponse({ proxyRes, res, req, session, startedAt, targetPath, protocolInfo, usageMeta }),
           );
         } catch (error) {
           // 请求头含非法字符、目标路径未转义等情况会让 transport.request 同步抛错
           stats.errors += 1;
+          observe({ ...usageMeta, status: 502, durationMs: Date.now() - startedAt, error: 'build' });
           log.error(t('proxy.log.buildUpstreamFailed', { method: req.method, url: req.url, targetPath, message: error.message }));
           respondJson(res, 502, {
             error: {
@@ -732,6 +950,7 @@ export function createProxyServer({ config, logger }) {
         }
 
         stats.bytesIn += outBuffer ? outBuffer.length : 0;
+        usageMeta.bytesIn = outBuffer ? outBuffer.length : 0;
 
         proxyReq.setTimeout(config.request.timeoutMs, () => {
           proxyReq.destroy(new Error(t('proxy.err.upstreamTimeout', { timeoutMs: config.request.timeoutMs })));
@@ -739,6 +958,12 @@ export function createProxyServer({ config, logger }) {
 
         proxyReq.on('error', (proxyError) => {
           stats.errors += 1;
+          observe({
+            ...usageMeta,
+            status: 502,
+            durationMs: Date.now() - startedAt,
+            error: 'transport',
+          });
           log.error(t('proxy.log.upstreamFailed', {
             method: req.method,
             url: req.url,
@@ -794,7 +1019,7 @@ export function createProxyServer({ config, logger }) {
   }
 
   /** 上游响应回来之后的处理，单独成函数以便整体兜错。 */
-  function handleUpstreamResponse({ proxyRes, res, req, session, startedAt, targetPath, protocolInfo = null }) {
+  function handleUpstreamResponse({ proxyRes, res, req, session, startedAt, targetPath, protocolInfo = null, usageMeta = null }) {
     const status = proxyRes.statusCode || 502;
     const rawHeaders = {};
     for (const [key, value] of Object.entries(proxyRes.headers)) {
@@ -818,6 +1043,22 @@ export function createProxyServer({ config, logger }) {
         captured = Buffer.concat([captured, chunk.subarray(0, ERROR_CAPTURE_BYTES - captured.length)]);
       }
     };
+
+    // 用量探针旁路挂在同一条 data 流上：会多一份字节副本，但绝不改写转发内容。
+    // SSE 必须走事件行探针，JSON 走尾部缓冲；不认识的类型直接跳过。
+    const contentTypeForUsage = String(proxyRes.headers['content-type'] || '').toLowerCase();
+    const usageProbe = usageStore && usageMeta
+      ? createResponseUsageProbe(contentTypeForUsage)
+      : null;
+    if (usageProbe) {
+      proxyRes.on('data', (chunk) => {
+        try {
+          usageProbe.push(chunk);
+        } catch {
+          /* 统计探针失败不影响流 */
+        }
+      });
+    }
 
     proxyRes.on('error', (streamError) => {
       log.warn(t('proxy.log.upstreamStreamError', { message: streamError.message }));
@@ -1008,16 +1249,34 @@ export function createProxyServer({ config, logger }) {
 
     proxyRes.on('end', () => {
       stats.requests += 1;
+      let extracted = null;
+      if (usageProbe) {
+        try {
+          extracted = usageProbe.end();
+        } catch {
+          extracted = null;
+        }
+      }
+      observe({
+        ...(usageMeta || {}),
+        status,
+        durationMs: Date.now() - startedAt,
+        usage: extracted,
+        error: status >= 400 ? `http_${status}` : null,
+        bytesOut: received,
+      });
       if (status >= 400) {
         stats.errors += 1;
         log.error(
-          `[upstream-error] ${status} ${req.method} ${targetPath} | ${captured
+          '[upstream-error]',
+          `${status} ${req.method} ${targetPath} | ${captured
             .toString('utf8')
             .replace(/\s+/g, ' ')
             .slice(0, 800)}`,
         );
       }
-      log.info(
+      log.text(
+        'info',
         `[res] ${status} ${req.method} ${req.url} | session=${session.id} ${formatBytes(received)} ` +
           `${Date.now() - startedAt}ms stream=${config.response.stream}` +
           `${proto ? ` proto=${proto.from}->${proto.to}` : ''}`,
@@ -1111,6 +1370,9 @@ export function createProxyServer({ config, logger }) {
     stats,
     config,
     agent,
+    usage: usageStore,
+    metrics,
+    exporter,
     listen(port = config.listen.port, host = config.listen.host) {
       // 自动分配的端口（port === 0）有可能被 OS 扔到 WHATWG 禁用端口上
       // （6000 / 6666 / 10080 …）。那种端口 Node 绑得上，浏览器和 fetch 客户端

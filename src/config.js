@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { COPILOT_TOKEN_MODES } from './copilot.js';
-import { LEVELS, ROTATE_MODES } from './logger.js';
+import { LEVELS, LOG_FORMATS, ROTATE_MODES } from './logger.js';
 import { SUPPORTED_LANGS, normalizeLang, setLang, t } from './messages.js';
 import { DEFAULT_MODEL_MAP } from './models.js';
 import { BUILTIN_BUCKETS, emptyBucket, hasMatcher, normalizeRule } from './router.js';
@@ -97,6 +97,14 @@ export const DEFAULT_CONFIG = {
     // 剥了前缀却查不到映射（也没有兜底）时，打一条 warn 说明该补哪一条。
     // 只对「带前缀的别名」告警；客户端直接填真实 ID 是正常透传，不吵人。
     warnUnmapped: true,
+    // 来源前缀（v0.4）：copilot:gpt-5 显式点名上游。默认关闭，
+    // 升级后不写新格式的客户端完全不受影响。
+    sourcePrefix: {
+      enabled: false,
+      separator: ':',
+      // 短名 -> provider 名，例如 { gh: 'copilot' }
+      aliases: {},
+    },
   },
   userAgent: 'opencode/1.18.29 cli',
   // keep：完全保留客户端 UA；replace：始终用上面的 UA；
@@ -165,6 +173,17 @@ export const DEFAULT_CONFIG = {
     stream: true,
     timeoutMs: 600000,
   },
+  // 用量统计（v0.4）：默认开启，旁路提取 token，不改动转发字节。
+  // prices 是「模型名 -> 每百万 token 单价」的表，默认空 —— 不硬编码厂商价。
+  usage: {
+    enabled: true,
+    file: null, // null -> $LSP_HOME/usage.jsonl 或 ~/.lsp/usage.jsonl
+    prices: {},
+    currency: 'USD',
+    maxEntries: 10000,
+    maxBytes: 5 * 1024 * 1024,
+    logEachRequest: true,
+  },
   log: {
     level: 'info',
     // null  → 默认位置（$LSP_HOME/logs 或 ~/.lsp/logs）下的 <LOG_BASENAME>.log
@@ -179,6 +198,18 @@ export const DEFAULT_CONFIG = {
     // 超过这个天数的历史日志自动删除；0 表示永久保留
     keepDays: 30,
     requests: true,
+    // text（默认）保持现有行；json 每个请求一条结构化 JSON 记录。
+    format: 'text',
+  },
+  // 本地只读观测端点：/metrics 与 /dashboard。默认开启，仅监听回环时才有意义。
+  metrics: { enabled: true },
+  dashboard: { enabled: true },
+  // OTLP/JSON 导出：默认关闭，端点由用户显式指定，永不硬编码目标地址。
+  export: {
+    enabled: false,
+    endpoint: null,
+    headers: {},
+    timeoutMs: 2000,
   },
 };
 
@@ -191,6 +222,8 @@ const ENV_MAP = {
   UPSTREAM_HOST: ['upstream', 'host'],
   UPSTREAM_PORT: ['upstream', 'port'],
   UPSTREAM_BASE_PATH: ['upstream', 'basePath'],
+  USAGE_FILE: ['usage', 'file'],
+  USAGE_CURRENCY: ['usage', 'currency'],
   OPENCODE_UA: ['userAgent'],
   USER_AGENT: ['userAgent'],
   USER_AGENT_MODE: ['userAgentMode'],
@@ -203,6 +236,12 @@ const ENV_MAP = {
   LOG_KEEP_DAYS: ['log', 'keepDays'],
   LOG_MAX_BYTES: ['log', 'maxBytes'],
   LOG_BACKUPS: ['log', 'backups'],
+  LOG_FORMAT: ['log', 'format'],
+  METRICS_ENABLED: ['metrics', 'enabled'],
+  DASHBOARD_ENABLED: ['dashboard', 'enabled'],
+  EXPORT_ENABLED: ['export', 'enabled'],
+  EXPORT_ENDPOINT: ['export', 'endpoint'],
+  EXPORT_TIMEOUT_MS: ['export', 'timeoutMs'],
   SESSION_ID_PREFIX: ['session', 'idPrefix'],
   SESSION_ID_FORMAT: ['session', 'idFormat'],
   REQUEST_ID_FORMAT: ['session', 'requestIdFormat'],
@@ -284,7 +323,7 @@ function setByPath(target, keyPath, value) {
 
 function coerce(keyPath, raw) {
   const key = keyPath.join('.');
-  if (/^(listen\.port|upstream\.port|request\.timeoutMs|request\.maxBodyBytes|session\.maxSessions|session\.ttlSeconds|response\.timeoutMs|log\.maxBytes|log\.backups|log\.keepDays)$/.test(key)) {
+  if (/(^|\.)(listen\.port|upstream\.port|request\.timeoutMs|request\.maxBodyBytes|session\.maxSessions|session\.ttlSeconds|response\.timeoutMs|log\.maxBytes|log\.backups|log\.keepDays|export\.timeoutMs)$/.test(key)) {
     const num = Number(raw);
     if (!Number.isFinite(num)) throw new Error(t('config.envNotNumber', { key, raw }));
     return num;
@@ -293,7 +332,7 @@ function coerce(keyPath, raw) {
     // LOG_FILE=off 关闭文件输出（命令行对应 --no-log-file）
     return false;
   }
-  if (key === 'log.rotate') return String(raw).trim().toLowerCase();
+  if (key === 'log.rotate' || key === 'log.format') return String(raw).trim().toLowerCase();
   if (/^(inject\.headers|request\.pathRewrite)$/.test(key)) {
     const value = JSON.parse(raw);
     return value;
@@ -301,7 +340,7 @@ function coerce(keyPath, raw) {
   if (key === 'model.stripPrefixes' || key === 'transformers.enabled') {
     return String(raw).split(',').map((s) => s.trim()).filter(Boolean);
   }
-  if (key === 'router.enabled' || key === 'protocol.enabled') {
+  if (/^(router\.enabled|protocol\.enabled|metrics\.enabled|dashboard\.enabled|export\.enabled)$/.test(key)) {
     return !/^(0|false|no|off|disable[d]?)$/i.test(String(raw).trim());
   }
   return raw;
@@ -341,6 +380,7 @@ function normalize(config) {
     if (typeof log.file === 'string' && !log.file.trim()) log.file = null;
     if (typeof log.dir === 'string' && !log.dir.trim()) log.dir = null;
     if (typeof log.rotate === 'string') log.rotate = log.rotate.trim().toLowerCase();
+    if (typeof log.format === 'string') log.format = log.format.trim().toLowerCase();
     for (const key of ['maxBytes', 'backups', 'keepDays']) {
       if (log[key] !== undefined && log[key] !== null) log[key] = Number(log[key]);
     }
@@ -368,7 +408,46 @@ function normalize(config) {
   next.transformers = normalizeTransformers(next.transformers);
   next.protocol = normalizeProtocol(next.protocol);
   next.upstreams = normalizeUpstreams(next.upstreams);
+  next.usage = normalizeUsage(next.usage);
+  next.export = normalizeExport(next.export);
+  if (isPlainObject(next.model) && isPlainObject(next.model.sourcePrefix)) {
+    const sp = { ...next.model.sourcePrefix };
+    if (typeof sp.separator === 'string' && !sp.separator.trim()) sp.separator = ':';
+    next.model = { ...next.model, sourcePrefix: sp };
+  }
   return next;
+}
+
+/** usage 段归一化：类型不对的值原样留下，交给 validate 报错（与项目惯例一致）。 */
+function normalizeUsage(usage) {
+  if (!isPlainObject(usage)) return usage;
+  const out = { ...usage };
+  if (typeof out.file === 'string' && !out.file.trim()) out.file = null;
+  for (const key of ['maxEntries', 'maxBytes']) {
+    if (out[key] !== undefined && out[key] !== null) out[key] = Number(out[key]);
+  }
+  if (typeof out.enabled === 'string') {
+    if (out.enabled === 'true') out.enabled = true;
+    else if (out.enabled === 'false') out.enabled = false;
+  }
+  if (typeof out.logEachRequest === 'string') {
+    if (out.logEachRequest === 'true') out.logEachRequest = true;
+    else if (out.logEachRequest === 'false') out.logEachRequest = false;
+  }
+  return out;
+}
+
+function normalizeExport(value) {
+  if (value === undefined || value === null) return value;
+  if (!isPlainObject(value)) return value; // 交给 validate 报错
+  const out = { ...value };
+  if (typeof out.endpoint === 'string' && !out.endpoint.trim()) out.endpoint = null;
+  if (out.timeoutMs !== undefined && out.timeoutMs !== null) out.timeoutMs = Number(out.timeoutMs);
+  for (const key of ['enabled']) {
+    if (out[key] === 'true') out[key] = true;
+    else if (out[key] === 'false') out[key] = false;
+  }
+  return out;
 }
 
 /**
@@ -488,7 +567,11 @@ function validate(config) {
   validateRouter(config.router, errors);
   validateProtocol(config.protocol, errors);
   validateUpstreams(config.upstreams, errors);
+  validateUsage(config.usage, errors);
   validateLog(config.log, errors);
+  validateMetrics(config.metrics, errors);
+  validateDashboard(config.dashboard, errors);
+  validateExport(config.export, errors);
   if (errors.length) throw new Error(t('config.validationFailed', { list: errors.join('\n  - ') }));
   return config;
 }
@@ -775,6 +858,56 @@ function validateModel(model, errors) {
   if (typeof model.field !== 'string' || !model.field.trim()) {
     errors.push(t('config.badModelField', { field: JSON.stringify(model.field) }));
   }
+  validateSourcePrefix(model, errors);
+}
+
+function validateSourcePrefix(model, errors) {
+  const sp = model?.sourcePrefix;
+  if (sp === undefined || sp === null) return;
+  if (!isPlainObject(sp)) {
+    errors.push(t('config.badSourcePrefix'));
+    return;
+  }
+  if (sp.enabled !== undefined && typeof sp.enabled !== 'boolean') {
+    errors.push(t('config.badSourcePrefix'));
+  }
+  if (sp.separator !== undefined && (typeof sp.separator !== 'string' || sp.separator.length !== 1)) {
+    errors.push(t('config.badSourcePrefixSep'));
+  }
+  if (sp.aliases !== undefined && !isPlainObject(sp.aliases)) {
+    errors.push(t('config.badSourcePrefixAliases'));
+  }
+}
+
+/** 用量段校验：价格表写错比少算几个 token 更糟，启动即报错。 */
+function validateUsage(usage, errors) {
+  if (usage === undefined || usage === null) return;
+  if (!isPlainObject(usage)) {
+    errors.push(t('config.badUsagePrices'));
+    return;
+  }
+  if (usage.file !== undefined && usage.file !== null && (typeof usage.file !== 'string' || !usage.file.trim())) {
+    errors.push(t('config.badUsageFile'));
+  }
+  if (usage.maxEntries !== undefined && (!Number.isInteger(usage.maxEntries) || usage.maxEntries <= 0)) {
+    errors.push(t('config.badUsageMaxEntries'));
+  }
+  if (usage.prices !== undefined && !isPlainObject(usage.prices)) {
+    errors.push(t('config.badUsagePrices'));
+    return;
+  }
+  for (const [model, price] of Object.entries(usage.prices || {})) {
+    if (!isPlainObject(price)) {
+      errors.push(t('config.badUsagePrices'));
+      break;
+    }
+    for (const [key, value] of Object.entries(price)) {
+      if (!['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning'].includes(key) || !Number.isFinite(value) || value < 0) {
+        errors.push(t('config.badUsagePrices'));
+        break;
+      }
+    }
+  }
 }
 
 /** 日志配置的校验：宁可启动即报错，也不要静默退化成"不写日志"。 */
@@ -794,6 +927,9 @@ function validateLog(log, errors) {
   if (!ROTATE_MODES.includes(log.rotate)) {
     errors.push(t('config.badLogRotate', { rotate: log.rotate, modes: ROTATE_MODES.join(' | ') }));
   }
+  if (!LOG_FORMATS.includes(log.format)) {
+    errors.push(t('config.badLogFormat', { format: log.format, formats: LOG_FORMATS.join(' | ') }));
+  }
   if (!Object.hasOwn(LEVELS, log.level)) {
     errors.push(t('config.badLogLevel', { level: log.level, levels: Object.keys(LEVELS).join(' | ') }));
   }
@@ -802,6 +938,62 @@ function validateLog(log, errors) {
     if (!Number.isFinite(value) || value < 0) {
       errors.push(t('config.badLogNumber', { key: `log.${key}`, value }));
     }
+  }
+}
+
+function validateFlag(section, name, errors) {
+  if (section === undefined || section === null) return;
+  if (!isPlainObject(section) || typeof section.enabled !== 'boolean') {
+    errors.push(t('config.badObservabilityFlag', { key: name }));
+  }
+}
+
+function validateMetrics(metrics, errors) {
+  validateFlag(metrics, 'metrics', errors);
+}
+
+function validateDashboard(dashboard, errors) {
+  validateFlag(dashboard, 'dashboard', errors);
+}
+
+function validateExport(value, errors) {
+  if (value === undefined || value === null) return;
+  if (!isPlainObject(value)) {
+    errors.push(t('config.badExport'));
+    return;
+  }
+  if (typeof value.enabled !== 'boolean') errors.push(t('config.badExportEnabled'));
+  if (value.endpoint !== null && value.endpoint !== undefined) {
+    if (typeof value.endpoint !== 'string' || !value.endpoint.trim()) {
+      errors.push(t('config.badExportEndpoint'));
+    } else {
+      let parsed;
+      try {
+        parsed = new URL(value.endpoint.trim());
+      } catch {
+        parsed = null;
+      }
+      if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) {
+        errors.push(t('config.badExportEndpoint'));
+      }
+    }
+  }
+  if (value.headers !== undefined && !isPlainObject(value.headers)) {
+    errors.push(t('config.badExportHeaders'));
+  } else if (isPlainObject(value.headers)) {
+    for (const [key, header] of Object.entries(value.headers)) {
+      if (typeof header !== 'string') {
+        errors.push(t('config.badExportHeaders'));
+        break;
+      }
+      if (/[\r\n]/.test(key) || /[\r\n]/.test(header)) {
+        errors.push(t('config.badExportHeaders'));
+        break;
+      }
+    }
+  }
+  if (!Number.isFinite(value.timeoutMs) || value.timeoutMs <= 0) {
+    errors.push(t('config.badExportTimeout'));
   }
 }
 

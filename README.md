@@ -86,6 +86,26 @@ If your client already sends a session header, you do not need this tool (though
   another: OpenAI Chat Completions ↔ Anthropic Messages ↔ OpenAI Responses ↔ Google Gemini, both for
   request bodies and for responses (including event-level SSE transcoding). Off by default; routed by
   model prefix with the same top-down rule semantics as the router.
+- **Usage accounting by model and source** — token counts, cache reads, latency, throughput and
+  success rates are sampled from a copy of the response bytes; the client receives exactly the same
+  bytes as before. Records go to an append-only `usage.jsonl` that survives restarts, `--usage`
+  prints an offline summary, and each request adds one `[usage] ...` line to the normal log. Costs
+  come only from a price table you supply — no vendor prices are hardcoded.
+- **Model source prefixes** — with an upstream pool configured, `copilot:gpt-5` means "send this
+  one to Copilot". The source segment is stripped before forwarding (the upstream sees `gpt-5`),
+  while logs and usage reports keep the distinguishable `copilot:gpt-5` name. Matching is
+  conservative and unknown sources fall back to normal routing with a warning. Off by default.
+- **Prometheus `/metrics` and a local dashboard** — a read-only, loopback-only text metrics
+  endpoint (request/status/upstream counters, duration histogram, session table, bytes, token and
+  cache-reuse counters) plus a single-file HTML dashboard served by the proxy itself. No bundler,
+  framework or external scripts.
+- **Session prefix inspector** — `/sessions/prefix` exposes each session's stable content-fingerprint
+  hash alongside locally observed reuse counts and the upstream's cache-read rate, so you can see
+  *why* prompt caching did or did not pay off. The estimate is explicitly a heuristic, not a claim
+  about upstream internals.
+- **Structured JSON logs and OTLP/JSON export** — `--log-format json` writes one language-neutral
+  JSON object per request; the default-off `export.endpoint` posts OTLP-shaped JSON over HTTP to a
+  collector you choose. Both are side channels: they never change what the client receives.
 - **Request path rewriting** — map the `/v1` your client insists on to whatever path the upstream
   actually serves.
 - **Body parameter injection and removal** — add `temperature` or `metadata` to every request, or
@@ -373,6 +393,7 @@ Priority: **defaults < config file < environment variables < CLI flags**.
 | `map` | 27 built-in aliases | Alias → real upstream model ID. Merged **key by key** over the built-in table: a key here overrides the built-in entry of the same name and the rest are kept. Built-in entries cannot be deleted from a config file — override them instead |
 | `default` | `null` | Fallback model. Only applies to a name that matched nothing *and* had no prefix stripped; it deliberately does not rescue `proxy-xxx` that strips to an unmapped `xxx` |
 | `warnUnmapped` | `true` | Warn once per alias that strips to a name with no mapping and no `default` |
+| `sourcePrefix` | `{ enabled: false, separator: ":", aliases: {} }` | Pick the upstream from a source segment in the model name — see [Model source prefixes](#model-source-prefixes) |
 
 How a client-supplied name is resolved:
 
@@ -394,6 +415,46 @@ a real upstream ID, the upstream rejects it. The proxy now says which entry is m
 It fires at most once per alias per process, so a chatty client cannot flood the log. Set
 `"warnUnmapped": false` to silence it. Names sent without a matching prefix are never warned about —
 forwarding a real upstream ID is normal and expected.
+
+#### Model source prefixes
+
+The `proxy-` prefix above is for the **client's** routing. A source prefix is for **yours**: with
+several upstreams in the pool, it says which one should receive this particular request.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `false` | Off by default; existing clients are unaffected by the upgrade |
+| `separator` | `:` | Separator between the source token and the model name |
+| `aliases` | `{}` | Short name → provider name, e.g. `{ "gh": "copilot" }` |
+
+```json
+{
+  "model": {
+    "sourcePrefix": {
+      "enabled": true,
+      "separator": ":",
+      "aliases": { "gh": "copilot" }
+    }
+  }
+}
+```
+
+With the pool defining a `copilot` provider, all of these select it:
+
+| Client sends | Upstream receives | Why |
+| --- | --- | --- |
+| `copilot:gpt-5` | `gpt-5` | Provider name used directly |
+| `proxy-copilot:gpt-5` | `gpt-5` | Works together with the usual `proxy-` strip prefix |
+| `gh:gpt-5` | `gpt-5` | `aliases.gh` resolves to `copilot` |
+
+A source prefix outranks bucket rules, model-prefix routes and the pool default. Once chosen, the
+rest of the name goes through the **normal** resolution chain (`map`, remaining strip prefixes,
+`default`), so a provider-specific alias table still applies. Logging and usage use the full
+`copilot:gpt-5` name to keep same-named models apart.
+
+Matching is deliberately conservative: only configured provider names and aliases count as sources.
+`some-vendor:gpt-5` from an unknown vendor is left untouched, and an alias pointing to a provider
+that is not in the pool warns once and falls back to regular routing — neither case returns 500.
 
 ### `transformers`
 
@@ -715,6 +776,124 @@ upstream protocol and is passed through verbatim, exactly like the non-conversio
 }
 ```
 
+### `usage`
+
+Usage collection is **on by default** and sits beside the forwarding path: it reads a copy of the
+upstream response to find token counts (chat `usage`, Responses `input_tokens`/`output_tokens`,
+Anthropic `usage` including cache reads, Gemini `usageMetadata`) for both JSON and SSE responses.
+It never changes the bytes the client gets, and every read/write error is swallowed — statistics
+must never take the proxy down.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | Set `false` to turn off collection entirely |
+| `file` | `null` | `null` → `$LSP_HOME/usage.jsonl` or `~/.lsp/usage.jsonl`; a path writes there |
+| `prices` | `{}` | Model → per-1M-token prices; empty means counts only, no invented vendor prices |
+| `currency` | `USD` | Currency label used in the report |
+| `maxEntries` | `10000` | Most recent records kept in memory and on reload |
+| `maxBytes` | `5242880` | Rotate `usage.jsonl` to `usage.jsonl.1` past this size |
+| `logEachRequest` | `true` | Emit one `[usage] ...` line per request into the normal log |
+
+```json
+{
+  "usage": {
+    "file": "/var/log/lsp/usage.jsonl",
+    "currency": "USD",
+    "prices": {
+      "copilot:gpt-5": { "input": 1.25, "output": 10, "cacheRead": 0.125 },
+      "opencode-go:glm-5.3-flash": { "input": 0.3, "output": 2.5 },
+      "*": { "input": 1, "output": 4 }
+    }
+  }
+}
+```
+
+Price keys are tried as `source:model`, then `model`, then `source`, then `*`. Values are per
+**one million** tokens; `cacheRead` and `cacheWrite` fall back to the `input` price if omitted.
+`reasoning` tokens are reported but not charged separately — most upstreams already include them in
+the completion count. Reports include requests and success/failure split (4xx / 5xx / transport),
+token totals with cache reads/writes and reasoning tokens, latency (average / p95 / max), output
+tokens per second, average tokens per request, output ratio and cost when a price matches.
+Everything is aggregated four ways: totals, by source, by model and by session.
+
+```console
+$ llm-session-proxy --usage
+Usage summary — 3 requests (~/.lsp/usage.jsonl)
+
+TOTALS
+METRIC          VALUE
+--------------  --------------------------------------
+requests        3 (66.7% ok)
+failures        1 (4xx 1 / 5xx 0 / transport 0)
+tokens          3484 (in 2760 / out 724)
+cache-read      512 (15.6%)
+cache-write     0
+reasoning       0
+latency         avg 770ms / p95 860ms / max 1240ms
+throughput      313.4 tok/s
+avg tokens/req  in 920.0 / out 241.3 (out ratio 20.8%)
+cost            (no price table)
+
+BY SOURCE
+SOURCE       REQ  TOKENS  FAIL   COST
+-----------  ---  ------  -----  ----
+copilot      2    2256    50.0%  -
+opencode-go  1    1228    0.0%   -
+
+BY MODEL
+MODEL                      REQ  TOKENS  AVG ms  OUT tok/s
+-------------------------  ---  ------  ------  ---------
+copilot:gpt-5              2    2256    725     300.7
+opencode-go:glm-5.3-flash  1    1228    860     334.9
+
+BY SESSION
+SESSION  REQ  TOKENS  AVG ms  COST
+-------  ---  ------  ------  ----
+ses_a1   2    2256    725     -
+ses_b2   1    1228    860     -
+
+No prices configured — set usage.prices (per 1M tokens) to see cost.
+```
+
+(The real report prints the resolved absolute path; it is shortened here for readability.)
+`--usage-file <path>` reads a different JSONL file, and `--lang zh` switches the report language.
+
+### `metrics` and `dashboard`
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `metrics.enabled` | `true` | Serve `GET /__llm_session_proxy__/metrics` (Prometheus text) |
+| `dashboard.enabled` | `true` | Serve `GET /__llm_session_proxy__/dashboard` (single-file HTML). Ignored when metrics are off |
+
+Both endpoints are **read-only (GET only)** and reject non-loopback clients with 403 even if
+`listen.host` was changed to `0.0.0.0`. Metrics are in-memory counters; a restart starts fresh
+(the durable record is `usage.jsonl`). The histogram measures the **whole request as observed by
+the proxy**, not "added latency" — there is no no-proxy baseline to subtract.
+
+### `export` — OTLP/JSON
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `enabled` | `false` | Off unless you name an endpoint |
+| `endpoint` | `null` | HTTP(S) URL of your collector |
+| `headers` | `{}` | Extra headers, e.g. an ingest token (never logged) |
+| `timeoutMs` | `2000` | Per-request timeout |
+
+```json
+{
+  "export": {
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:4318/v1/logs",
+    "headers": { "x-observability-token": "..." },
+    "timeoutMs": 2000
+  }
+}
+```
+
+Each request becomes one OTLP/JSON `resourceLogs` payload with language-neutral attributes
+(status, model, source, upstream, tokens, durations). Export is fire-and-forget: a slow or broken
+collector never delays or fails a proxied request. There is no dependency on an OTLP SDK.
+
 ### Response, UA and logging
 
 | Field | Default | Description |
@@ -723,6 +902,7 @@ upstream protocol and is passed through verbatim, exactly like the non-conversio
 | `userAgentMode` | `replace-generic` | `keep` preserves the client UA; `replace` always overrides; `replace-generic` only when missing or library-like |
 | `response.stream` | `true` | Stream pass-through. `false` buffers everything (**breaks SSE**) |
 | `log.level` | `info` | `silent` / `error` / `warn` / `info` / `debug` |
+| `log.format` | `text` | `text` keeps human-readable lines; `json` writes one JSON object per request with stable, language-neutral field names (`event`, `status`, `model`, `source`, `usage`, …). The `[req]` / `[res]` / `[usage]` text lines are folded into that one object |
 | `log.file` | `null` | `null` uses the default location (§Logs): `~/.lsp/logs/llm-session-proxy.log`. A path writes there. `false` disables the file (console only) |
 | `log.dir` | `null` | Directory only — keeps the default file name |
 | `log.rotate` | `size` | `size` / `daily` / `off` |
@@ -745,6 +925,12 @@ terminal is gone.
 | Own file | `log.file` / `--log-file <path>`, or `LOG_FILE=<path>` |
 | Own directory | `log.dir` / `--log-dir <dir>`, or `LOG_DIR=<dir>` (default file name is kept) |
 | Turn it off | `--no-log-file`, `"file": false`, or `LOG_FILE=off` |
+| Usage records | `$LSP_HOME/usage.jsonl` (or `~/.lsp/usage.jsonl`), one JSON object per line; `usage.file` / `USAGE_FILE` / `--usage-file` override it |
+
+Each request also adds one `[usage] model=… source=… session=… status=… in=… out=… total=… …`
+line to the normal log. The tag stays ASCII so `grep '\[usage\]'` keeps working in both languages.
+With `log.format: json` / `--log-format json`, those per-request lines are folded into a **single**
+JSON object per request (`event: "request"`) instead; warnings and errors remain JSON objects too.
 
 Rotation, chosen with `log.rotate` / `--log-rotate` / `LOG_ROTATE`:
 
@@ -781,7 +967,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.3.2 — dry run
+llm-session-proxy v0.4.0 — dry run
 
 Config
   file                (none)
@@ -1023,6 +1209,9 @@ The warning names the port and the reason; pick another port and update the clie
 | `--log-dir <dir>` | Directory of the default log file |
 | `--log-rotate <mode>` | `size` / `daily` / `off` |
 | `--log-keep-days <n>` | Delete logs older than N days (`0` = keep forever) |
+| `--log-format <fmt>` | `text` (default) or `json` (one structured object per request) |
+| `--no-metrics` / `--no-dashboard` | Turn off the local `/metrics` endpoint / dashboard page |
+| `--export-endpoint <url>` | Enable OTLP/JSON export to this HTTP(S) endpoint (also sets `export.enabled`) |
 | `-l, --lang <en\|zh>` | Language of console output and log messages (default `en`) |
 | `--init [file]` | Write a sample config |
 | `--login-copilot` | Sign in to GitHub Copilot with the OAuth device flow and save the credential |
@@ -1030,11 +1219,14 @@ The warning names the port and the reason; pick another port and update the clie
 | `--dry-run` | Validate the config and print routing, buckets, injection and model resolution. No network I/O |
 | `--doctor` | `--dry-run` plus DNS/TCP/TLS reachability, listen-port and Copilot credential checks; exits non-zero on problems |
 | `--model <id>` | Sample model name used by `--dry-run` / `--doctor` |
+| `--usage` | Print the usage summary from `usage.jsonl` and exit; no server starts |
+| `--usage-file <file>` | Read usage records from a different JSONL file (implies `--usage`) |
 
 Environment variables mirror the config field names in uppercase: `PROXY_PORT`, `UPSTREAM_HOST`,
 `UPSTREAM_PROTO`, `OPENCODE_UA`, `LOG_LEVEL`, `LOG_FILE`, `LOG_DIR`, `LOG_ROTATE`,
-`LOG_KEEP_DAYS`, `MODEL_ALIAS_PREFIX`, `INJECT_HEADERS` (JSON), `TRANSFORMERS` (comma-separated),
-`ROUTER_ENABLED`, `PROTOCOL_ENABLED`, and so on.
+`LOG_KEEP_DAYS`, `LOG_FORMAT`, `METRICS_ENABLED`, `DASHBOARD_ENABLED`, `EXPORT_ENABLED`,
+`EXPORT_ENDPOINT`, `EXPORT_TIMEOUT_MS`, `MODEL_ALIAS_PREFIX`, `USAGE_FILE`, `USAGE_CURRENCY`,
+`INJECT_HEADERS` (JSON), `TRANSFORMERS` (comma-separated), `ROUTER_ENABLED`, `PROTOCOL_ENABLED`, and so on.
 
 ### Local status endpoints
 
@@ -1044,10 +1236,20 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/status
 
 # Per-session detail
 curl http://127.0.0.1:9355/__llm_session_proxy__/sessions
+
+# Stable content-prefix hashes + prompt-cache reuse estimate
+curl http://127.0.0.1:9355/__llm_session_proxy__/sessions/prefix
+
+# Prometheus text metrics
+curl http://127.0.0.1:9355/__llm_session_proxy__/metrics
+
+# Single-file local dashboard (open in a browser)
+curl http://127.0.0.1:9355/__llm_session_proxy__/dashboard
 ```
 
-Handy when debugging: if `sessions.active` stays at 0, requests never reached the proxy — usually
-because the model ID is missing the `proxy-` prefix and the client intercepted it.
+All local endpoints are GET-only and refuse non-loopback sources with 403. Handy when debugging:
+if `sessions.active` stays at 0, requests never reached the proxy — usually because the model ID
+is missing the `proxy-` prefix and the client intercepted it.
 
 ---
 
@@ -1197,7 +1399,7 @@ no local `npm login` required:
 3. Tag and push the matching tag:
 
 ```bash
-git tag v0.3.2 && git push origin v0.3.2
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
 The workflow runs the full test suite, verifies the tag matches `package.json`, then publishes to
@@ -1230,8 +1432,11 @@ start with `npx`. Everything on the roadmap has to fit that shape.
   **Delivered — v0.3.2:** a one-command setup wizard (`--setup opencode-go` / `--setup copilot`) with
   an explicit official-vs-community boundary, plus `--models` / `--models-update` for the live Go
   model catalogue with six-hour caching and a labelled stale fallback.
-- **v0.4 — observability and control.** Prometheus-format metrics, structured JSON logs, a
-  cost/token accounting endpoint, and a zero-build local dashboard.
+- **v0.4 — observability and control.** **Delivered:** by-model / by-source / by-session token and
+  performance accounting in an append-only `usage.jsonl` with an offline `--usage` report;
+  model source prefixes; a loopback-only Prometheus `/metrics` endpoint and single-file local
+  dashboard; a session prefix / prompt-cache inspector; `--log-format json`; and default-off
+  OTLP/JSON export. The HTTP accounting endpoint was deliberately replaced by the offline report.
 - **v0.5 — reliability under real upstreams.** Circuit breaking, upstream health checks,
   retry with jitter, stream idle watchdogs, graceful drain on shutdown.
 - **v1.0 — hardening and distribution.** Config schema validation, a compatibility matrix per

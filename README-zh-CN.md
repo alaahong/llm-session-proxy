@@ -61,6 +61,11 @@ x-opencode-session : 会话 ID，同一对话内保持稳定（用于提示词�
 - **多上游，各自带各自的凭据**——把不同模型分流到不同上游：你自己的 API key、GitHub Copilot 订阅、本地 Ollama，可以并存。每个上游自己声明端点路径、线协议与凭据来源。**凭据在运行时现取，绝不写进配置文件。**
 - **可组合的请求体变换**——五个内置命名变换（`drop-fields`、`drop-empty-fields`、`rename-fields`、`clamp-max-tokens`、`noop`），可以全局挂，也可以按桶挂，按固定顺序执行。注册表是**写死的清单**：**代理绝不会从某个路径加载代码**，「零依赖 + 只听回环」这句话才站得住。
 - **协议互转**——让只会说一种协议的客户端调到说另一种协议的模型：OpenAI Chat Completions ↔ Anthropic Messages ↔ OpenAI Responses ↔ Google Gemini，请求体与响应体都转，SSE 流按事件逐条转码、流式体验不降级。默认关闭；按模型前缀路由，语义与路由分桶同款。
+- **分模型、分来源的用量统计**——从上游响应的**副本**里旁路提取 token 数、缓存读取、延迟、吞吐与成功率，客户端收到的字节与不开统计时完全一致。记录追加写入 `usage.jsonl`，重启后仍在；`--usage` 打印离线汇总；每个请求在正常日志里留一行 `[usage] ...`。成本只按你提供的价格表算，绝不臆造厂商定价。
+- **模型来源前缀**——配了上游池之后，`copilot:gpt-5` 就表示「这次发给 Copilot」。来源段在转发前剥掉（上游看到的仍是 `gpt-5`），但日志与用量报表保留 `copilot:gpt-5` 这个可区分的名字。匹配很保守，未知来源告警后回退常规路由。默认关闭。
+- **Prometheus `/metrics` 与本地看板**——只读、仅回环的文本指标端点（按上游/状态码的请求数、耗时直方图、会话表、字节数、token 与缓存复用计数），再加一个由代理自己提供的单文件 HTML 看板。没有打包器、框架或外部脚本。
+- **会话前缀检查器**——`/sessions/prefix` 把每个会话稳定的内容指纹哈希、本地观察到的复用次数与上游回传的缓存读取率放在一起，让你看得出提示词缓存到底有没有生效。这个估算明确标注为启发式，不是对上游内部实现的断言。
+- **结构化 JSON 日志与 OTLP/JSON 导出**——`--log-format json` 每请求写一条语言无关 JSON 对象；默认关闭的 `export.endpoint` 把 OTLP 形态 JSON 发到你指定的 HTTP 收集器。两者都是旁路，不改客户端收到的任何字节。
 - **请求路径重写**——客户端只会填 `/v1` 时，用一条正则把它转到上游真正要的路径。
 - **请求体参数注入 / 删除**——统一给所有请求补 `temperature`、`metadata`，或删掉上游不认的字段。
 - **SSE 流式零缓冲透传**——逐块转发，不攒完再发，流式体验不受影响。
@@ -338,6 +343,7 @@ Go 清单来自官方**无需凭据**的 `GET https://opencode.ai/inference/go/v
 | `map` | 内置 27 条别名 | 别名 → 上游真实模型 ID。与内置表**逐键深合并**：同名键以你的为准，其余保留。内置项删不掉，想改就覆盖同名的键 |
 | `default` | `null` | 兜底模型名。只在「名字完全没被动过、也什么都没命中」时生效；`proxy-xxx` 被剥成 `xxx` 后查不到映射的情况**不兜底** |
 | `warnUnmapped` | `true` | 别名剥完前缀既无映射也无 `default` 时，每个别名告警一次 |
+| `sourcePrefix` | `{ enabled: false, separator: ":", aliases: {} }` | 从模型名里读来源段来点名上游——见[模型来源前缀](#模型来源前缀) |
 
 客户端送来的模型名，解析顺序是：
 
@@ -356,6 +362,45 @@ Go 清单来自官方**无需凭据**的 `GET https://opencode.ai/inference/go/v
 
 每个别名在一个进程里最多喊一次，客户端狂发也不会把日志刷爆；`"warnUnmapped": false` 可关掉。
 不带前缀的名字永远不告警——直接填真实 ID 是正常用法，不该吵。
+
+#### 模型来源前缀
+
+上面的 `proxy-` 是给**客户端**分流用的；来源前缀是给**你自己**用的：池里有多个上游时，它点名
+这一次请求发给谁。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `false` | 默认关闭，升级不影响现有客户端 |
+| `separator` | `:` | 来源段与模型名之间的分隔符 |
+| `aliases` | `{}` | 短名 → provider 名，例如 `{ "gh": "copilot" }` |
+
+```json
+{
+  "model": {
+    "sourcePrefix": {
+      "enabled": true,
+      "separator": ":",
+      "aliases": { "gh": "copilot" }
+    }
+  }
+}
+```
+
+假设上游池里定义了 `copilot`，下面三种写法都会选中它：
+
+| 客户端发送 | 上游收到 | 原因 |
+| --- | --- | --- |
+| `copilot:gpt-5` | `gpt-5` | 直接用 provider 名 |
+| `proxy-copilot:gpt-5` | `gpt-5` | 可以和常规的 `proxy-` 剥离前缀叠加 |
+| `gh:gpt-5` | `gpt-5` | `aliases.gh` 解析成 `copilot` |
+
+来源前缀的优先级高于桶规则、模型名前缀路由与池默认值。选中之后，剩下的模型名继续走**原有**
+解析链（`map`、其余待剥前缀、`default`），所以 provider 专属的别名表照样生效。日志与用量统计
+保留完整的 `copilot:gpt-5`，同名模型也能分清来源。
+
+匹配刻意保守：只有配置里出现过的 provider 名和别名才算来源；不认识的
+`some-vendor:gpt-5` 原样放行；别名指向池里不存在的 provider 时告警一次并回退常规路由——两种情况
+都不会返回 500。
 
 ### `transformers`
 
@@ -619,6 +664,120 @@ Gemini 有两点与众不同，值得单独说：它的模型名住在**路径**
 }
 ```
 
+### `usage`
+
+用量采集**默认开启**，并且是转发链路的旁路：它从上游响应的副本里找 token 数（chat 的 `usage`、
+Responses 的 `input_tokens`/`output_tokens`、Anthropic 的 `usage`（含缓存读取）、Gemini 的
+`usageMetadata`），JSON 整包与 SSE 流都支持。它不改客户端收到的任何字节，读写异常一律吞掉——
+统计永远不能把代理搞挂。
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 设为 `false` 完全关闭采集 |
+| `file` | `null` | `null` → `$LSP_HOME/usage.jsonl` 或 `~/.lsp/usage.jsonl`；给路径就写在那儿 |
+| `prices` | `{}` | 模型 → 每百万 token 单价；空表表示只统计 token，不猜厂商定价 |
+| `currency` | `USD` | 报表里显示的货币符号 |
+| `maxEntries` | `10000` | 内存里保留、重载时读回的最近记录条数 |
+| `maxBytes` | `5242880` | 超过该字节数就把 `usage.jsonl` 轮转成 `usage.jsonl.1` |
+| `logEachRequest` | `true` | 每个请求在正常日志里写一行 `[usage] ...` |
+
+```json
+{
+  "usage": {
+    "file": "/var/log/lsp/usage.jsonl",
+    "currency": "USD",
+    "prices": {
+      "copilot:gpt-5": { "input": 1.25, "output": 10, "cacheRead": 0.125 },
+      "opencode-go:glm-5.3-flash": { "input": 0.3, "output": 2.5 },
+      "*": { "input": 1, "output": 4 }
+    }
+  }
+}
+```
+
+价格键按 `来源:模型` → `模型` → `来源` → `*` 的顺序尝试；数值单位是**每百万 token**；
+不写 `cacheRead` / `cacheWrite` 时按 `input` 价算。推理 token 会展示，但不单独计价——多数上游
+已经把它算进输出 token 里了。报表包含请求数与成功/失败拆分（4xx / 5xx / 传输失败）、token
+总量与缓存读/写、推理 token、延迟（平均 / p95 / 最大）、输出 tok/s、平均 token/请求、输出占比，
+以及价格命中时的成本。所有指标按总量、按来源、按模型、按会话四个维度汇总。
+
+```console
+$ llm-session-proxy --usage
+用量汇总 — 3 次请求（~/.lsp/usage.jsonl）
+
+总计
+指标             值
+---------------  ----------------------------------------
+请求数           3 (66.7% 成功)
+失败             1 (4xx 1 / 5xx 0 / 传输 0)
+token            3484 (输入 2760 / 输出 724)
+缓存读           512 (15.6%)
+缓存写           0
+推理             0
+延迟             平均 770ms / p95 860ms / 最大 1240ms
+吞吐             313.4 tok/s
+平均 token/请求  输入 920.0 / 输出 241.3 (输出占比 20.8%)
+成本             （未配价格表）
+
+按来源
+来源         请求  token  失败率  成本
+-----------  ----  -----  ------  ----
+copilot      2     2256   50.0%   -
+opencode-go  1     1228   0.0%    -
+
+按模型
+模型                       请求  token  平均 ms  输出 tok/s
+-------------------------  ----  -----  -------  ----------
+copilot:gpt-5              2     2256   725      300.7
+opencode-go:glm-5.3-flash  1     1228   860      334.9
+
+按会话
+会话    请求  token  平均 ms  成本
+------  ----  -----  -------  ----
+ses_a1  2     2256   725      -
+ses_b2  1     1228   860      -
+
+未配置价格 —— 在 usage.prices 里填每百万 token 的单价即可显示成本。
+```
+
+（真实报表打印的是解析后的绝对路径，这里为了排版缩短了。）`--usage-file <path>` 可以读另一份
+JSONL，`--lang zh` 切换报表语言。
+
+### `metrics` 与 `dashboard`
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `metrics.enabled` | `true` | 提供 `GET /__llm_session_proxy__/metrics`（Prometheus 文本格式） |
+| `dashboard.enabled` | `true` | 提供 `GET /__llm_session_proxy__/dashboard`（单文件 HTML）。指标关闭时自动无效 |
+
+两个端点都**只读（仅 GET）**，即便 `listen.host` 被改成 `0.0.0.0`，非回环来源也会被 403 拒绝。
+指标只存内存，重启清零——持久记录仍是 `usage.jsonl`。直方图记录的是**代理观察到的完整请求耗时**，
+不是「代理额外增加了多少延迟」——没有无代理基线就减不出来。
+
+### `export` —— OTLP/JSON 导出
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `false` | 不指定端点就不工作 |
+| `endpoint` | `null` | 收集器的 HTTP(S) URL |
+| `headers` | `{}` | 额外请求头，例如 ingest token（绝不进日志） |
+| `timeoutMs` | `2000` | 单次导出超时 |
+
+```json
+{
+  "export": {
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:4318/v1/logs",
+    "headers": { "x-observability-token": "..." },
+    "timeoutMs": 2000
+  }
+}
+```
+
+每个请求变成一条 OTLP/JSON `resourceLogs` 记录，属性名语言无关（status、model、source、upstream、
+token、耗时）。导出是「发了就不管」：收集器再慢再坏也不会拖慢或搞失败一个被代理的请求。
+不需要任何 OTLP SDK。
+
 ### 其他
 
 | 字段 | 默认值 | 说明 |
@@ -627,6 +786,7 @@ Gemini 有两点与众不同，值得单独说：它的模型名住在**路径**
 | `userAgentMode` | `replace-generic` | `keep` 保留客户端 UA；`replace` 总是替换；`replace-generic` 仅在客户端 UA 缺失或像个通用 HTTP 库时替换 |
 | `response.stream` | `true` | 是否流式透传。`false` 会整体缓冲后返回（**会破坏 SSE，除非有特殊需要否则别关**） |
 | `log.level` | `info` | `silent` / `error` / `warn` / `info` / `debug` |
+| `log.format` | `text` | `text` 保持现有人类可读行；`json` 每请求写一条 JSON 对象，字段名稳定且语言无关（`event`、`status`、`model`、`source`、`usage` …）。`[req]` / `[res]` / `[usage]` 文本行会折叠进这一条对象 |
 | `log.file` | `null` | `null` 表示写在默认位置（见「日志」一节）：`~/.lsp/logs/llm-session-proxy.log`；给路径就写在那儿；`false` 关闭文件输出（只出控制台） |
 | `log.dir` | `null` | 只换目录，文件名保持默认 |
 | `log.rotate` | `size` | `size` / `daily` / `off` |
@@ -648,6 +808,12 @@ Gemini 有两点与众不同，值得单独说：它的模型名住在**路径**
 | 指定文件 | `log.file` / `--log-file <path>` / `LOG_FILE=<path>` |
 | 只换目录 | `log.dir` / `--log-dir <dir>` / `LOG_DIR=<dir>`（文件名保持默认） |
 | 关掉 | `--no-log-file` / `"file": false` / `LOG_FILE=off` |
+| 用量记录 | `$LSP_HOME/usage.jsonl`（未设 `LSP_HOME` 时为 `~/.lsp/usage.jsonl`），每行一个 JSON 对象；`usage.file` / `USAGE_FILE` / `--usage-file` 可覆盖 |
+
+每个请求还会在正常日志里留一行 `[usage] model=… source=… session=… status=… in=… out=… total=… …`。
+标签保持 ASCII 不翻译，`grep '\[usage\]'` 在中英文日志里都能用。
+设了 `log.format: json` / `--log-format json` 后，这些逐请求文本行会折叠成**一请求一条** JSON 对象
+（`event: "request"`）；告警与错误也同样是 JSON 对象。
 
 轮转方式由 `log.rotate` / `--log-rotate` / `LOG_ROTATE` 决定：
 
@@ -683,7 +849,7 @@ llm-session-proxy --dry-run
 ```
 
 ```
-llm-session-proxy v0.3.2 —— 试运行
+llm-session-proxy v0.4.0 —— 试运行
 
 配置
   文件            （无）
@@ -920,6 +1086,9 @@ Fetch 规范——以及所有照着它实现的浏览器——内置了一张**
 | `--log-dir <dir>` | 默认日志文件所在目录 |
 | `--log-rotate <mode>` | `size` / `daily` / `off` |
 | `--log-keep-days <n>` | 自动删除超过 N 天的历史日志（`0` 为永久保留） |
+| `--log-format <fmt>` | `text`（默认）或 `json`（每请求一条结构化对象） |
+| `--no-metrics` / `--no-dashboard` | 关闭本地 `/metrics` 端点 / 看板页面 |
+| `--export-endpoint <url>` | 启用 OTLP/JSON 导出到该 HTTP(S) 端点（同时打开 `export.enabled`） |
 | `-l, --lang <en\|zh>` | 控制台与日志文案语言（默认 `en`）|
 | `--init [file]` | 生成示例配置 |
 | `--login-copilot` | 用 OAuth 设备流登录 GitHub Copilot 并保存凭据 |
@@ -927,17 +1096,20 @@ Fetch 规范——以及所有照着它实现的浏览器——内置了一张**
 | `--dry-run` | 校验配置并打印路由、分桶、注入与模型解析结果，不产生任何网络请求 |
 | `--doctor` | 同 `--dry-run`，再加 DNS/TCP/TLS 可达性、监听端口与 Copilot 凭据检查；有问题时退出码非 0 |
 | `--model <id>` | `--dry-run` / `--doctor` 演示用的样例模型名 |
+| `--usage` | 从 `usage.jsonl` 打印用量汇总并退出，不启动服务 |
+| `--usage-file <file>` | 从另一份 JSONL 读取用量记录（隐含 `--usage`） |
 
 环境变量与配置文件同名字段一一对应（大写形式）：`PROXY_PORT`、`UPSTREAM_HOST`、
 `UPSTREAM_PROTO`、`OPENCODE_UA`、`LOG_LEVEL`、`LOG_FILE`、`LOG_DIR`、`LOG_ROTATE`、
-`LOG_KEEP_DAYS`、`MODEL_ALIAS_PREFIX`、`INJECT_HEADERS`（JSON）、`TRANSFORMERS`（逗号分隔）、
-`ROUTER_ENABLED`、`PROTOCOL_ENABLED` 等。
+`LOG_KEEP_DAYS`、`LOG_FORMAT`、`METRICS_ENABLED`、`DASHBOARD_ENABLED`、`EXPORT_ENABLED`、
+`EXPORT_ENDPOINT`、`EXPORT_TIMEOUT_MS`、`MODEL_ALIAS_PREFIX`、`USAGE_FILE`、`USAGE_CURRENCY`、
+`INJECT_HEADERS`（JSON）、`TRANSFORMERS`（逗号分隔）、`ROUTER_ENABLED`、`PROTOCOL_ENABLED` 等。
 
 ---
 
 ## 本地状态端点
 
-只监听本机，不会转发到上游：
+只监听本机，不会转发到上游（所有本地端点仅支持 GET，非回环来源返回 403）：
 
 ```bash
 # 运行概览：会话数、命中率、注入的头、上游地址
@@ -945,6 +1117,15 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/status
 
 # 会话明细：每个会话的 ID、请求数、最后使用时间
 curl http://127.0.0.1:9355/__llm_session_proxy__/sessions
+
+# 稳定内容前缀哈希 + 提示词缓存复用估算
+curl http://127.0.0.1:9355/__llm_session_proxy__/sessions/prefix
+
+# Prometheus 文本指标
+curl http://127.0.0.1:9355/__llm_session_proxy__/metrics
+
+# 单文件本地看板（用浏览器打开）
+curl http://127.0.0.1:9355/__llm_session_proxy__/dashboard
 ```
 
 排错时很有用——如果 `sessions.active` 一直是 0，说明请求根本没到代理（多半是模型 ID 没加 `proxy-` 前缀）。
@@ -1087,7 +1268,7 @@ as the model name. See the Chinese sections above for the full configuration ref
 3. 打一个同名 tag 并推送：
 
 ```bash
-git tag v0.3.2 && git push origin v0.3.2
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
 workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本一致，再用仓库 secrets 里的
@@ -1112,8 +1293,10 @@ workflow 会先跑完全部单元测试、校验 tag 与 `package.json` 版本�
   **已交付 v0.3.2：** 一键接入向导（`--setup opencode-go` / `--setup copilot`，明确区分官方支持与
   社区路径），以及 `--models` / `--models-update` 实时 Go 模型清单——缓存 6 小时，实时失败时回退到
   缓存并标为 stale。
-- **v0.4 — 可观测与可控。** Prometheus 格式指标、结构化 JSON 日志、token/成本统计端点、
-  免构建的本地看板。
+- **v0.4 — 可观测与可控。** **已交付：** 按模型 / 按来源 / 按会话的 token 与性能统计写入追加式
+  `usage.jsonl`，离线 `--usage` 报表；模型名里的来源前缀；只读、仅回环的 Prometheus `/metrics`
+  与单文件本地看板；会话前缀 / 提示词缓存检查器；`--log-format json`；以及默认关闭的
+  OTLP/JSON 导出。原先设想的 HTTP 统计端点按取舍改为离线报表。
 - **v0.5 — 真实上游下的可靠性。** 熔断、上游健康检查、带抖动的重试、流空闲看门狗、优雅退出。
 - **v1.0 — 加固与分发。** 配置 schema 校验、按客户端的兼容性矩阵、随仓库的基准测试工具、
   单文件可执行产物。

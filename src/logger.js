@@ -9,6 +9,7 @@ const COLORS = { error: 31, warn: 33, info: 36, debug: 90 };
 
 /** 轮转策略：按大小 / 按日期 / 不轮转。 */
 export const ROTATE_MODES = ['size', 'daily', 'off'];
+export const LOG_FORMATS = ['text', 'json'];
 
 /**
  * 归档扫描的最小间隔。
@@ -100,10 +101,13 @@ export class Logger {
       backups = 2,
       keepDays = 30,
       console: toConsole = true,
+      format = 'text',
       clock = () => new Date(),
     } = options;
 
     this.level = LEVELS[level] ?? LEVELS.info;
+    // text：现有的人类可读行；json：一行一个 JSON 对象，字段名与语言无关。
+    this.format = format === 'json' ? 'json' : 'text';
     this.toConsole = toConsole;
     this.clock = typeof clock === 'function' ? clock : () => new Date();
 
@@ -259,11 +263,20 @@ export class Logger {
     this.#sweep();
   }
 
+  /** JSON 模式：单个对象参数直接展开，其余按 message 字符串处理。 */
+  #jsonLine(level, args) {
+    const base = { ts: this.clock().toISOString(), level };
+    if (args.length === 1 && args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])) {
+      return JSON.stringify({ ...base, ...args[0] });
+    }
+    return JSON.stringify({ ...base, message: args.map(stringify).join(' ') });
+  }
+
   #emit(level, args) {
     if (LEVELS[level] > this.level) return;
-    const ts = this.clock().toISOString().replace('T', ' ').slice(0, 19);
-    const text = args.map(stringify).join(' ');
-    const line = `${ts} [${level.toUpperCase()}] ${text}`;
+    const line = this.format === 'json'
+      ? this.#jsonLine(level, args)
+      : `${this.clock().toISOString().replace('T', ' ').slice(0, 19)} [${level.toUpperCase()}] ${args.map(stringify).join(' ')}`;
     if (this.toConsole) {
       const color = COLORS[level] || 0;
       const out = process.stderr.isTTY ? `\u001b[${color}m${line}\u001b[0m` : line;
@@ -295,12 +308,29 @@ export class Logger {
     this.#emit('debug', args);
   }
 
+  /**
+   * 一条结构化事件。text 模式下刻意不输出：逐请求的文本行由调用方照旧写，
+   * 否则同一请求会被记两遍。
+   */
+  structured(level, fields) {
+    if (this.format !== 'json') return;
+    this.#emit(level, [fields && typeof fields === 'object' ? fields : { message: String(fields) }]);
+  }
+
+  /** 只在 text 模式下输出的逐请求文本行（[req] / [res] / [usage]）。 */
+  text(level, ...args) {
+    if (this.format !== 'text') return;
+    this.#emit(level, args);
+  }
+
   child(prefix) {
     return {
       error: (...a) => this.error(prefix, ...a),
       warn: (...a) => this.warn(prefix, ...a),
       info: (...a) => this.info(prefix, ...a),
       debug: (...a) => this.debug(prefix, ...a),
+      structured: (level, fields) => this.structured(level, fields),
+      text: (level, ...a) => this.text(level, ...a),
     };
   }
 

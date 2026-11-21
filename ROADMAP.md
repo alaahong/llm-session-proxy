@@ -7,22 +7,24 @@ below has to fit that shape.
 - **Scope:** one developer machine, one process. One upstream by default; a pool of upstreams since v0.3.0.
 - **Non-negotiable:** `dependencies` in `package.json` stays empty. Features that would need a
   library get re-implemented on Node built-ins, or they do not ship.
-- **Status:** v0.3.2 — the session/header injection core works and is hardened; model aliasing,
+- **Status:** v0.4.0 — the session/header injection core works and is hardened; model aliasing,
   `--dry-run` / `--doctor`, the transform registry, routing buckets, protocol conversion, difficulty
-  scoring, the multi-upstream pool, a one-command setup wizard and a live model catalogue have shipped.
-  Everything else is on this page.
+  scoring, the multi-upstream pool, a one-command setup wizard, a live model catalogue, token/cost
+  accounting, source prefixes, Prometheus metrics, structured logs, a local dashboard and OTLP/JSON
+  export have shipped. Everything else is on this page.
 
 ---
 
 ## 1. Where it stands today
 
-### Working (v0.3.2)
+### Working (v0.4.0 — published)
 
 | Area | What ships now |
 | --- | --- |
 | Sessions | Three-tier resolution: explicit client identifier → content fingerprint (`system` + first user message) → one-off random. Stable per conversation, so upstream prompt caching works. |
 | Injection | Arbitrary request headers and body fields, templated (`{{session.id}}`, `{{uuid}}`, `{{env.HOME}}`, …), with dot-path support and an `overwrite` switch. |
 | Rewriting | Model aliases (exact map + prefix stripping, composable) and request paths (regex rules). A curated OpenCode Go alias table now ships **in the box**, so the `proxy-` prefix the README prescribes resolves without a config file; an alias that strips down to something unmapped is reported by name instead of being forwarded silently. |
+| Source prefixes (v0.4) | With an upstream pool, `copilot:gpt-5` names the provider for that request. The source segment is stripped before forwarding; logs and usage keep the `copilot:gpt-5` display name. Configured provider names and aliases only, unknown sources warn and fall back rather than 500. Off by default. |
 | Routing | Four buckets (`default` / `background` / `think` / `longContext`), each with its own model override and transform list. Rules match on path prefix, model prefix, body field, request size or **difficulty band**, evaluate **top-down with the first match winning**, and AND the conditions inside one rule. **Off by default**, so upgrading changes nothing. |
 | Difficulty | A named in-tree **scorer registry** (`builtin-complexity`) turns the request's shape into a 0–100 score and a band (`easy` / `medium` / `hard`), which the router can match on. Nine weighted signals, deterministic, no network, no model call. Measures the *shape* of a request, not its semantic difficulty. |
 | Upstreams | A **pool** of upstreams (`openai` / `anthropic` / `gemini` / `copilot` / `custom`), each with its own base URL, endpoint paths, wire protocol and credential source. The bucket picks the upstream explicitly, otherwise the model name picks it by prefix, otherwise the pool default does. Request bodies are converted to whichever **wire protocol** the chosen upstream speaks. |
@@ -33,8 +35,10 @@ below has to fit that shape.
 | Protocol | Anthropic Messages ↔ OpenAI Chat Completions ↔ OpenAI Responses ↔ **Google Gemini**: request bodies converted before forwarding, JSON responses rewritten, SSE streams transcoded **event by event** so streaming stays streaming. Off by default, routed by model prefix; upstream 4xx/5xx error bodies are never converted. |
 | Diagnostics | `--dry-run` prints the effective routing, the **rendered** injection table, the model-resolution chain, the bucket/transform decision, the difficulty score and the upstream pool with no network I/O; `--doctor` adds DNS/TCP/TLS reachability, listen-port checks (free? on the WHATWG forbidden-port list?) and exits non-zero on problems. |
 | Streaming | SSE is piped chunk by chunk, never buffered. Upstream 4xx bodies come back verbatim. |
-| Operations | `/__llm_session_proxy__/status` and `/sessions`, **log-to-disk on by default** (`~/.lsp/logs`) with size/date rotation and 30-day archival, four-layer config merge (defaults < file < env < CLI). Auto-assigned listen ports (`listen.port: 0`) never land on a WHATWG forbidden port; a port you configure explicitly is respected and reported by `--doctor` instead. |
-| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **962 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
+| Operations | `/__llm_session_proxy__/status`, `/sessions`, `/sessions/prefix`, read-only Prometheus `/metrics` and a single-file local `/dashboard`; all local endpoints are GET-only and reject non-loopback sources with 403. **Log-to-disk on by default** (`~/.lsp/logs`) with size/date rotation and 30-day archival, four-layer config merge (defaults < file < env < CLI). Auto-assigned listen ports (`listen.port: 0`) never land on a WHATWG forbidden port; a port you configure explicitly is respected and reported by `--doctor` instead. |
+| Usage (v0.4) | Side-channel token accounting from JSON and SSE response bytes: totals, by model, by source and by session, with success rate, latency percentiles, output throughput, cache reads/writes, reasoning tokens and cost from a user-supplied price table. Append-only `$LSP_HOME/usage.jsonl` survives restarts; one `[usage]` line per request; `--usage` renders an offline report. All storage errors are swallowed. On by default, but no bytes are changed. |
+| Structured output (v0.4) | `--log-format json` emits one language-neutral JSON object per request; text mode keeps the familiar `[req]` / `[res]` / `[usage]` lines. Default-off OTLP/JSON export posts OTLP-shaped records to a user-chosen HTTP(S) endpoint, fire-and-forget with no SDK. |
+| Stability | A single malformed request cannot kill the process; uncaught errors land in the log file; **1003 tests**, nine of them dedicated malformed-input and half-open-connection scenarios (illegal `Host`, control characters in the upstream reason phrase and headers, a malformed request line, oversized headers, a client that disconnects mid-body, an upstream that drops an idle keep-alive). |
 | Language | Console output and log messages are **English by default**, switchable to Chinese with `--lang zh` / `PROXY_LANG=zh`. |
 
 ### Known gaps (stated plainly)
@@ -42,13 +46,16 @@ below has to fit that shape.
 1. **No retry, no health check, no circuit breaker.** The upstream pool can *choose* between upstreams,
    but it cannot fall back on its own: a 429 or a 5xx is returned to the client as-is. Fallback and
    retry are v0.5 work.
-2. **No machine-readable observability.** Human-readable log lines only: no metrics endpoint, no
-   structured log mode, no trace export.
+2. **Observability is local-only by design.** `/metrics`, JSON logs, the dashboard and OTLP/JSON
+   export now exist, but there is no trace/span model and no hosted backend. Export is fire-and-
+   forget JSON, not a full OTLP pipeline with retries or batching.
 3. **The transform registry is a fixed list.** Five in-tree transforms, and no way to load one from a
    path. Still absent at the transform level: system-prompt *content* rewriting (protocol conversion
    moves system messages between shapes, it does not rewrite what they say).
-4. **No caching and no cost accounting.** We can make the *upstream's* cache hit; we cannot report
-   whether it did.
+4. **No cache of our own.** We can make the *upstream's* cache hit, and v0.4 reports both the
+   `cache_read` tokens and a per-session prefix-hash estimate — but the proxy never stores prompt
+   bodies itself. The estimate is a heuristic from local reuse counts and upstream counters, not a
+   view into the upstream's cache. Cost figures exist only where you supply a price table.
 5. **Protocol conversion is lossy at the edges, by design.** Anthropic `thinking` / `signature` stream
    deltas are dropped when converting to chat; `messages ↔ responses` composes through chat.
 6. **The difficulty scorer reads the request, not the task.** A three-word question in a 30 KB
@@ -278,18 +285,27 @@ Two orthogonal axes. The first decides **which model** a request should use; the
 
 ### v0.4 — Observability and control
 
-- [ ] **Prometheus text-format `/metrics`** on the local prefix: request counts by upstream/status,
-      added-latency histograms, session table size, cache-reuse counters, bytes in/out.
-- [ ] **Structured logging:** `--log-format json` with stable field names, one JSON object per
+- [x] **Prometheus text-format `/metrics`** on the local prefix: request counts by upstream/status,
+      request-duration histograms (proxy-observed end-to-end, not an invented "added latency"),
+      session table size, cache-reuse counters, bytes in/out. GET-only, loopback-only.
+- [x] **Structured logging:** `--log-format json` with stable field names, one JSON object per
       request, so logs are greppable and shippable without a parser.
-- [ ] **OTLP/JSON export** over HTTP to a user-configured endpoint (JSON encoding, not protobuf, to
-      stay dependency-free). Off by default.
-- [ ] **Session and prefix inspector:** expose the stable-prefix hash per session and estimate
+- [x] **OTLP/JSON export** over HTTP to a user-configured endpoint (JSON encoding, not protobuf, to
+      stay dependency-free). Off by default; fire-and-forget, failures swallowed.
+- [x] **Session and prefix inspector:** expose the stable-prefix hash per session and estimate
       whether the upstream's prompt cache was reusable — the metric that justifies this whole tool.
-- [ ] **Token and cost accounting** per session/model/upstream, priced from a user-supplied price
-      table. We will not hardcode vendor prices; they change too often.
-- [ ] **Zero-build dashboard:** one hand-written HTML page served locally, reading the local
+      <sub>Heuristic from local reuse counts and upstream cache-read tokens, explicitly labelled as such.</sub>
+- [x] **Model source prefixes** so same-named models from different providers stay distinguishable
+      in logs and reports: `copilot:gpt-5` selects the provider and is stripped before forwarding.
+      <sub>Conservative matching against configured providers/aliases only.</sub>
+- [x] **Token and cost accounting** per model/upstream/session, priced from a user-supplied price
+      table. We will not hardcode vendor prices; they change too often. <sub>`usage.jsonl`
+      (append-only JSONL with rotation), `--usage` / `--usage-file` offline reports, `[usage]`
+      per-request log lines, token/success/latency/throughput/cache/cost aggregation. The HTTP
+      accounting endpoint was deliberately replaced by the offline report.</sub>
+- [x] **Zero-build dashboard:** one hand-written HTML page served locally, reading the local
       endpoints. No bundler, no framework, no npm install.
+      <sub>Inline CSS/JS, CSP-locked, all dynamic text written with `textContent`.</sub>
 
 ### v0.5 — Reliability under real upstreams
 
@@ -395,9 +411,10 @@ Rules for using it:
   verified.
 - v0.3.0 shipped as one release because the two axes it introduces are useless apart: a difficulty
   band only helps if something can route on it, and an upstream pool only pays off if traffic
-  reaches it. v0.3.1 (Copilot direct-by-default) and v0.3.2 (setup wizard and live model catalogue)
-  followed as additive releases: neither changes the forwarding core, so both are independently
-  installable and independently verified. The milestone numbers after v0.3 were **renumbered**
+  reaches it. v0.3.1 (Copilot direct-by-default), v0.3.2 (setup wizard and live model catalogue) and
+  v0.4.0 (observability: accounting, metrics, structured logs, dashboard, OTLP/JSON export) followed
+  as additive releases: none changes the forwarding core, so each is independently installable and
+  independently verified. The milestone numbers after v0.3 were **renumbered**
   (v0.4 is now observability, v0.5 reliability, v0.6 safety) to keep one milestone per release train.
 - From `v1.0`: semver. Breaking config changes require `--migrate-config`.
 - Releases go out through `.github/workflows/publish.yml` on a `v*` tag, with the pack check and the

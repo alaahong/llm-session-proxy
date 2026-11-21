@@ -29,6 +29,13 @@
   //  再用 `--models-update examples/opencode-go-models.json` 把最新 ID 追加进
   //  model.map（你已有的别名会保留）；生成一份全新的配置用 `--setup opencode-go`。
   //
+  //  从 v0.4 起用量采样默认开启：token / 延迟 / 成功率等追加写入
+  //  `~/.lsp/usage.jsonl`，`llm-session-proxy --usage` 离线汇总（按模型、按来源）。
+  //  配了 upstreams 池后可打开 model.sourcePrefix，让 `copilot:gpt-5` 这种写法
+  //  点名上游；来源段在转发前剥掉，日志与用量保留完整展示名。
+  //  v0.4 还自带只读的 /metrics、/dashboard 与 /sessions/prefix 本地端点；
+  //  --log-format json 每请求一条结构化记录，export.endpoint 默认关闭、按需开启 OTLP/JSON。
+  //
   //  启动：llm-session-proxy -c examples/opencode-go-models.json
   // ════════════════════════════════════════════════════════════════════
 

@@ -103,6 +103,26 @@
         <p><code>--models</code> reads the official credential-free Go endpoint and prints each model's recommended API. Results are cached for six hours with a labelled stale fallback. <code>--models-update</code> adds the newest IDs to <code>model.map</code> while keeping every alias you already have.</p>
       </div>
       <div class="card">
+        <div class="tag">usage</div>
+        <h4>Usage accounting</h4>
+        <p>Tokens, cache reads, success rate, latency percentiles and output throughput, aggregated by model and source. A copy of the response bytes is sampled — the client receives exactly the same bytes. Records land in an append-only <code>usage.jsonl</code>; <code>--usage</code> prints an offline report and each request adds one <code>[usage]</code> log line. Costs only from a price table you supply.</p>
+      </div>
+      <div class="card">
+        <div class="tag">source-prefix</div>
+        <h4>Model source prefixes</h4>
+        <p>With an upstream pool, <code>copilot:gpt-5</code> means “this request goes to Copilot”. The source segment is stripped before forwarding, while logs and usage keep the full name so same-named models stay apart. Only configured providers and aliases are recognised; unknown sources warn and fall back. Off by default.</p>
+      </div>
+      <div class="card">
+        <div class="tag">metrics</div>
+        <h4>Metrics, dashboard and prefix inspector</h4>
+        <p>A read-only, loopback-only Prometheus <code>/metrics</code> endpoint, a single-file local <code>/dashboard</code>, and <code>/sessions/prefix</code> with the stable fingerprint hash and a clearly-labelled prompt-cache estimate. In-memory counters; durable history stays in <code>usage.jsonl</code>.</p>
+      </div>
+      <div class="card">
+        <div class="tag">export</div>
+        <h4>Structured logs and OTLP/JSON</h4>
+        <p><code>--log-format json</code> writes one language-neutral object per request. Default-off <code>export.endpoint</code> posts OTLP-shaped JSON to a collector you choose — fire-and-forget, no SDK, no third-party package, no change to the bytes the client receives.</p>
+      </div>
+      <div class="card">
         <div class="tag">router</div>
         <h4>Rule-based routing into buckets</h4>
         <p>Four buckets — <code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code> — each with its own model override and body transforms. Rules match on path prefix, model prefix, a body field or request size; they run top-down with first match winning, and the conditions inside one rule are ANDed. <b>Off by default</b>, so upgrading changes nothing.</p>
@@ -647,6 +667,118 @@ npx llm-session-proxy --models-update ./proxy.config.json --in-place</code></pre
       intent moves with it — which is why the proxy captures both before any conversion runs.
     </p>
 
+    <h3 id="usage">usage — token and cost accounting</h3>
+    <p class="sub">On by default. Token counts are sampled from a <b>copy</b> of the upstream response
+      (chat <code>usage</code>, Responses <code>input_tokens</code> / <code>output_tokens</code>,
+      Anthropic <code>usage</code> with cache reads, Gemini <code>usageMetadata</code>), for JSON and
+      SSE alike. Client bytes are unchanged and every storage error is swallowed.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>true</code></td><td>Master switch</td></tr>
+          <tr><td><code>file</code></td><td><code>null</code></td><td><code>null</code> → <code>$LSP_HOME/usage.jsonl</code> or <code>~/.lsp/usage.jsonl</code>; a path writes there</td></tr>
+          <tr><td><code>prices</code></td><td><code>{}</code></td><td>Model → price per 1M tokens. Empty means counts only, no invented vendor prices</td></tr>
+          <tr><td><code>currency</code></td><td><code>USD</code></td><td>Currency label in the report</td></tr>
+          <tr><td><code>maxEntries</code></td><td><code>10000</code></td><td>Recent records kept in memory and on reload</td></tr>
+          <tr><td><code>maxBytes</code></td><td><code>5242880</code></td><td>Rotate to <code>usage.jsonl.1</code> past this size</td></tr>
+          <tr><td><code>logEachRequest</code></td><td><code>true</code></td><td>One <code>[usage] ...</code> line per request in the normal log</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"usage": {
+  "file": "/var/log/lsp/usage.jsonl",
+  "prices": {
+    "copilot:gpt-5": { "input": 1.25, "output": 10, "cacheRead": 0.125 },
+    "*": { "input": 1, "output": 4 }
+  }
+}</code></pre>
+    <p>
+      Price keys are tried as <code>source:model</code> → <code>model</code> → <code>source</code> → <code>*</code>;
+      <code>cacheRead</code> / <code>cacheWrite</code> fall back to the <code>input</code> price, while
+      reasoning tokens are reported but not charged twice. Reports aggregate totals, by source, by
+      model and by session: request counts and success rate, 4xx/5xx/transport failures, tokens
+      (in/out/cache-read/cache-write/reasoning), average/p95/max latency, output tok/s and cost when
+      a price matches. <code>--usage</code> renders the report offline;
+      <code>--usage-file &lt;path&gt;</code> reads another JSONL.
+    </p>
+
+    <h3 id="source-prefix">model.sourcePrefix — name the upstream</h3>
+    <p class="sub">Off by default. A source segment outranks bucket rules, model-prefix routes and the
+      pool default; the rest of the name continues through normal alias resolution.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Client sends</th><th>Upstream gets</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><code>copilot:gpt-5</code></td><td><code>gpt-5</code></td><td>Provider name used directly</td></tr>
+          <tr><td><code>proxy-copilot:gpt-5</code></td><td><code>gpt-5</code></td><td>Composes with the usual <code>proxy-</code> strip prefix</td></tr>
+          <tr><td><code>gh:gpt-5</code></td><td><code>gpt-5</code></td><td><code>aliases.gh</code> resolves to <code>copilot</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"model": {
+  "sourcePrefix": {
+    "enabled": true,
+    "separator": ":",
+    "aliases": { "gh": "copilot" }
+  }
+}</code></pre>
+    <p>
+      Only configured provider names and aliases count as sources. An unknown
+      <code>vendor:gpt-5</code> is left untouched; an alias pointing at a provider missing from the
+      pool warns once and falls back to regular routing. Neither case returns 500. Logs and usage
+      keep the full <code>copilot:gpt-5</code> display name.
+    </p>
+
+    <h3 id="metrics">metrics and dashboard — local observability</h3>
+    <p class="sub">Read-only, GET-only, loopback-only. Non-loopback clients get 403 even if
+      <code>listen.host</code> was changed. Counters live in memory and reset on restart; the durable
+      record is <code>usage.jsonl</code>.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>metrics.enabled</code></td><td><code>true</code></td><td>Serve Prometheus text at <code>/__llm_session_proxy__/metrics</code></td></tr>
+          <tr><td><code>dashboard.enabled</code></td><td><code>true</code></td><td>Serve a single-file HTML page at <code>/__llm_session_proxy__/dashboard</code></td></tr>
+          <tr><td><code>log.format</code></td><td><code>text</code></td><td><code>json</code> writes one structured object per request with stable field names</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>curl http://127.0.0.1:9355/__llm_session_proxy__/metrics
+curl http://127.0.0.1:9355/__llm_session_proxy__/sessions/prefix
+curl http://127.0.0.1:9355/__llm_session_proxy__/dashboard</code></pre>
+    <p>
+      The histogram is the <b>whole request as observed by the proxy</b>, not “added latency”:
+      there is no no-proxy baseline to subtract. <code>/sessions/prefix</code> pairs each session's
+      stable fingerprint hash with local reuse counts and the upstream's cache-read rate; its
+      <code>cacheReusable</code> field is explicitly a heuristic, not a claim about upstream internals.
+    </p>
+
+    <h3 id="export">export — OTLP/JSON to your collector</h3>
+    <p class="sub">Off by default. No SDK, no protobuf, no third-party dependency.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>false</code></td><td>Nothing is sent until you opt in</td></tr>
+          <tr><td><code>endpoint</code></td><td><code>null</code></td><td>Your collector's HTTP(S) URL</td></tr>
+          <tr><td><code>headers</code></td><td><code>{}</code></td><td>Extra headers, e.g. an ingest token (never logged)</td></tr>
+          <tr><td><code>timeoutMs</code></td><td><code>2000</code></td><td>Per-export timeout; failures are swallowed</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"export": {
+  "enabled": true,
+  "endpoint": "http://127.0.0.1:4318/v1/logs",
+  "headers": { "x-observability-token": "..." },
+  "timeoutMs": 2000
+}</code></pre>
+    <p>
+      Fire-and-forget: a slow or broken collector never delays or fails a proxied request.
+      Each record carries language-neutral attributes (status, model, source, upstream, tokens,
+      duration) in an OTLP-shaped <code>resourceLogs</code> payload.
+    </p>
+
     <h3>Template variables</h3>
     <div class="table-wrap">
       <table>
@@ -696,11 +828,16 @@ npx llm-session-proxy --models-update ./proxy.config.json --in-place</code></pre
           <tr><td><code>--log-dir &lt;dir&gt;</code></td><td>Directory of the default log file</td></tr>
           <tr><td><code>--log-rotate &lt;mode&gt;</code></td><td><code>size</code> | <code>daily</code> | <code>off</code></td></tr>
           <tr><td><code>--log-keep-days &lt;n&gt;</code></td><td>Delete logs older than N days (<code>0</code> = keep forever)</td></tr>
+          <tr><td><code>--log-format &lt;fmt&gt;</code></td><td><code>text</code> (default) or <code>json</code> (one structured object per request)</td></tr>
+          <tr><td><code>--no-metrics</code> / <code>--no-dashboard</code></td><td>Turn off the local <code>/metrics</code> endpoint / dashboard page</td></tr>
+          <tr><td><code>--export-endpoint &lt;url&gt;</code></td><td>Enable OTLP/JSON export to this HTTP(S) endpoint (also sets <code>export.enabled</code>)</td></tr>
           <tr><td><code>--init [file]</code></td><td>Write a sample config</td></tr>
           <tr><td><code>--print-config</code></td><td>Print the merged config and exit</td></tr>
           <tr><td><code>--dry-run</code></td><td>Validate the config and print routing, injection and model resolution. No network I/O</td></tr>
           <tr><td><code>--doctor</code></td><td><code>--dry-run</code> plus DNS/TCP/TLS reachability and listen-port checks (free? forbidden?); exits non-zero on problems</td></tr>
           <tr><td><code>--model &lt;id&gt;</code></td><td>Sample model name used by <code>--dry-run</code> / <code>--doctor</code></td></tr>
+          <tr><td><code>--usage</code></td><td>Print the usage summary from <code>usage.jsonl</code> and exit; no server starts</td></tr>
+          <tr><td><code>--usage-file &lt;file&gt;</code></td><td>Read usage records from a different JSONL file (implies <code>--usage</code>)</td></tr>
           <tr><td><code>--login-copilot</code></td><td>Run the GitHub device flow once and archive a Copilot credential (the proxy itself never starts it by default)</td></tr>
           <tr><td><code>--setup &lt;preset&gt;</code></td><td>Write a preset config (<code>opencode-go</code> / <code>copilot</code>) and print what to prepare and how to verify it. Credential values are never written</td></tr>
           <tr><td><code>--setup-out &lt;file&gt;</code> / <code>--setup-env &lt;name&gt;</code></td><td>Output path for the generated config / name of the environment variable holding the credential</td></tr>
@@ -718,7 +855,11 @@ npx llm-session-proxy --models-update ./proxy.config.json --in-place</code></pre
       The file is <code>$LSP_HOME/logs/llm-session-proxy.log</code>, or
       <code>~/.lsp/logs/llm-session-proxy.log</code> when <code>LSP_HOME</code> is unset.
       Override it with <code>--log-file &lt;path&gt;</code> / <code>--log-dir &lt;dir&gt;</code>, or switch
-      it off with <code>--no-log-file</code>.
+      it off with <code>--no-log-file</code>. Usage has its own append-only file,
+      <code>$LSP_HOME/usage.jsonl</code>, and each request also writes one
+      <code>[usage] model=… source=… session=… status=… in=… out=…</code> line to the normal log — the ASCII
+      tag is never translated, so <code>grep '[usage]'</code> works in both languages. With
+      <code>--log-format json</code> those per-request lines fold into one JSON object per request.
     </p>
     <div class="table-wrap">
       <table>
@@ -748,7 +889,7 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       a 400 from the upstream.
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.3.2 — dry run
+llm-session-proxy v0.4.0 — dry run
 
 Model
   sample              proxy-glm
@@ -873,9 +1014,17 @@ Transformers
 curl http://127.0.0.1:9355/__llm_session_proxy__/status
 
 <span class="cmt"># Per-session detail: ID, request count, last used</span>
-curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
+curl http://127.0.0.1:9355/__llm_session_proxy__/sessions
+
+<span class="cmt"># Stable prefix hashes + prompt-cache reuse estimate</span>
+curl http://127.0.0.1:9355/__llm_session_proxy__/sessions/prefix
+
+<span class="cmt"># Prometheus text metrics / single-file dashboard</span>
+curl http://127.0.0.1:9355/__llm_session_proxy__/metrics
+curl http://127.0.0.1:9355/__llm_session_proxy__/dashboard</code></pre>
     <p>
-      Handy when debugging: if <code>sessions.active</code> stays at 0, requests are not reaching
+      All local endpoints are GET-only and refuse non-loopback sources with 403. Handy when
+      debugging: if <code>sessions.active</code> stays at 0, requests are not reaching
       the proxy at all — usually the model ID is missing its <code>proxy-</code> prefix and the
       client intercepted it.
     </p>
@@ -998,7 +1147,7 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
         <tr><td><code>v0.3.0</code> ✓</td><td>Difficulty routing and upstream reach</td><td>A local deterministic scorer that grades a request by <i>shape</i> and maps it onto bands (<code>easy</code> / <code>medium</code> / <code>hard</code>) that rules can match on, plus a pool of upstreams — each with its own endpoints, wire protocol and credential source — including GitHub Copilot authenticated the official way. Google Gemini joins the protocol set as a fourth wire format.</td></tr>
         <tr><td><code>v0.3.1</code> ✓</td><td>Copilot reach</td><td>The GitHub token goes straight to <code>api.githubcopilot.com</code> the way OMP does (the session exchange becomes opt-in), a <code>--login-copilot</code> device-flow login archives a credential, and <code>--doctor</code> verifies each Copilot provider with a read-only <code>/models</code> call. The Copilot API version header is pinned to <code>2026-08-01</code>.</td></tr>
         <tr><td><code>v0.3.2</code> ✓</td><td>Setup and live models</td><td>A <code>--setup</code> wizard writes a working config for OpenCode Go (officially supported) or GitHub Copilot (community HTTP path, labelled as such), recording the credential <b>source</b> but never its value. <code>--models</code> reads the official credential-free Go catalogue with recommended APIs, caches it for six hours, and falls back to a clearly marked stale copy; <code>--models-update</code> refreshes a config while keeping your aliases.</td></tr>
-        <tr><td><code>v0.4</code></td><td>Observability and control</td><td>Prometheus <code>/metrics</code>, JSON log mode, OTLP/JSON export, a session and prompt-cache inspector, token and cost accounting, and a zero-build local dashboard.</td></tr>
+        <tr><td><code>v0.4</code> ✓</td><td>Observability and control</td><td>Prometheus <code>/metrics</code>, JSON log mode, OTLP/JSON export, a session/prefix inspector, token and cost accounting by model/source/session, a zero-build local dashboard and source prefixes in model IDs. <b>All delivered;</b> the HTTP accounting endpoint was deliberately replaced by the offline <code>--usage</code> report.</td></tr>
         <tr><td><code>v0.5</code></td><td>Reliability under real upstreams</td><td>Fallback with jittered retry, circuit breaking, separated timeouts with a stream idle watchdog, graceful drain on shutdown.</td></tr>
         <tr><td><code>v0.6</code></td><td>Safety and hygiene</td><td>Log redaction, regex guardrails, line-precise config schema errors, and <code>--check-config</code> for CI.</td></tr>
         <tr><td><code>v1.0</code></td><td>Distribution and guarantees</td><td>Single-file binaries, a per-client compatibility matrix, protocol contract tests on golden SSE fixtures, a config migration tool, and semver from there on.</td></tr>

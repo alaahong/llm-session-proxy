@@ -10,6 +10,7 @@ import { MESSAGES, getLang, normalizeLang, setLang, t } from './messages.js';
 import { createProxyServer } from './proxy.js';
 import { loadPresetModels, renderModelTable } from './model-catalog.js';
 import { SETUP_PRESETS, runSetup, updateConfigModels } from './setup.js';
+import { readUsageReport } from './usage.js';
 
 /** 帮助文本用到的默认值快照。 */
 const HELP_DEFAULTS = {
@@ -63,6 +64,9 @@ const VALUE_FLAGS = new Set([
   '--lang',
   '--log-level',
   '--log-file',
+  '--log-format',
+  '--export-endpoint',
+  '--usage-file',
 ]);
 
 /**
@@ -134,6 +138,8 @@ export function parseArgv(argv) {
   let modelsUpdate = null;
   let modelsInPlace = false;
   let noModels = false;
+  let usageRequested = false;
+  let usageFile = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const raw = argv[i];
@@ -206,6 +212,13 @@ export function parseArgv(argv) {
         break;
       case '--no-models':
         noModels = true;
+        break;
+      case '--usage':
+        usageRequested = true;
+        break;
+      case '--usage-file':
+        usageRequested = true;
+        usageFile = takeValue();
         break;
       case '--init': {
         initRequested = true;
@@ -325,6 +338,21 @@ export function parseArgv(argv) {
       case '--log-keep-days':
         setByPath(flags, ['log', 'keepDays'], Number(takeValue()));
         break;
+      case '--log-format':
+        setByPath(flags, ['log', 'format'], takeValue().toLowerCase());
+        break;
+      case '--no-metrics':
+        setByPath(flags, ['metrics', 'enabled'], false);
+        break;
+      case '--no-dashboard':
+        setByPath(flags, ['dashboard', 'enabled'], false);
+        break;
+      case '--export-endpoint': {
+        const endpoint = takeValue();
+        setByPath(flags, ['export', 'enabled'], true);
+        setByPath(flags, ['export', 'endpoint'], endpoint);
+        break;
+      }
       default:
         if (VALUE_FLAGS.has(flag)) throw new Error(t('cli.err.notImplemented', { flag }));
         throw new Error(t('cli.err.unknownFlag', { flag }));
@@ -335,6 +363,7 @@ export function parseArgv(argv) {
     flags, configFile, printConfig, initRequested, initFile, dryRun, doctor, model: doctorModel,
     loginCopilot, setupRequested, setupPreset, setupOutput, setupTokenEnv,
     modelsRequested, modelsPreset, modelsUpdate, modelsInPlace, noModels,
+    usageRequested, usageFile,
   };
 }
 
@@ -422,6 +451,16 @@ export function printBanner(logger, config, proxy, url) {
     logger.info(t('cli.banner.baseUrlRaw', { url }));
   }
   logger.info(t('cli.banner.statusEndpoint', { url }));
+  if (config.metrics?.enabled !== false) {
+    logger.info(t('cli.banner.metricsEndpoint', { url }));
+    if (config.dashboard?.enabled !== false) logger.info(t('cli.banner.dashboard', { url }));
+  }
+  if (config.export?.enabled === true && config.export?.endpoint) {
+    logger.info(t('cli.banner.export', { endpoint: config.export.endpoint }));
+  }
+  if (config.usage?.enabled !== false && proxy.usage?.filePath) {
+    logger.info(t('usage.banner.file', { file: proxy.usage.filePath }));
+  }
   if (config.__configPath) logger.info(t('cli.banner.configFile', { path: config.__configPath }));
   if (logger.filePath) {
     logger.info(t('cli.banner.logFile', { path: logger.filePath, detail: logDetail(config.log) }));
@@ -558,6 +597,28 @@ export async function runCli(argv = process.argv.slice(2)) {
     const when = new Date(result.fetchedAt).toISOString().slice(0, 16).replace('T', ' ');
     process.stdout.write(`${t('models.heading', { count: result.models.length, source: result.source, when })}\n\n`);
     process.stdout.write(`${renderModelTable(result.models)}\n`);
+    return;
+  }
+  if (parsed.usageRequested) {
+    // 离线命令：只读 JSONL，不建代理、不发请求。价格表来自配置文件（若有）。
+    let prices = {};
+    let currency = 'USD';
+    if (parsed.configFile) {
+      try {
+        const cfg = buildConfig({ file: parsed.configFile, flags: parsed.flags });
+        prices = cfg.usage?.prices || {};
+        currency = cfg.usage?.currency || 'USD';
+      } catch {
+        // 配置写错不该挡住「看一眼用量」；退化为无价格表
+      }
+    }
+    const report = readUsageReport({ file: parsed.usageFile, prices, currency, lang: getLang() });
+    if (!report.ok) {
+      process.stderr.write(`${t('usage.err.readFailed', { message: report.message })}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write(report.text);
     return;
   }
 

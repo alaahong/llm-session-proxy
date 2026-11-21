@@ -100,6 +100,26 @@
         <p><code>--models</code> 从官方免鉴权端点读取当前 Go 模型，并打印每个模型推荐的 API。结果缓存 6 小时，实时失败时明确标为 stale 再回退。<code>--models-update</code> 把最新 ID 追加到 <code>model.map</code>，同时保留你已有的每一条别名。</p>
       </div>
       <div class="card">
+        <div class="tag">usage</div>
+        <h4>用量统计</h4>
+        <p>按模型、按来源汇总 token 数、缓存读取、成功率、延迟分位与输出吞吐。数据从响应字节的 <b>副本</b> 里旁路提取，客户端收到的字节不变。记录追加写入 <code>usage.jsonl</code>；<code>--usage</code> 打印离线报表，每请求一行 <code>[usage]</code> 日志。成本只按你提供的价格表算。</p>
+      </div>
+      <div class="card">
+        <div class="tag">source-prefix</div>
+        <h4>模型来源前缀</h4>
+        <p>配了上游池后，<code>copilot:gpt-5</code> 表示「这次发给 Copilot」。来源段转发前剥掉，日志与用量保留完整名字，同名模型也能分清。只认配置里的 provider 与别名，未知来源告警后回退。默认关闭。</p>
+      </div>
+      <div class="card">
+        <div class="tag">metrics</div>
+        <h4>指标、看板与前缀检查器</h4>
+        <p>只读、仅回环的 Prometheus <code>/metrics</code> 端点，单文件本地 <code>/dashboard</code>，以及带稳定指纹哈希和明确标注的缓存复用估算的 <code>/sessions/prefix</code>。指标在内存里，持久历史仍在 <code>usage.jsonl</code>。</p>
+      </div>
+      <div class="card">
+        <div class="tag">export</div>
+        <h4>结构化日志与 OTLP/JSON</h4>
+        <p><code>--log-format json</code> 每请求写一条语言无关 JSON 对象。默认关闭的 <code>export.endpoint</code> 把 OTLP 形态 JSON 发到你指定的收集器——发了就不管，无 SDK、无第三方包，也不改客户端收到的字节。</p>
+      </div>
+      <div class="card">
         <div class="tag">router</div>
         <h4>按规则分桶路由</h4>
         <p>四个桶——<code>default</code> / <code>background</code> / <code>think</code> / <code>longContext</code>，各自可以换模型、挂请求体变换。规则按路径前缀、模型前缀、请求体字段、请求体大小匹配，<b>自上而下、首个命中即止</b>，同一条规则内条件是与。<b>默认关闭</b>，升级不会改变现有行为。</p>
@@ -628,6 +648,111 @@ npx llm-session-proxy --models-update ./proxy.config.json --in-place</code></pre
       这正是代理要在任何转换发生<b>之前</b>把两者取下来的原因。
     </p>
 
+    <h3 id="usage">usage —— 用量与成本统计</h3>
+    <p class="sub">默认开启。token 数从上游响应的 <b>副本</b> 里旁路提取（chat 的 <code>usage</code>、
+      Responses 的 <code>input_tokens</code> / <code>output_tokens</code>、Anthropic 的 <code>usage</code>
+      （含缓存读）、Gemini 的 <code>usageMetadata</code>），JSON 与 SSE 都支持。客户端收到的字节不变，
+      存储异常一律吞掉。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>true</code></td><td>总开关</td></tr>
+          <tr><td><code>file</code></td><td><code>null</code></td><td><code>null</code> → <code>$LSP_HOME/usage.jsonl</code> 或 <code>~/.lsp/usage.jsonl</code>；给路径就写在那儿</td></tr>
+          <tr><td><code>prices</code></td><td><code>{}</code></td><td>模型 → 每百万 token 单价。空表表示只统计 token，不猜厂商定价</td></tr>
+          <tr><td><code>currency</code></td><td><code>USD</code></td><td>报表里的货币标签</td></tr>
+          <tr><td><code>maxEntries</code></td><td><code>10000</code></td><td>内存里保留、重载时读回的最近记录条数</td></tr>
+          <tr><td><code>maxBytes</code></td><td><code>5242880</code></td><td>超过该字节数就轮转成 <code>usage.jsonl.1</code></td></tr>
+          <tr><td><code>logEachRequest</code></td><td><code>true</code></td><td>每请求在正常日志里写一行 <code>[usage] ...</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"usage": {
+  "file": "/var/log/lsp/usage.jsonl",
+  "prices": {
+    "copilot:gpt-5": { "input": 1.25, "output": 10, "cacheRead": 0.125 },
+    "*": { "input": 1, "output": 4 }
+  }
+}</code></pre>
+    <p>
+      价格键按 <code>来源:模型</code> → <code>模型</code> → <code>来源</code> → <code>*</code> 的顺序尝试；
+      不写 <code>cacheRead</code> / <code>cacheWrite</code> 时按 <code>input</code> 价算；推理 token 只展示、
+      不重复计价。报表按总量、按来源、按模型、按会话四个维度汇总：请求数与成功率、
+      4xx/5xx/传输失败、token（输入/输出/缓存读/缓存写/推理）、平均/p95/最大延迟、输出 tok/s，
+      以及价格命中时的成本。<code>--usage</code> 离线渲染报表，<code>--usage-file &lt;path&gt;</code> 读另一份 JSONL。
+    </p>
+
+    <h3 id="source-prefix">model.sourcePrefix —— 用模型名点名上游</h3>
+    <p class="sub">默认关闭。来源段的优先级高于桶规则、模型名前缀路由与池默认值；剩下的名字继续走原有别名解析。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>客户端发送</th><th>上游收到</th><th>原因</th></tr></thead>
+        <tbody>
+          <tr><td><code>copilot:gpt-5</code></td><td><code>gpt-5</code></td><td>直接用 provider 名</td></tr>
+          <tr><td><code>proxy-copilot:gpt-5</code></td><td><code>gpt-5</code></td><td>可以和常规的 <code>proxy-</code> 剥离前缀叠加</td></tr>
+          <tr><td><code>gh:gpt-5</code></td><td><code>gpt-5</code></td><td><code>aliases.gh</code> 解析成 <code>copilot</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"model": {
+  "sourcePrefix": {
+    "enabled": true,
+    "separator": ":",
+    "aliases": { "gh": "copilot" }
+  }
+}</code></pre>
+    <p>
+      只有配置里出现过的 provider 名与别名才算来源。不认识的 <code>vendor:gpt-5</code> 原样放行；
+      别名指向池里不存在的 provider 时告警一次并回退常规路由。两种情况都不会返回 500。
+      日志与用量保留完整的 <code>copilot:gpt-5</code> 展示名。
+    </p>
+
+    <h3 id="metrics">metrics 与 dashboard —— 本地可观测</h3>
+    <p class="sub">只读、仅 GET、仅回环；即便改了 <code>listen.host</code>，非回环来源也返回 403。
+      计数在内存里，重启清零；持久历史仍是 <code>usage.jsonl</code>。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>metrics.enabled</code></td><td><code>true</code></td><td>在 <code>/__llm_session_proxy__/metrics</code> 提供 Prometheus 文本指标</td></tr>
+          <tr><td><code>dashboard.enabled</code></td><td><code>true</code></td><td>在 <code>/__llm_session_proxy__/dashboard</code> 提供单文件 HTML 看板</td></tr>
+          <tr><td><code>log.format</code></td><td><code>text</code></td><td>设为 <code>json</code> 后每请求一条结构化对象，字段名稳定且语言无关</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>curl http://127.0.0.1:9355/__llm_session_proxy__/metrics
+curl http://127.0.0.1:9355/__llm_session_proxy__/sessions/prefix
+curl http://127.0.0.1:9355/__llm_session_proxy__/dashboard</code></pre>
+    <p>
+      直方图记录的是<b>代理观察到的完整请求耗时</b>，不是「附加延迟」——没有无代理基线可减。
+      <code>/sessions/prefix</code> 把每个会话稳定的指纹哈希、本地复用次数与上游回传的缓存读取率放在一起；
+      <code>cacheReusable</code> 明确是启发式估算，不代表我们看得见上游缓存内部。
+    </p>
+
+    <h3 id="export">export —— 导出 OTLP/JSON 到你的收集器</h3>
+    <p class="sub">默认关闭。不需要 SDK、protobuf 或第三方依赖。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>字段</th><th>默认值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>enabled</code></td><td><code>false</code></td><td>不显式打开就什么都不发</td></tr>
+          <tr><td><code>endpoint</code></td><td><code>null</code></td><td>你的收集器 HTTP(S) URL</td></tr>
+          <tr><td><code>headers</code></td><td><code>{}</code></td><td>额外请求头，例如 ingest token（绝不进日志）</td></tr>
+          <tr><td><code>timeoutMs</code></td><td><code>2000</code></td><td>单次导出超时；失败吞掉</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>"export": {
+  "enabled": true,
+  "endpoint": "http://127.0.0.1:4318/v1/logs",
+  "headers": { "x-observability-token": "..." },
+  "timeoutMs": 2000
+}</code></pre>
+    <p>
+      发了就不管：收集器再慢再坏也不会拖慢或搞失败一个被代理的请求。每条记录带语言无关属性
+      （status、model、source、upstream、token、耗时），放在 OTLP 形态的 <code>resourceLogs</code> 载荷里。
+    </p>
+
     <h3>模板变量</h3>
     <div class="table-wrap">
       <table>
@@ -677,11 +802,16 @@ npx llm-session-proxy --models-update ./proxy.config.json --in-place</code></pre
           <tr><td><code>--log-dir &lt;dir&gt;</code></td><td>默认日志文件所在目录</td></tr>
           <tr><td><code>--log-rotate &lt;mode&gt;</code></td><td><code>size</code> | <code>daily</code> | <code>off</code></td></tr>
           <tr><td><code>--log-keep-days &lt;n&gt;</code></td><td>自动删除超过 N 天的历史日志（<code>0</code> 为永久保留）</td></tr>
+          <tr><td><code>--log-format &lt;fmt&gt;</code></td><td><code>text</code>（默认）或 <code>json</code>（每请求一条结构化对象）</td></tr>
+          <tr><td><code>--no-metrics</code> / <code>--no-dashboard</code></td><td>关闭本地 <code>/metrics</code> 端点 / 看板页面</td></tr>
+          <tr><td><code>--export-endpoint &lt;url&gt;</code></td><td>启用 OTLP/JSON 导出到该 HTTP(S) 端点（同时打开 <code>export.enabled</code>）</td></tr>
           <tr><td><code>--init [file]</code></td><td>生成示例配置</td></tr>
           <tr><td><code>--print-config</code></td><td>打印合并后的最终配置并退出</td></tr>
           <tr><td><code>--dry-run</code></td><td>校验配置并打印路由、分桶、注入与模型解析结果，不走任何网络</td></tr>
           <tr><td><code>--doctor</code></td><td>在 <code>--dry-run</code> 基础上追加 DNS/TCP/TLS 连通性与监听端口检查（是否空闲、是否为禁用端口）；有问题时退出码非零</td></tr>
           <tr><td><code>--model &lt;id&gt;</code></td><td><code>--dry-run</code> / <code>--doctor</code> 用于演示的样例模型名</td></tr>
+          <tr><td><code>--usage</code></td><td>从 <code>usage.jsonl</code> 打印用量汇总并退出，不启动服务</td></tr>
+          <tr><td><code>--usage-file &lt;file&gt;</code></td><td>从另一份 JSONL 读取用量记录（隐含 <code>--usage</code>）</td></tr>
           <tr><td><code>--login-copilot</code></td><td>单独跑一次 GitHub 设备流并存档 Copilot 凭据（代理自身默认绝不启动它）</td></tr>
           <tr><td><code>--setup &lt;preset&gt;</code></td><td>写出预设配置（<code>opencode-go</code> / <code>copilot</code>），并打印该准备什么、如何验证。绝不写入凭据值</td></tr>
           <tr><td><code>--setup-out &lt;file&gt;</code> / <code>--setup-env &lt;name&gt;</code></td><td>生成配置的输出路径 / 存放凭据的环境变量名</td></tr>
@@ -698,6 +828,10 @@ npx llm-session-proxy --models-update ./proxy.config.json --in-place</code></pre
       默认位置是 <code>$LSP_HOME/logs/llm-session-proxy.log</code>；未设置 <code>LSP_HOME</code> 时是
       <code>~/.lsp/logs/llm-session-proxy.log</code>。用 <code>--log-file &lt;path&gt;</code> /
       <code>--log-dir &lt;dir&gt;</code> 覆盖，用 <code>--no-log-file</code> 关掉。
+      用量另有追加式文件 <code>$LSP_HOME/usage.jsonl</code>，每个请求还会在正常日志里写一行
+      <code>[usage] model=… source=… session=… status=… in=… out=…</code>；这个 ASCII 标签不翻译，中英文日志里
+      <code>grep '[usage]'</code> 都能用。设了 <code>--log-format json</code> 后，这些逐请求行会折叠成
+      一请求一条 JSON 对象。
     </p>
     <div class="table-wrap">
       <table>
@@ -725,7 +859,7 @@ llm-session-proxy --print-config | grep resolvedFile</code></pre>
       所以模板写错了会在这里暴露，而不是等上游回一个 400。
     </p>
     <pre><code><span class="cmt">$ llm-session-proxy --dry-run</span>
-llm-session-proxy v0.3.2 —— 试运行
+llm-session-proxy v0.4.0 —— 试运行
 
 模型
   样例            proxy-glm
@@ -836,10 +970,17 @@ llm-session-proxy v0.3.2 —— 试运行
 curl http://127.0.0.1:9355/__llm_session_proxy__/status
 
 <span class="cmt"># 会话明细：每个会话的 ID、请求数、最后使用时间</span>
-curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
+curl http://127.0.0.1:9355/__llm_session_proxy__/sessions
+
+<span class="cmt"># 稳定内容前缀哈希 + 缓存复用估算</span>
+curl http://127.0.0.1:9355/__llm_session_proxy__/sessions/prefix
+
+<span class="cmt"># Prometheus 文本指标 / 单文件本地看板</span>
+curl http://127.0.0.1:9355/__llm_session_proxy__/metrics
+curl http://127.0.0.1:9355/__llm_session_proxy__/dashboard</code></pre>
     <p>
-      排错时很有用：如果 <code>sessions.active</code> 一直是 0，说明请求根本没到代理——
-      多半是模型 ID 没加 <code>proxy-</code> 前缀，被客户端截走了。
+      本地端点仅支持 GET，非回环来源返回 403。排错时很有用：如果 <code>sessions.active</code> 一直是 0，
+      说明请求根本没到代理——多半是模型 ID 没加 <code>proxy-</code> 前缀，被客户端截走了。
     </p>
   </section>
 
@@ -940,7 +1081,7 @@ curl http://127.0.0.1:9355/__llm_session_proxy__/sessions</code></pre>
         <tr><td><code>v0.3.0</code> ✓</td><td>难度路由与上游覆盖</td><td>一个本地确定性打分器按请求<i>形态</i>打分并映射到档位（<code>easy</code> / <code>medium</code> / <code>hard</code>）供规则匹配；加上一个上游池——每个上游各有自己的端点、线协议与凭据来源——其中包括用官方方式认证的 GitHub Copilot。Google Gemini 作为第四种线格式加入协议集合。</td></tr>
         <tr><td><code>v0.3.1</code> ✓</td><td>Copilot 覆盖</td><td>GitHub token 像 OMP 一样直接发给 <code>api.githubcopilot.com</code>（session 交换改为可选），<code>--login-copilot</code> 通过设备流存档凭据，<code>--doctor</code> 用一次只读的 <code>/models</code> 调用验证每个 Copilot 上游。Copilot API 版本头固定为 <code>2026-08-01</code>。</td></tr>
         <tr><td><code>v0.3.2</code> ✓</td><td>一键接入与实时模型</td><td><code>--setup</code> 为 OpenCode Go（官方支持）或 GitHub Copilot（社区 HTTP 路径，明确标注）写出可用配置，只记凭据<b>来源</b>、不记值。<code>--models</code> 读取官方免鉴权的 Go 清单与推荐 API，缓存 6 小时，失败时回退到明确标注的 stale 副本；<code>--models-update</code> 刷新配置但保留你的别名。</td></tr>
-        <tr><td><code>v0.4</code></td><td>可观测与可控</td><td>Prometheus <code>/metrics</code>、JSON 日志模式、OTLP/JSON 导出、会话与提示词缓存检查器、token 与成本统计、免构建的本地看板。</td></tr>
+        <tr><td><code>v0.4</code> ✓</td><td>可观测与可控</td><td>Prometheus <code>/metrics</code>、JSON 日志模式、OTLP/JSON 导出、会话与前缀检查器、按模型/来源/会话的 token 与成本统计、免构建本地看板，以及模型名里的来源前缀。<b>全部交付；</b>HTTP 统计端点按取舍改为离线 <code>--usage</code> 报表。</td></tr>
         <tr><td><code>v0.5</code></td><td>真实上游下的可靠性</td><td>带抖动重试的兜底、熔断、超时拆分与流空闲看门狗、退出时优雅排空。</td></tr>
         <tr><td><code>v0.6</code></td><td>安全与卫生</td><td>日志脱敏、正则护栏、精确到行的配置 schema 报错、CI 用的 <code>--check-config</code>。</td></tr>
         <tr><td><code>v1.0</code></td><td>分发与承诺</td><td>单文件可执行产物、按客户端的兼容性矩阵、基于 golden SSE fixture 的协议契约测试、配置迁移工具，以及从此开始的语义化版本。</td></tr>

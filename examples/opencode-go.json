@@ -19,6 +19,13 @@
   // 从 v0.3.2 起不必手抄这份配置：跑 `llm-session-proxy --setup opencode-go`
   // 会按官方端点生成一份，并把 `llm-session-proxy --models` 拉到的实时模型 ID
   // 写进 model.map；以后用 `--models-update <file>` 刷新即可（保留你自己的别名）。
+  //
+  // 从 v0.4 起：每请求会旁路采样 token/延迟并追加到 `~/.lsp/usage.jsonl`，
+  // `llm-session-proxy --usage` 可离线看按模型/按来源的汇总（价格表自己配，程序不猜价）。
+  // 配了 upstreams 池后还能打开 model.sourcePrefix，让客户端写 `copilot:gpt-5`
+  // 点名上游——来源段转发前剥掉，日志与用量里保留完整名字。
+  // 本地还有只读的 /__llm_session_proxy__/metrics、/dashboard 与 /sessions/prefix；
+  // --log-format json 一请求一 JSON 对象，export.endpoint 可开默认关闭的 OTLP/JSON 导出。
 
   "listen": { "host": "127.0.0.1", "port": 9355 },
 

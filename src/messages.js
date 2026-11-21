@@ -47,6 +47,13 @@ const en = {
     `log.file must be a path string or false (console only), got ${file}`,
   'config.badLogDir': ({ dir }) => `log.dir must be a path string or null, got ${dir}`,
   'config.badLogRotate': ({ rotate, modes }) => `log.rotate must be ${modes}, got ${rotate}`,
+  'config.badLogFormat': ({ format, formats }) => `log.format must be ${formats}, got ${format}`,
+  'config.badObservabilityFlag': ({ key }) => `${key}.enabled must be a boolean`,
+  'config.badExport': () => 'export must be an object',
+  'config.badExportEnabled': () => 'export.enabled must be a boolean',
+  'config.badExportEndpoint': () => 'export.endpoint must be an http:// or https:// URL',
+  'config.badExportHeaders': () => 'export.headers must contain only string values and no line breaks',
+  'config.badExportTimeout': () => 'export.timeoutMs must be a positive number',
   'config.badLogLevel': ({ level, levels }) => `log.level must be ${levels}, got ${level}`,
   'config.badLogNumber': ({ key, value }) => `${key} must be a non-negative number, got ${value}`,
   'config.badModel': () => 'model must be an object',
@@ -184,6 +191,10 @@ OPTIONS
       --log-dir <dir>          Directory of the default log file
       --log-rotate <mode>      size | daily | off (default size)
       --log-keep-days <days>   Delete rotated logs older than this (default 30, 0 = keep forever)
+      --log-format <fmt>       text (default) | json (one structured object per request)
+      --no-metrics             Disable the local /metrics endpoint
+      --no-dashboard           Disable the local dashboard page
+      --export-endpoint <url>  Enable OTLP/JSON export to this HTTP(S) endpoint (off by default)
 
 LOCAL TOOLS
       --print-config           Print the merged config and exit
@@ -202,6 +213,8 @@ LOCAL TOOLS
       --models-update <file>   Refresh a config's model.map with the current model list;
                                writes <file>.updated.json unless --in-place is given
       --in-place               With --models-update, overwrite the original (keeps a .bak)
+      --usage                  Show token usage summary from ~/.lsp/usage.jsonl (by model, source and session)
+      --usage-file <file>      Read usage data from a specific file (implies --usage)
   -h, --help                   Show this help
   -v, --version                Show the version
 
@@ -399,6 +412,9 @@ EXAMPLES
   'cli.banner.baseUrlRewritten': ({ url }) => `      ${url}/v1   (rewritten by the rules above)`,
   'cli.banner.baseUrlRaw': ({ url }) => `      ${url}/zen/go/v1   or the upstream path appended as-is`,
   'cli.banner.statusEndpoint': ({ url }) => `  status       ${url}/__llm_session_proxy__/status`,
+  'cli.banner.metricsEndpoint': ({ url }) => `  metrics      ${url}/__llm_session_proxy__/metrics`,
+  'cli.banner.dashboard': ({ url }) => `  dashboard    ${url}/__llm_session_proxy__/dashboard`,
+  'cli.banner.export': ({ endpoint }) => `  export       OTLP/JSON -> ${endpoint}`,
   'cli.banner.configFile': ({ path }) => `  config file  ${path}`,
   'cli.banner.logFile': ({ path, detail }) => `  log file     ${path}${detail ? `  [${detail}]` : ''}`,
   'cli.banner.logFileOff': () => '  log file     (disabled, console only)',
@@ -590,6 +606,8 @@ EXAMPLES
   'proxy.err.badRequestTarget': ({ url, host }) =>
     `Cannot parse the request target: ${url} (Host header is ${host})`,
   'proxy.err.unknownEndpoint': ({ pathname }) => `Unknown local endpoint: ${pathname}`,
+  'proxy.err.localMethod': () => 'Local endpoints are read-only (GET only)',
+  'proxy.err.localForbidden': () => 'Local endpoints are available from the loopback interface only',
   'proxy.err.buildUpstream': ({ message }) => `Cannot build the upstream request: ${message}`,
   'proxy.err.upstreamTimeout': ({ timeoutMs }) => `Upstream did not respond within ${timeoutMs}ms`,
   'proxy.err.upstreamUnreachable': ({ origin, message }) => `Cannot reach upstream ${origin}: ${message}`,
@@ -710,6 +728,59 @@ EXAMPLES
   'models.err.fileMissing': ({ target }) => `Config file not found: ${target}`,
   'models.err.noModels': () => 'No model list available — nothing to update',
   'models.note.inPlaceHint': () => 'By default the result is written to <config>.updated.json; add --in-place to overwrite the original (a .bak is kept).',
+
+  // ---------- usage.js / --usage ----------
+  'usage.report.heading': ({ count, file }) => `Usage summary — ${count} requests (${file})`,
+  'usage.report.totals': () => 'TOTALS',
+  'usage.report.bySource': () => 'BY SOURCE',
+  'usage.report.byModel': () => 'BY MODEL',
+  'usage.report.bySession': () => 'BY SESSION',
+  'usage.report.more': ({ count }) => `… ${count} more`,
+  'usage.report.priceHint': () => 'No prices configured — set usage.prices (per 1M tokens) to see cost.',
+  'usage.col.metric': () => 'METRIC',
+  'usage.col.value': () => 'VALUE',
+  'usage.col.source': () => 'SOURCE',
+  'usage.col.model': () => 'MODEL',
+  'usage.col.session': () => 'SESSION',
+  'usage.col.requests': () => 'REQ',
+  'usage.col.tokens': () => 'TOKENS',
+  'usage.col.fail': () => 'FAIL',
+  'usage.col.cost': () => 'COST',
+  'usage.col.avgMs': () => 'AVG ms',
+  'usage.col.tokPerSec': () => 'OUT tok/s',
+  'usage.metric.requests': () => 'requests',
+  'usage.metric.success': () => 'ok',
+  'usage.metric.failed': () => 'failures',
+  'usage.metric.transport': () => 'transport',
+  'usage.metric.tokens': () => 'tokens',
+  'usage.metric.in': () => 'in',
+  'usage.metric.out': () => 'out',
+  'usage.metric.cacheRead': () => 'cache-read',
+  'usage.metric.cacheWrite': () => 'cache-write',
+  'usage.metric.reasoning': () => 'reasoning',
+  'usage.metric.latency': () => 'latency',
+  'usage.metric.avg': () => 'avg',
+  'usage.metric.max': () => 'max',
+  'usage.metric.throughput': () => 'throughput',
+  'usage.metric.avgTokens': () => 'avg tokens/req',
+  'usage.metric.outRatio': () => 'out ratio',
+  'usage.metric.cost': () => 'cost',
+  'usage.metric.noPrice': () => '(no price table)',
+  'usage.err.readFailed': ({ message }) => `Could not read usage data: ${message}`,
+  'usage.banner.file': ({ file }) => `usage   ${file}`,
+
+  // ---------- source prefix (model.js / proxy.js) ----------
+  'proxy.log.sourcePrefixUnknown': ({ source, model }) =>
+    `Model "${model}" names source "${source}", but there is no such provider — ignoring the prefix.`,
+  'proxy.log.sourcePrefixMissing': ({ source, provider }) =>
+    `Model names source "${provider}", but provider "${provider}" is missing in upstreams.providers — falling back to normal routing (source=${source}).`,
+  'proxy.log.sourcePrefixForced': ({ source, model }) => `source=${source} from model ${model}`,
+  'config.badUsageFile': () => 'usage.file must be a non-empty string',
+  'config.badUsageMaxEntries': () => 'usage.maxEntries must be a positive integer',
+  'config.badUsagePrices': () => 'usage.prices must be an object mapping model names to per-1M-token prices',
+  'config.badSourcePrefix': () => 'model.sourcePrefix.enabled must be a boolean',
+  'config.badSourcePrefixSep': () => 'model.sourcePrefix.separator must be a single non-empty string',
+  'config.badSourcePrefixAliases': () => 'model.sourcePrefix.aliases must be an object',
 };
 
 const zh = {
@@ -729,6 +800,13 @@ const zh = {
   'config.badLogFile': ({ file }) => `log.file 必须是路径字符串或 false（只输出到控制台），收到 ${file}`,
   'config.badLogDir': ({ dir }) => `log.dir 必须是路径字符串或 null，收到 ${dir}`,
   'config.badLogRotate': ({ rotate, modes }) => `log.rotate 只能是 ${modes}，收到 ${rotate}`,
+  'config.badLogFormat': ({ format, formats }) => `log.format 只能是 ${formats}，收到 ${format}`,
+  'config.badObservabilityFlag': ({ key }) => `${key}.enabled 必须是布尔值`,
+  'config.badExport': () => 'export 必须是对象',
+  'config.badExportEnabled': () => 'export.enabled 必须是布尔值',
+  'config.badExportEndpoint': () => 'export.endpoint 必须是 http:// 或 https:// 的 URL',
+  'config.badExportHeaders': () => 'export.headers 的值必须是字符串，且不能包含换行',
+  'config.badExportTimeout': () => 'export.timeoutMs 必须是正数',
   'config.badLogLevel': ({ level, levels }) => `log.level 只能是 ${levels}，收到 ${level}`,
   'config.badLogNumber': ({ key, value }) => `${key} 必须是非负数，收到 ${value}`,
   'config.badModel': () => 'model 必须是对象',
@@ -863,6 +941,10 @@ ${name} v${version}
       --log-dir <dir>           默认日志文件所在目录
       --log-rotate <mode>       轮转方式：size | daily | off（默认 size）
       --log-keep-days <days>    自动删除超过该天数的历史日志（默认 30，0 为永久保留）
+      --log-format <fmt>        日志格式：text（默认）| json（每请求一条结构化对象）
+      --no-metrics              关闭本地 /metrics 端点
+      --no-dashboard            关闭本地看板页面
+      --export-endpoint <url>   启用 OTLP/JSON 导出到该 HTTP(S) 端点（默认关闭）
 
 本地工具
       --print-config           打印合并后的最终配置并退出
@@ -880,6 +962,8 @@ ${name} v${version}
       --models-update <file>   用当前模型清单刷新配置的 model.map；
                                默认写 <file>.updated.json，除非加 --in-place
       --in-place               配合 --models-update 覆盖原文件（保留 .bak）
+      --usage                  显示用量汇总（~/.lsp/usage.jsonl，按模型/来源/会话分组）
+      --usage-file <file>      从指定文件读取用量数据（隐含 --usage）
   -h, --help                   显示帮助
   -v, --version                显示版本
 
@@ -1075,6 +1159,9 @@ ${name} v${version}
   'cli.banner.baseUrlRewritten': ({ url }) => `      ${url}/v1   （按上面的重写规则转到上游）`,
   'cli.banner.baseUrlRaw': ({ url }) => `      ${url}/zen/go/v1   或按上游路径原样拼接`,
   'cli.banner.statusEndpoint': ({ url }) => `  状态端点    ${url}/__llm_session_proxy__/status`,
+  'cli.banner.metricsEndpoint': ({ url }) => `  指标端点    ${url}/__llm_session_proxy__/metrics`,
+  'cli.banner.dashboard': ({ url }) => `  本地看板    ${url}/__llm_session_proxy__/dashboard`,
+  'cli.banner.export': ({ endpoint }) => `  导出        OTLP/JSON -> ${endpoint}`,
   'cli.banner.configFile': ({ path }) => `  配置文件    ${path}`,
   'cli.banner.logFile': ({ path, detail }) => `  日志文件    ${path}${detail ? `  [${detail}]` : ''}`,
   'cli.banner.logFileOff': () => '  日志文件    （已关闭，只输出到控制台）',
@@ -1259,6 +1346,8 @@ ${name} v${version}
   'proxy.err.internal': ({ message }) => `代理处理请求时出错: ${message}`,
   'proxy.err.badRequestTarget': ({ url, host }) => `无法解析请求目标: ${url}（Host 头为 ${host}）`,
   'proxy.err.unknownEndpoint': ({ pathname }) => `未知的本地端点: ${pathname}`,
+  'proxy.err.localMethod': () => '本地端点只读（仅支持 GET）',
+  'proxy.err.localForbidden': () => '本地端点仅允许回环地址访问',
   'proxy.err.buildUpstream': ({ message }) => `无法构造上游请求: ${message}`,
   'proxy.err.upstreamTimeout': ({ timeoutMs }) => `上游 ${timeoutMs}ms 未响应，已超时`,
   'proxy.err.upstreamUnreachable': ({ origin, message }) => `无法连接上游 ${origin}: ${message}`,
@@ -1376,6 +1465,59 @@ ${name} v${version}
   'models.err.fileMissing': ({ target }) => `找不到配置文件: ${target}`,
   'models.err.noModels': () => '没有可用的模型清单 —— 无需更新',
   'models.note.inPlaceHint': () => '默认写到 <配置>.updated.json；加 --in-place 才覆盖原文件（会保留 .bak 备份）。',
+
+  // ---------- usage.js / --usage ----------
+  'usage.report.heading': ({ count, file }) => `用量汇总 — ${count} 次请求（${file}）`,
+  'usage.report.totals': () => '总计',
+  'usage.report.bySource': () => '按来源',
+  'usage.report.byModel': () => '按模型',
+  'usage.report.bySession': () => '按会话',
+  'usage.report.more': ({ count }) => `… 另有 ${count} 条`,
+  'usage.report.priceHint': () => '未配置价格 —— 在 usage.prices 里填每百万 token 的单价即可显示成本。',
+  'usage.col.metric': () => '指标',
+  'usage.col.value': () => '值',
+  'usage.col.source': () => '来源',
+  'usage.col.model': () => '模型',
+  'usage.col.session': () => '会话',
+  'usage.col.requests': () => '请求',
+  'usage.col.tokens': () => 'token',
+  'usage.col.fail': () => '失败率',
+  'usage.col.cost': () => '成本',
+  'usage.col.avgMs': () => '平均 ms',
+  'usage.col.tokPerSec': () => '输出 tok/s',
+  'usage.metric.requests': () => '请求数',
+  'usage.metric.success': () => '成功',
+  'usage.metric.failed': () => '失败',
+  'usage.metric.transport': () => '传输',
+  'usage.metric.tokens': () => 'token',
+  'usage.metric.in': () => '输入',
+  'usage.metric.out': () => '输出',
+  'usage.metric.cacheRead': () => '缓存读',
+  'usage.metric.cacheWrite': () => '缓存写',
+  'usage.metric.reasoning': () => '推理',
+  'usage.metric.latency': () => '延迟',
+  'usage.metric.avg': () => '平均',
+  'usage.metric.max': () => '最大',
+  'usage.metric.throughput': () => '吞吐',
+  'usage.metric.avgTokens': () => '平均 token/请求',
+  'usage.metric.outRatio': () => '输出占比',
+  'usage.metric.cost': () => '成本',
+  'usage.metric.noPrice': () => '（未配价格表）',
+  'usage.err.readFailed': ({ message }) => `读取用量数据失败：${message}`,
+  'usage.banner.file': ({ file }) => `用量文件 ${file}`,
+
+  // ---------- 来源前缀 ----------
+  'proxy.log.sourcePrefixUnknown': ({ source, model }) =>
+    `模型 "${model}" 指定了来源 "${source}"，但配置里没有这个 provider —— 忽略前缀。`,
+  'proxy.log.sourcePrefixMissing': ({ source, provider }) =>
+    `模型指定了来源 "${provider}"，但 upstreams.providers 里没有这个 provider —— 回退到常规路由（source=${source}）。`,
+  'proxy.log.sourcePrefixForced': ({ source, model }) => `来源=${source}，来自模型 ${model}`,
+  'config.badUsageFile': () => 'usage.file 必须是非空字符串',
+  'config.badUsageMaxEntries': () => 'usage.maxEntries 必须是正整数',
+  'config.badUsagePrices': () => 'usage.prices 必须是「模型名 → 每百万 token 价格」的对象',
+  'config.badSourcePrefix': () => 'model.sourcePrefix.enabled 必须是布尔值',
+  'config.badSourcePrefixSep': () => 'model.sourcePrefix.separator 必须是单个非空字符串',
+  'config.badSourcePrefixAliases': () => 'model.sourcePrefix.aliases 必须是对象',
 };
 
 export const MESSAGES = { en, zh };

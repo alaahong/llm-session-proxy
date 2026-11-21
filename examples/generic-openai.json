@@ -12,6 +12,12 @@
   // 从 v0.3.0 起还有两节：router 里的 scorers / bands（按请求难度分桶），
   // 以及 upstreams（上游池——可以让不同模型走不同供应商，其中就包括 GitHub Copilot）。
   // 见 examples/opencode-go-models.json 末尾。
+  //
+  // 从 v0.4 起用量采样默认开启，记录写在 `~/.lsp/usage.jsonl`；
+  // `llm-session-proxy --usage` 打印按模型/按来源的离线汇总。配了 upstreams 池后
+  // 可打开 model.sourcePrefix，用 `copilot:gpt-5` 这样的名字点名上游（来源段转发前剥掉）。
+  // 本地只读端点 /metrics、/dashboard、/sessions/prefix 默认开启；--log-format json
+  // 切换结构化日志，export.endpoint 可把 OTLP/JSON 记录发到你的收集器（默认关闭）。
 
   "listen": { "host": "127.0.0.1", "port": 8788 },
 
